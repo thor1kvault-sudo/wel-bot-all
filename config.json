@@ -1,0 +1,30 @@
+{
+  "serverName": "THOR APEX ⚡",
+  "welcomeTitle": "THOR APEX !",
+  "embedColor": "#FF0000",
+  "channels": {
+    "welcomeChannelId": "1525030402748842076",
+    "rulesChannelId": "1528000620823445504",
+    "funChannelId": "1525030317730172951",
+    "editingChannelId": "1535299850659299498",
+    "gamingChannelId": "1535301041497833554",
+    "chillOutChannelId": "1525030317730172950"
+  },
+  "customImages": {
+    "logoUrl": "https://cdn.discordapp.com/icons/1525030316845301781/a_e2ed5715dca7460406cf7a2ae6e62da2.gif",
+    "bannerUrl": "https://cdn.discordapp.com/banners/1525030316845301781/a_9c0efaa467e410f24106fe2adaf5a1ab.gif?size=1024",
+    "useServerIconIfAvailable": true,
+    "useServerBannerIfAvailable": true
+  },
+  "messages": {
+    "greetingPrefix": "HEY BUDDY!",
+    "welcomeSubtitle": "Welcome To THOR APEX !",
+    "rulesText": "Get started with below:",
+    "guidelinesLabel": "Follow The Server Guidelines:",
+    "funLabel": "Fun With Us:",
+    "editingLabel": "Editing Zone:",
+    "gamingLabel": "Gaming Zone:",
+    "chillLabel": "Join And Chill With Us!:",
+    "outroText": "Thanks For Joining. Hope You Have A Great Time Here!"
+  }
+}
