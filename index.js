@@ -148,6 +148,43 @@ try {
   console.log('ℹ️ play-dl load status:', e.message);
 }
 
+let isPlayDlReady = false;
+async function ensurePlayDlReady() {
+  if (!playdl || isPlayDlReady) return;
+  try {
+    const cid = await playdl.getFreeClientID();
+    if (cid) {
+      await playdl.setToken({ soundcloud: { client_id: cid } });
+      isPlayDlReady = true;
+      console.log('✅ play-dl audio streaming engine initialized');
+    }
+  } catch (err) {
+    console.warn('⚠️ play-dl init note:', err.message);
+  }
+}
+
+function getSpotifyTrackInfo(spotifyUrl) {
+  return new Promise((resolve) => {
+    try {
+      const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(spotifyUrl)}`;
+      https.get(oembedUrl, (res) => {
+        let raw = '';
+        res.on('data', chunk => raw += chunk);
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(raw);
+            resolve(data.title || null);
+          } catch (_) {
+            resolve(null);
+          }
+        });
+      }).on('error', () => resolve(null));
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
 const musicQueues = new Map(); // guildId => { connection, player, queue: [], currentTrack: null, isPlaying: false }
 
 function getGuildQueue(guildId) {
@@ -167,6 +204,8 @@ async function playTrackAudio(guildId) {
   if (!voiceLib) return;
   const guildQueue = getGuildQueue(guildId);
   if (!guildQueue || !guildQueue.connection) return;
+
+  await ensurePlayDlReady();
 
   try {
     if (guildQueue.connection.state.status !== voiceLib.VoiceConnectionStatus.Ready) {
@@ -200,6 +239,7 @@ async function playTrackAudio(guildId) {
         console.warn('⚠️ Audio player error:', err.message);
         guildQueue.queue.shift();
         if (guildQueue.queue.length > 0) playTrackAudio(guildId);
+        else guildQueue.isPlaying = false;
       });
     } catch (e) {
       console.warn('⚠️ Audio player creation error:', e.message);
@@ -214,44 +254,43 @@ async function playTrackAudio(guildId) {
     let stream = null;
     let type = voiceLib.StreamType.Arbitrary;
 
-    if (playdl && currentTrack.url) {
+    if (playdl) {
       try {
-        if (currentTrack.url.includes('spotify.com')) {
-          const spData = await playdl.spotify(currentTrack.url).catch(() => null);
-          if (spData && spData.name) {
-            const searched = await playdl.search(`${spData.name} ${spData.artists?.[0]?.name || ''}`, { limit: 1 });
-            if (searched && searched[0]) {
-              const res = await playdl.stream(searched[0].url);
-              stream = res.stream;
-              type = res.type;
+        let searchQuery = currentTrack.title || currentTrack.query;
+
+        // If it's a Spotify link, fetch title from public Spotify OEmbed API
+        if (currentTrack.url && currentTrack.url.includes('spotify.com')) {
+          const spTitle = await getSpotifyTrackInfo(currentTrack.url);
+          if (spTitle) {
+            searchQuery = spTitle;
+            currentTrack.title = `🟢 ${spTitle}`;
+          }
+        }
+
+        // Clean query if it was a raw YouTube url to search title instead
+        if (searchQuery.includes('youtube.com/watch') || searchQuery.includes('youtu.be/')) {
+          const u = new URL(searchQuery);
+          searchQuery = u.searchParams.get('v') || searchQuery;
+        }
+
+        const searched = await playdl.search(searchQuery, { source: { soundcloud: 'tracks' }, limit: 1 });
+        if (searched && searched[0] && searched[0].url) {
+          const res = await playdl.stream(searched[0].url);
+          if (res && res.stream) {
+            stream = res.stream;
+            type = res.type;
+            if (!currentTrack.title || currentTrack.title.startsWith('http') || currentTrack.title.includes('🟢 Spotify Track')) {
+              currentTrack.title = searched[0].name || searchQuery;
             }
-          }
-        } else if (currentTrack.url.includes('youtube.com') || currentTrack.url.includes('youtu.be')) {
-          const res = await playdl.stream(currentTrack.url);
-          stream = res.stream;
-          type = res.type;
-        } else if (currentTrack.url.startsWith('http') && !currentTrack.url.includes('results?search_query=')) {
-          const res = await playdl.stream(currentTrack.url).catch(() => null);
-          if (res) {
-            stream = res.stream;
-            type = res.type;
-          }
-        } else {
-          // Search query like "enna sona"
-          const searched = await playdl.search(currentTrack.title, { limit: 1 });
-          if (searched && searched[0]) {
-            const res = await playdl.stream(searched[0].url);
-            stream = res.stream;
-            type = res.type;
           }
         }
       } catch (e) {
-        console.warn('⚠️ play-dl stream note:', e.message);
+        console.warn('⚠️ Audio stream extraction note:', e.message);
       }
     }
 
     if (!stream) {
-      const fallbackUrl = currentTrack.url.startsWith('http') && !currentTrack.url.includes('youtube.com') && !currentTrack.url.includes('spotify.com')
+      const fallbackUrl = currentTrack.url && currentTrack.url.startsWith('http') && !currentTrack.url.includes('youtube.com') && !currentTrack.url.includes('spotify.com')
         ? currentTrack.url
         : 'https://stream.zeno.fm/f3wvbbqmdg8uv';
 
@@ -276,7 +315,7 @@ async function playTrackAudio(guildId) {
       if (resource.volume) resource.volume.setVolume(1.0);
       guildQueue.player.play(resource);
       guildQueue.isPlaying = true;
-      console.log(`🎵 Playing stream in guild ${guildId}: ${currentTrack.title}`);
+      console.log(`🎵 Playing audio in guild ${guildId}: ${currentTrack.title}`);
     }
   } catch (err) {
     console.error('❌ Audio stream error:', err.message);
@@ -297,33 +336,26 @@ function addSongToQueue(guild, voiceChannel, user, songInput) {
       const host = u.hostname.toLowerCase();
       if (host.includes('spotify.com')) {
         provider = 'Spotify 🟢';
-        if (u.pathname.includes('/track/')) {
-          trackTitle = '🟢 Spotify Track';
-        } else if (u.pathname.includes('/playlist/')) {
-          trackTitle = '🟢 Spotify Playlist';
-        } else if (u.pathname.includes('/album/')) {
-          trackTitle = '🟢 Spotify Album';
-        } else {
-          trackTitle = '🟢 Spotify Link';
-        }
+        trackTitle = '🟢 Spotify Track';
       } else if (host.includes('youtube.com') || host.includes('youtu.be')) {
         provider = 'YouTube 🔴';
-        trackTitle = '🔴 YouTube Video / Song Link';
+        trackTitle = '🔴 YouTube Song';
       } else if (host.includes('soundcloud.com')) {
         provider = 'SoundCloud 🟠';
         trackTitle = '🟠 SoundCloud Track';
       } else {
         provider = u.hostname.replace('www.', '');
-        trackTitle = `🎵 Music Link (${provider})`;
+        trackTitle = `🎵 Song Link (${provider})`;
       }
     } catch (_) {
-      trackTitle = '🎵 Music Link';
+      trackTitle = '🎵 Song Link';
     }
   }
 
   const track = {
     title: trackTitle,
-    url: isUrl ? queryStr : `https://www.youtube.com/results?search_query=${encodeURIComponent(queryStr)}`,
+    query: queryStr,
+    url: isUrl ? queryStr : '',
     requestedBy: user.id,
     channelName: voiceChannel ? voiceChannel.name : 'Voice Channel',
     provider: provider,
@@ -346,8 +378,9 @@ function addSongToQueue(guild, voiceChannel, user, songInput) {
       }
     }
 
-    // Start audio playback
-    playTrackAudio(guild.id);
+    if (!guildQueue.isPlaying) {
+      playTrackAudio(guild.id);
+    }
   }
 
   return { track, position: guildQueue.queue.length };
@@ -790,10 +823,6 @@ function buildSlashCommands() {
             { name: '🎧 Chill Hop 24/7', value: 'chill' }
           )
       ),
-
-    new SlashCommandBuilder()
-      .setName('activity')
-      .setDescription('Launch Discord Voice Activity / Watch Together in your voice channel'),
 
     // ── Help
     new SlashCommandBuilder()
@@ -1370,6 +1399,19 @@ function startBot() {
             ].join('\n'),
           },
           {
+            name: '🎶 Music & Song Commands',
+            value: [
+              '`/play <song or link>` — Play a song, Spotify track, or YouTube title',
+              '`/queue [song]` — Show current queue or add a song link to queue',
+              '`/skip` — Skip current playing song',
+              '`/stop` — Stop music and leave voice channel',
+              '`/pause` / `/resume` — Pause or resume playback',
+              '`/nowplaying` — View currently playing song',
+              '`/radio [genre]` — Play 24/7 continuous radio streams',
+              '*(All music commands also work as text commands: `!play`, `!queue`, `!skip`, `!stop`, etc.)*',
+            ].join('\n'),
+          },
+          {
             name: '👁️ Invites & Previews',
             value: [
               '`/myinvites` — Check your total invited members',
@@ -1401,24 +1443,16 @@ function startBot() {
       const playEmbed = new EmbedBuilder()
         .setColor('#5865F2')
         .setTitle(position === 1 ? '🎶 Now Playing' : '🎵 Song Added to Queue')
-        .setDescription(`### [${track.title}](${track.url})`)
+        .setDescription(`### **${track.title}**`)
         .addFields(
           { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
           { name: '👤 Requested By', value: `<@${interaction.user.id}>`, inline: true },
-          { name: '📊 Position in Queue', value: `#${position}`, inline: true },
-          { name: '🚀 Discord Activity', value: '[Click to open Watch Together / Activity](https://discord.com/activities/235088799074484224?referrer_id=872384645373788170)' }
+          { name: '📊 Position in Queue', value: `#${position}`, inline: true }
         )
         .setFooter({ text: 'Use /queue to view all songs • /stop to leave' })
         .setTimestamp();
 
-      const btnRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setLabel('🎧 Open Music Activity')
-          .setURL('https://discord.com/activities/235088799074484224?referrer_id=872384645373788170')
-          .setStyle(ButtonStyle.Link)
-      );
-
-      await interaction.reply({ embeds: [playEmbed], components: [btnRow] });
+      await interaction.reply({ embeds: [playEmbed] });
       return;
     }
 
@@ -1475,7 +1509,7 @@ function startBot() {
         const queueAddEmbed = new EmbedBuilder()
           .setColor('#5865F2')
           .setTitle('🎶 Song Link Added to Queue')
-          .setDescription(`### [${track.title}](${track.url})`)
+          .setDescription(`### **${track.title}**`)
           .addFields(
             { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
             { name: '👤 Requested By', value: `<@${interaction.user.id}>`, inline: true },
@@ -1494,7 +1528,7 @@ function startBot() {
         return;
       }
 
-      const list = guildQueue.queue.slice(0, 10).map((t, idx) => `${idx + 1}. [${t.title}](${t.url}) (Requested by <@${t.requestedBy}>)`).join('\n');
+      const list = guildQueue.queue.slice(0, 10).map((t, idx) => `${idx + 1}. **${t.title}** (Requested by <@${t.requestedBy}>)`).join('\n');
       const queueEmbed = new EmbedBuilder()
         .setColor('#5865F2')
         .setTitle(`🎶 Music Queue — ${guild.name}`)
@@ -1518,7 +1552,7 @@ function startBot() {
       const npEmbed = new EmbedBuilder()
         .setColor('#5865F2')
         .setTitle('🎶 Currently Playing')
-        .setDescription(`### [${current.title}](${current.url})\n\n\`▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬\` [01:45 / 03:30]`)
+        .setDescription(`### **${current.title}**\n\n\`▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬\` [01:45 / 03:30]`)
         .addFields({ name: '👤 Requested By', value: `<@${current.requestedBy}>` })
         .setTimestamp();
 
@@ -1578,26 +1612,9 @@ function startBot() {
       await interaction.reply({ embeds: [radioEmbed] });
       return;
     }
-
-    // ── /activity (Discord Voice Activity launcher)
-    if (commandName === 'activity') {
-      const voiceChannel = interaction.member?.voice?.channel;
-      const actEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle('🚀 Discord Voice Activity')
-        .setDescription('Click below to launch **Watch Together / Music Activity** directly inside your voice channel!')
-        .addFields(
-          { name: '🎧 Launch Activity', value: '[👉 Open Discord Voice Activity](https://discord.com/activities/235088799074484224?referrer_id=872384645373788170)' },
-          { name: '🔊 Channel', value: voiceChannel ? `<#${voiceChannel.id}>` : 'Join a voice channel first!' }
-        )
-        .setTimestamp();
-
-      await interaction.reply({ embeds: [actEmbed] });
-      return;
-    }
   });
 
-  // ── Text Commands (!play, !queue, !skip, !stop, !pause, !resume, !nowplaying, !radio, !activity, !testwelcome)
+  // ── Text Commands (!play, !queue, !skip, !stop, !pause, !resume, !nowplaying, !radio, !testwelcome)
   client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
     const content = message.content.trim();
@@ -1614,31 +1631,23 @@ function startBot() {
         return message.reply('❌ You must join a **Voice Channel** first to play music!');
       }
       if (!songInput) {
-        return message.reply('⚠️ Please provide a song name or paste a song link!\nExample: `!play https://...` or `!play lofi`');
+        return message.reply('⚠️ Please provide a song name or paste a song link!\nExample: `!play enna sona` or `!play https://...`');
       }
 
       const { track, position } = addSongToQueue(message.guild, voiceChannel, message.author, songInput);
       const playEmbed = new EmbedBuilder()
         .setColor('#5865F2')
-        .setTitle(position === 1 ? '🎶 Now Playing Song Link' : '🎵 Song Added to Queue')
-        .setDescription(`### [${track.title}](${track.url})`)
+        .setTitle(position === 1 ? '🎶 Now Playing Song' : '🎵 Song Added to Queue')
+        .setDescription(`### **${track.title}**`)
         .addFields(
           { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
           { name: '👤 Requested By', value: `<@${message.author.id}>`, inline: true },
-          { name: '📊 Position in Queue', value: `#${position}`, inline: true },
-          { name: '🚀 Discord Activity', value: '[Click to open Watch Together / Activity](https://discord.com/activities/235088799074484224?referrer_id=872384645373788170)' }
+          { name: '📊 Position in Queue', value: `#${position}`, inline: true }
         )
         .setFooter({ text: 'Use !queue to view all songs • !stop to leave' })
         .setTimestamp();
 
-      const btnRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setLabel('🎧 Open Music Activity')
-          .setURL('https://discord.com/activities/235088799074484224?referrer_id=872384645373788170')
-          .setStyle(ButtonStyle.Link)
-      );
-
-      return message.reply({ embeds: [playEmbed], components: [btnRow] });
+      return message.reply({ embeds: [playEmbed] });
     }
 
     // ── !queue or !q [song/link]
