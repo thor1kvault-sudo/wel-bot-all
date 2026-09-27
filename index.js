@@ -3,6 +3,9 @@ const {
   GatewayIntentBits,
   Partials,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   PermissionsBitField,
   REST,
   Routes,
@@ -12,6 +15,12 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const https = require('https');
+
+try {
+  const ffmpegStatic = require('ffmpeg-static');
+  if (ffmpegStatic) process.env.FFMPEG_PATH = ffmpegStatic;
+} catch (_) {}
 
 // ─── Global Error Handlers ───────────────────────────────────────────────────
 process.on('unhandledRejection', (reason) => {
@@ -159,9 +168,23 @@ async function playTrackAudio(guildId) {
   const guildQueue = getGuildQueue(guildId);
   if (!guildQueue || !guildQueue.connection) return;
 
+  try {
+    if (guildQueue.connection.state.status !== voiceLib.VoiceConnectionStatus.Ready) {
+      await voiceLib.entersState(guildQueue.connection, voiceLib.VoiceConnectionStatus.Ready, 20_000);
+    }
+  } catch (err) {
+    console.warn('⚠️ Voice connection readiness note:', err.message);
+  }
+
   if (!guildQueue.player) {
     try {
-      guildQueue.player = voiceLib.createAudioPlayer();
+      guildQueue.player = voiceLib.createAudioPlayer({
+        behaviors: {
+          noSubscriber: voiceLib.NoSubscriberBehavior.Play,
+          maxMissedFrames: Math.round(5000 / 20),
+        },
+      });
+
       guildQueue.connection.subscribe(guildQueue.player);
 
       guildQueue.player.on(voiceLib.AudioPlayerStatus.Idle, () => {
@@ -232,17 +255,29 @@ async function playTrackAudio(guildId) {
         ? currentTrack.url
         : 'https://stream.zeno.fm/f3wvbbqmdg8uv';
 
-      const resource = voiceLib.createAudioResource(fallbackUrl, {
-        inputType: voiceLib.StreamType.Arbitrary,
+      https.get(fallbackUrl, (audioStream) => {
+        try {
+          const resource = voiceLib.createAudioResource(audioStream, {
+            inputType: voiceLib.StreamType.Arbitrary,
+            inlineVolume: true,
+          });
+          if (resource.volume) resource.volume.setVolume(1.0);
+          guildQueue.player.play(resource);
+          guildQueue.isPlaying = true;
+          console.log(`🎵 Playing audio stream in guild ${guildId}: ${currentTrack.title}`);
+        } catch (e) {
+          console.error('Audio resource error:', e);
+        }
+      }).on('error', (err) => {
+        console.warn('⚠️ Audio stream request error:', err.message);
       });
-      guildQueue.player.play(resource);
     } else {
-      const resource = voiceLib.createAudioResource(stream, { inputType: type });
+      const resource = voiceLib.createAudioResource(stream, { inputType: type, inlineVolume: true });
+      if (resource.volume) resource.volume.setVolume(1.0);
       guildQueue.player.play(resource);
+      guildQueue.isPlaying = true;
+      console.log(`🎵 Playing stream in guild ${guildId}: ${currentTrack.title}`);
     }
-
-    guildQueue.isPlaying = true;
-    console.log(`🎵 Playing audio in guild ${guildId}: ${currentTrack.title}`);
   } catch (err) {
     console.error('❌ Audio stream error:', err.message);
   }
@@ -1376,7 +1411,14 @@ function startBot() {
         .setFooter({ text: 'Use /queue to view all songs • /stop to leave' })
         .setTimestamp();
 
-      await interaction.reply({ embeds: [playEmbed] });
+      const btnRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel('🎧 Open Music Activity')
+          .setURL('https://discord.com/activities/235088799074484224?referrer_id=872384645373788170')
+          .setStyle(ButtonStyle.Link)
+      );
+
+      await interaction.reply({ embeds: [playEmbed], components: [btnRow] });
       return;
     }
 
@@ -1589,7 +1631,14 @@ function startBot() {
         .setFooter({ text: 'Use !queue to view all songs • !stop to leave' })
         .setTimestamp();
 
-      return message.reply({ embeds: [playEmbed] });
+      const btnRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel('🎧 Open Music Activity')
+          .setURL('https://discord.com/activities/235088799074484224?referrer_id=872384645373788170')
+          .setStyle(ButtonStyle.Link)
+      );
+
+      return message.reply({ embeds: [playEmbed], components: [btnRow] });
     }
 
     // ── !queue or !q [song/link]
