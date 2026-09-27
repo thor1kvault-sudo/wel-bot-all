@@ -226,7 +226,20 @@ async function playTrackAudio(guildId) {
 
       guildQueue.connection.subscribe(guildQueue.player);
 
-      guildQueue.player.on(voiceLib.AudioPlayerStatus.Idle, () => {
+      guildQueue.player.on(voiceLib.AudioPlayerStatus.Idle, (oldState) => {
+        if (oldState.status === voiceLib.AudioPlayerStatus.Playing || oldState.status === voiceLib.AudioPlayerStatus.Buffering) {
+          console.log(`🎵 Track finished in guild ${guildId}, advancing queue`);
+          guildQueue.queue.shift();
+          if (guildQueue.queue.length > 0) {
+            playTrackAudio(guildId);
+          } else {
+            guildQueue.isPlaying = false;
+          }
+        }
+      });
+
+      guildQueue.player.on('error', (err) => {
+        console.warn('⚠️ Audio player error:', err.message);
         guildQueue.queue.shift();
         if (guildQueue.queue.length > 0) {
           playTrackAudio(guildId);
@@ -234,25 +247,23 @@ async function playTrackAudio(guildId) {
           guildQueue.isPlaying = false;
         }
       });
-
-      guildQueue.player.on('error', (err) => {
-        console.warn('⚠️ Audio player error:', err.message);
-        guildQueue.queue.shift();
-        if (guildQueue.queue.length > 0) playTrackAudio(guildId);
-        else guildQueue.isPlaying = false;
-      });
     } catch (e) {
       console.warn('⚠️ Audio player creation error:', e.message);
       return;
     }
+  } else if (guildQueue.connection) {
+    // Re-subscribe if connection was recreated
+    try { guildQueue.connection.subscribe(guildQueue.player); } catch (_) {}
   }
 
   const currentTrack = guildQueue.queue[0];
-  if (!currentTrack) return;
+  if (!currentTrack) {
+    guildQueue.isPlaying = false;
+    return;
+  }
 
   try {
-    let stream = null;
-    let type = voiceLib.StreamType.Arbitrary;
+    let streamObj = null;
 
     if (playdl) {
       try {
@@ -277,19 +288,18 @@ async function playTrackAudio(guildId) {
         if (searched && searched[0] && searched[0].url) {
           const res = await playdl.stream(searched[0].url);
           if (res && res.stream) {
-            stream = res.stream;
-            type = res.type;
+            streamObj = res;
             if (!currentTrack.title || currentTrack.title.startsWith('http') || currentTrack.title.includes('🟢 Spotify Track')) {
               currentTrack.title = searched[0].name || searchQuery;
             }
           }
         }
       } catch (e) {
-        console.warn('⚠️ Audio stream extraction note:', e.message);
+        console.warn('⚠️ Audio stream search error:', e.message);
       }
     }
 
-    if (!stream) {
+    if (!streamObj) {
       const fallbackUrl = currentTrack.url && currentTrack.url.startsWith('http') && !currentTrack.url.includes('youtube.com') && !currentTrack.url.includes('spotify.com')
         ? currentTrack.url
         : 'https://stream.zeno.fm/f3wvbbqmdg8uv';
@@ -298,12 +308,10 @@ async function playTrackAudio(guildId) {
         try {
           const resource = voiceLib.createAudioResource(audioStream, {
             inputType: voiceLib.StreamType.Arbitrary,
-            inlineVolume: true,
           });
-          if (resource.volume) resource.volume.setVolume(1.0);
           guildQueue.player.play(resource);
           guildQueue.isPlaying = true;
-          console.log(`🎵 Playing audio stream in guild ${guildId}: ${currentTrack.title}`);
+          console.log(`🎵 [PLAYING] ${currentTrack.title} in guild ${guildId}`);
         } catch (e) {
           console.error('Audio resource error:', e);
         }
@@ -311,11 +319,12 @@ async function playTrackAudio(guildId) {
         console.warn('⚠️ Audio stream request error:', err.message);
       });
     } else {
-      const resource = voiceLib.createAudioResource(stream, { inputType: type, inlineVolume: true });
-      if (resource.volume) resource.volume.setVolume(1.0);
+      const resource = voiceLib.createAudioResource(streamObj.stream, {
+        inputType: streamObj.type || voiceLib.StreamType.Arbitrary,
+      });
       guildQueue.player.play(resource);
       guildQueue.isPlaying = true;
-      console.log(`🎵 Playing audio in guild ${guildId}: ${currentTrack.title}`);
+      console.log(`🎵 [PLAYING] ${currentTrack.title} in guild ${guildId}`);
     }
   } catch (err) {
     console.error('❌ Audio stream error:', err.message);
@@ -375,6 +384,18 @@ function addSongToQueue(guild, voiceChannel, user, songInput) {
         });
       } catch (e) {
         console.warn('⚠️ Voice connection error:', e.message);
+      }
+    } else if (guildQueue.connection.joinConfig?.channelId !== voiceChannel.id) {
+      try {
+        guildQueue.connection = voiceLib.joinVoiceChannel({
+          channelId: voiceChannel.id,
+          guildId: guild.id,
+          adapterCreator: guild.voiceAdapterCreator,
+          selfDeaf: false,
+          selfMute: false,
+        });
+      } catch (e) {
+        console.warn('⚠️ Voice channel switch note:', e.message);
       }
     }
 
