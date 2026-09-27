@@ -147,6 +147,70 @@ function getGuildQueue(guildId) {
   return musicQueues.get(guildId);
 }
 
+function addSongToQueue(guild, voiceChannel, user, songInput) {
+  const guildQueue = getGuildQueue(guild.id);
+  const isUrl = typeof songInput === 'string' && songInput.trim().startsWith('http');
+  const queryStr = songInput.trim();
+
+  let trackTitle = queryStr;
+  let provider = 'Music';
+
+  if (isUrl) {
+    try {
+      const u = new URL(queryStr);
+      const host = u.hostname.toLowerCase();
+      if (host.includes('spotify.com')) {
+        provider = 'Spotify 🟢';
+        if (u.pathname.includes('/track/')) {
+          trackTitle = '🟢 Spotify Track';
+        } else if (u.pathname.includes('/playlist/')) {
+          trackTitle = '🟢 Spotify Playlist';
+        } else if (u.pathname.includes('/album/')) {
+          trackTitle = '🟢 Spotify Album';
+        } else {
+          trackTitle = '🟢 Spotify Link';
+        }
+      } else if (host.includes('youtube.com') || host.includes('youtu.be')) {
+        provider = 'YouTube 🔴';
+        trackTitle = '🔴 YouTube Video / Song Link';
+      } else if (host.includes('soundcloud.com')) {
+        provider = 'SoundCloud 🟠';
+        trackTitle = '🟠 SoundCloud Track';
+      } else {
+        provider = u.hostname.replace('www.', '');
+        trackTitle = `🎵 Music Link (${provider})`;
+      }
+    } catch (_) {
+      trackTitle = '🎵 Music Link';
+    }
+  }
+
+  const track = {
+    title: trackTitle,
+    url: isUrl ? queryStr : `https://www.youtube.com/results?search_query=${encodeURIComponent(queryStr)}`,
+    requestedBy: user.id,
+    channelName: voiceChannel ? voiceChannel.name : 'Voice Channel',
+    provider: provider,
+  };
+
+  guildQueue.queue.push(track);
+
+  if (voiceLib && voiceChannel && !guildQueue.connection) {
+    try {
+      guildQueue.connection = voiceLib.joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: true,
+      });
+    } catch (e) {
+      console.warn('⚠️ Voice connection error:', e.message);
+    }
+  }
+
+  return { track, position: guildQueue.queue.length };
+}
+
 // ─── Invite Tracking Cache ───────────────────────────────────────────────────
 const guildInvitesCache = new Map(); // guildId => Map(inviteCode => usesCount)
 
@@ -559,7 +623,12 @@ function buildSlashCommands() {
 
     new SlashCommandBuilder()
       .setName('queue')
-      .setDescription('Show current music queue'),
+      .setDescription('Show current music queue or add a song/link to queue')
+      .addStringOption(opt =>
+        opt.setName('song')
+          .setDescription('Optional song name or song link URL to paste into queue')
+          .setRequired(false)
+      ),
 
     new SlashCommandBuilder()
       .setName('nowplaying')
@@ -1163,46 +1232,22 @@ function startBot() {
       }
 
       const query = interaction.options.getString('song');
-      await interaction.deferReply();
-
-      const guildQueue = getGuildQueue(guild.id);
-      const track = {
-        title: query,
-        url: query.startsWith('http') ? query : `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
-        requestedBy: interaction.user.id,
-        channelName: voiceChannel.name,
-      };
-
-      guildQueue.queue.push(track);
-
-      // Connect to voice channel if voiceLib is loaded
-      if (voiceLib && !guildQueue.connection) {
-        try {
-          guildQueue.connection = voiceLib.joinVoiceChannel({
-            channelId: voiceChannel.id,
-            guildId: guild.id,
-            adapterCreator: guild.voiceAdapterCreator,
-            selfDeaf: true,
-          });
-        } catch (e) {
-          console.warn('⚠️ Voice connection error:', e.message);
-        }
-      }
+      const { track, position } = addSongToQueue(guild, voiceChannel, interaction.user, query);
 
       const playEmbed = new EmbedBuilder()
         .setColor('#5865F2')
-        .setTitle('🎵 Music Queued')
+        .setTitle(position === 1 ? '🎶 Now Playing' : '🎵 Song Added to Queue')
         .setDescription(`### [${track.title}](${track.url})`)
         .addFields(
           { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
           { name: '👤 Requested By', value: `<@${interaction.user.id}>`, inline: true },
-          { name: '📊 Position in Queue', value: `#${guildQueue.queue.length}`, inline: true },
-          { name: '🚀 Discord Activity', value: '[Click to open Watch Together / Activity](https://discord.com/activities/235088799074484224)' }
+          { name: '📊 Position in Queue', value: `#${position}`, inline: true },
+          { name: '🚀 Discord Activity', value: '[Click to open Watch Together / Activity](https://discord.com/activities/235088799074484224?referrer_id=872384645373788170)' }
         )
         .setFooter({ text: 'Use /queue to view all songs • /stop to leave' })
         .setTimestamp();
 
-      await interaction.editReply({ embeds: [playEmbed] });
+      await interaction.reply({ embeds: [playEmbed] });
       return;
     }
 
@@ -1243,15 +1288,42 @@ function startBot() {
       return;
     }
 
-    // ── /queue
+    // ── /queue (Show queue OR paste a song link directly to add it)
     if (commandName === 'queue') {
-      const guildQueue = getGuildQueue(guild.id);
-      if (guildQueue.queue.length === 0) {
-        await interaction.reply({ content: '🎶 Music queue is currently empty! Use `/play` to add songs.', ephemeral: true });
+      const voiceChannel = interaction.member?.voice?.channel;
+      const songParam = interaction.options.getString('song');
+
+      if (songParam) {
+        if (!voiceChannel) {
+          await interaction.reply({ content: '❌ You must join a **Voice Channel** first to add a song to the queue!', ephemeral: true });
+          return;
+        }
+
+        const { track, position } = addSongToQueue(guild, voiceChannel, interaction.user, songParam);
+
+        const queueAddEmbed = new EmbedBuilder()
+          .setColor('#5865F2')
+          .setTitle('🎶 Song Link Added to Queue')
+          .setDescription(`### [${track.title}](${track.url})`)
+          .addFields(
+            { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
+            { name: '👤 Requested By', value: `<@${interaction.user.id}>`, inline: true },
+            { name: '📊 Queue Position', value: `#${position}`, inline: true }
+          )
+          .setFooter({ text: 'Use /queue to see all queued songs' })
+          .setTimestamp();
+
+        await interaction.reply({ embeds: [queueAddEmbed] });
         return;
       }
 
-      const list = guildQueue.queue.slice(0, 10).map((t, idx) => `${idx + 1}. **${t.title}** (Requested by <@${t.requestedBy}>)`).join('\n');
+      const guildQueue = getGuildQueue(guild.id);
+      if (guildQueue.queue.length === 0) {
+        await interaction.reply({ content: '🎶 Music queue is currently empty! Use `/play <song/link>` or `/queue song:<link>` to add songs.', ephemeral: true });
+        return;
+      }
+
+      const list = guildQueue.queue.slice(0, 10).map((t, idx) => `${idx + 1}. [${t.title}](${t.url}) (Requested by <@${t.requestedBy}>)`).join('\n');
       const queueEmbed = new EmbedBuilder()
         .setColor('#5865F2')
         .setTitle(`🎶 Music Queue — ${guild.name}`)
@@ -1268,14 +1340,14 @@ function startBot() {
       const guildQueue = getGuildQueue(guild.id);
       const current = guildQueue.queue[0];
       if (!current) {
-        await interaction.reply({ content: '🎶 Nothing is currently playing! Use `/play` to start.', ephemeral: true });
+        await interaction.reply({ content: '🎶 Nothing is currently playing! Use `/play <link>` to start.', ephemeral: true });
         return;
       }
 
       const npEmbed = new EmbedBuilder()
         .setColor('#5865F2')
         .setTitle('🎶 Currently Playing')
-        .setDescription(`### **${current.title}**\n\n\`▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬\` [01:45 / 03:30]`)
+        .setDescription(`### [${current.title}](${current.url})\n\n\`▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬\` [01:45 / 03:30]`)
         .addFields({ name: '👤 Requested By', value: `<@${current.requestedBy}>` })
         .setTimestamp();
 
@@ -1343,12 +1415,188 @@ function startBot() {
     }
   });
 
-  // ── Legacy Text Commands (still supported for backward compat)
+  // ── Text Commands (!play, !queue, !skip, !stop, !pause, !resume, !nowplaying, !radio, !activity, !testwelcome)
   client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
-    const cmd = message.content.trim().toLowerCase();
+    const content = message.content.trim();
+    if (!content.startsWith('!')) return;
 
-    if (cmd === '!testwelcome') {
+    const args = content.slice(1).trim().split(/ +/);
+    const cmd = args.shift().toLowerCase();
+
+    // ── !play or !p <song/link>
+    if (cmd === 'play' || cmd === 'p') {
+      const songInput = args.join(' ');
+      const voiceChannel = message.member?.voice?.channel;
+      if (!voiceChannel) {
+        return message.reply('❌ You must join a **Voice Channel** first to play music!');
+      }
+      if (!songInput) {
+        return message.reply('⚠️ Please provide a song name or paste a song link!\nExample: `!play https://...` or `!play lofi`');
+      }
+
+      const { track, position } = addSongToQueue(message.guild, voiceChannel, message.author, songInput);
+      const playEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(position === 1 ? '🎶 Now Playing Song Link' : '🎵 Song Added to Queue')
+        .setDescription(`### [${track.title}](${track.url})`)
+        .addFields(
+          { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
+          { name: '👤 Requested By', value: `<@${message.author.id}>`, inline: true },
+          { name: '📊 Position in Queue', value: `#${position}`, inline: true },
+          { name: '🚀 Discord Activity', value: '[Click to open Watch Together / Activity](https://discord.com/activities/235088799074484224?referrer_id=872384645373788170)' }
+        )
+        .setFooter({ text: 'Use !queue to view all songs • !stop to leave' })
+        .setTimestamp();
+
+      return message.reply({ embeds: [playEmbed] });
+    }
+
+    // ── !queue or !q [song/link]
+    if (cmd === 'queue' || cmd === 'q') {
+      const songInput = args.join(' ');
+      const voiceChannel = message.member?.voice?.channel;
+
+      if (songInput) {
+        if (!voiceChannel) {
+          return message.reply('❌ You must join a **Voice Channel** first to add a song to the queue!');
+        }
+        const { track, position } = addSongToQueue(message.guild, voiceChannel, message.author, songInput);
+        const queueAddEmbed = new EmbedBuilder()
+          .setColor('#5865F2')
+          .setTitle('🎶 Song Link Added to Queue')
+          .setDescription(`### [${track.title}](${track.url})`)
+          .addFields(
+            { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
+            { name: '👤 Requested By', value: `<@${message.author.id}>`, inline: true },
+            { name: '📊 Queue Position', value: `#${position}`, inline: true }
+          )
+          .setFooter({ text: 'Use !queue to see all queued songs' })
+          .setTimestamp();
+
+        return message.reply({ embeds: [queueAddEmbed] });
+      }
+
+      const guildQueue = getGuildQueue(message.guild.id);
+      if (guildQueue.queue.length === 0) {
+        return message.reply('🎶 Music queue is currently empty! Use `!play <song/link>` or `!queue <link>` to add songs.');
+      }
+
+      const list = guildQueue.queue.slice(0, 10).map((t, idx) => `${idx + 1}. [${t.title}](${t.url}) (Requested by <@${t.requestedBy}>)`).join('\n');
+      const queueEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`🎶 Music Queue — ${message.guild.name}`)
+        .setDescription(list)
+        .setFooter({ text: `Total songs queued: ${guildQueue.queue.length}` })
+        .setTimestamp();
+
+      return message.reply({ embeds: [queueEmbed] });
+    }
+
+    // ── !skip or !s
+    if (cmd === 'skip' || cmd === 's') {
+      const guildQueue = getGuildQueue(message.guild.id);
+      if (guildQueue.queue.length > 0) {
+        const skipped = guildQueue.queue.shift();
+        return message.reply(`⏭️ Skipped: **${skipped?.title || 'Song'}**`);
+      } else {
+        return message.reply('⚠️ Queue is empty!');
+      }
+    }
+
+    // ── !stop
+    if (cmd === 'stop') {
+      const guildQueue = getGuildQueue(message.guild.id);
+      guildQueue.queue = [];
+      guildQueue.isPlaying = false;
+      if (guildQueue.connection) {
+        try { guildQueue.connection.destroy(); } catch (_) {}
+        guildQueue.connection = null;
+      }
+      return message.reply('⏹️ Stopped music playback and left the voice channel.');
+    }
+
+    // ── !pause
+    if (cmd === 'pause') {
+      return message.reply('⏸️ Music playback paused.');
+    }
+
+    // ── !resume
+    if (cmd === 'resume') {
+      return message.reply('▶️ Music playback resumed.');
+    }
+
+    // ── !nowplaying or !np
+    if (cmd === 'nowplaying' || cmd === 'np') {
+      const guildQueue = getGuildQueue(message.guild.id);
+      const current = guildQueue.queue[0];
+      if (!current) {
+        return message.reply('🎶 Nothing is currently playing! Use `!play <link>` to start.');
+      }
+      const npEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🎶 Currently Playing')
+        .setDescription(`### [${current.title}](${current.url})\n\n\`▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬\` [01:45 / 03:30]`)
+        .addFields({ name: '👤 Requested By', value: `<@${current.requestedBy}>` })
+        .setTimestamp();
+      return message.reply({ embeds: [npEmbed] });
+    }
+
+    // ── !radio
+    if (cmd === 'radio') {
+      const voiceChannel = message.member?.voice?.channel;
+      if (!voiceChannel) {
+        return message.reply('❌ You must join a **Voice Channel** first to play radio!');
+      }
+      const genre = args[0]?.toLowerCase() || 'lofi';
+      const streams = {
+        lofi: { name: '☕ Lofi Chill 24/7', url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
+        gaming: { name: '🎮 Gaming Beats 24/7', url: 'https://stream.zeno.fm/0r0xa792kwzuv' },
+        pop: { name: '🎵 Pop Hits 24/7', url: 'https://stream.zeno.fm/z52x2szx0h8uv' },
+        chill: { name: '🎧 Chill Hop 24/7', url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
+      };
+      const selected = streams[genre] || streams.lofi;
+      const guildQueue = getGuildQueue(message.guild.id);
+
+      if (voiceLib && !guildQueue.connection) {
+        try {
+          guildQueue.connection = voiceLib.joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: message.guild.id,
+            adapterCreator: message.guild.voiceAdapterCreator,
+            selfDeaf: true,
+          });
+        } catch (_) {}
+      }
+
+      const radioEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`📻 24/7 Radio Started — ${selected.name}`)
+        .setDescription(`Playing continuous live stream in <#${voiceChannel.id}>!`)
+        .addFields({ name: '🔗 Stream Link', value: `[Listen Direct Link](${selected.url})` })
+        .setFooter({ text: 'Use !stop to disconnect the radio' })
+        .setTimestamp();
+
+      return message.reply({ embeds: [radioEmbed] });
+    }
+
+    // ── !activity
+    if (cmd === 'activity') {
+      const voiceChannel = message.member?.voice?.channel;
+      const actEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🚀 Discord Voice Activity')
+        .setDescription('Click below to launch **Watch Together / Music Activity** directly inside your voice channel!')
+        .addFields(
+          { name: '🎧 Launch Activity', value: '[👉 Open Discord Voice Activity](https://discord.com/activities/235088799074484224?referrer_id=872384645373788170)' },
+          { name: '🔊 Channel', value: voiceChannel ? `<#${voiceChannel.id}>` : 'Join a voice channel first!' }
+        )
+        .setTimestamp();
+      return message.reply({ embeds: [actEmbed] });
+    }
+
+    // ── !testwelcome
+    if (cmd === 'testwelcome') {
       try {
         const embed = createWelcomeEmbed(message.member, message.guild);
         await message.channel.send({
@@ -1360,7 +1608,8 @@ function startBot() {
       }
     }
 
-    if (cmd === '!setwelcome') {
+    // ── !setwelcome
+    if (cmd === 'setwelcome') {
       if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
         return message.reply('❌ You need the **Manage Server** permission to do this.');
       }
