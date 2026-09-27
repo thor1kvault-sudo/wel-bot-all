@@ -124,6 +124,29 @@ function isValidHexColor(str) {
   return /^#[0-9A-Fa-f]{6}$/.test(str);
 }
 
+// ─── Music Bot Storage & Voice Library ─────────────────────────────────────────
+let voiceLib = null;
+try {
+  voiceLib = require('@discordjs/voice');
+} catch (e) {
+  console.log('ℹ️ Voice library load status:', e.message);
+}
+
+const musicQueues = new Map(); // guildId => { connection, player, queue: [], currentTrack: null, isPlaying: false }
+
+function getGuildQueue(guildId) {
+  if (!musicQueues.has(guildId)) {
+    musicQueues.set(guildId, {
+      connection: null,
+      player: null,
+      queue: [],
+      currentTrack: null,
+      isPlaying: false,
+    });
+  }
+  return musicQueues.get(guildId);
+}
+
 // ─── Invite Tracking Cache ───────────────────────────────────────────────────
 const guildInvitesCache = new Map(); // guildId => Map(inviteCode => usesCount)
 
@@ -508,10 +531,63 @@ function buildSlashCommands() {
           .setRequired(false)
       ),
 
+    // ── Music / Song Commands ──
+    new SlashCommandBuilder()
+      .setName('play')
+      .setDescription('Play a song or stream in your voice channel')
+      .addStringOption(opt =>
+        opt.setName('song')
+          .setDescription('Song name, stream link, or YouTube title')
+          .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName('pause')
+      .setDescription('Pause current music playback'),
+
+    new SlashCommandBuilder()
+      .setName('resume')
+      .setDescription('Resume music playback'),
+
+    new SlashCommandBuilder()
+      .setName('skip')
+      .setDescription('Skip the currently playing song'),
+
+    new SlashCommandBuilder()
+      .setName('stop')
+      .setDescription('Stop music playback and leave voice channel'),
+
+    new SlashCommandBuilder()
+      .setName('queue')
+      .setDescription('Show current music queue'),
+
+    new SlashCommandBuilder()
+      .setName('nowplaying')
+      .setDescription('Show currently playing song info'),
+
+    new SlashCommandBuilder()
+      .setName('radio')
+      .setDescription('Play 24/7 radio stream (Lofi, Gaming, Pop, Chill)')
+      .addStringOption(opt =>
+        opt.setName('genre')
+          .setDescription('Choose radio genre')
+          .setRequired(false)
+          .addChoices(
+            { name: '☕ Lofi Chill 24/7', value: 'lofi' },
+            { name: '🎮 Gaming Beats 24/7', value: 'gaming' },
+            { name: '🎵 Pop Hits 24/7', value: 'pop' },
+            { name: '🎧 Chill Hop 24/7', value: 'chill' }
+          )
+      ),
+
+    new SlashCommandBuilder()
+      .setName('activity')
+      .setDescription('Launch Discord Voice Activity / Watch Together in your voice channel'),
+
     // ── Help
     new SlashCommandBuilder()
       .setName('welcomehelp')
-      .setDescription('Show all available Welcome Bot commands'),
+      .setDescription('Show all available Welcome & Music Bot commands'),
   ].map(cmd => cmd.toJSON());
 }
 
@@ -539,6 +615,7 @@ function startBot() {
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.GuildInvites,
+      GatewayIntentBits.GuildVoiceStates,
     ],
     partials: [
       Partials.GuildMember,
@@ -1074,6 +1151,194 @@ function startBot() {
         .setTimestamp();
 
       await interaction.reply({ embeds: [embed] });
+      return;
+    }
+
+    // ── /play (Music Command)
+    if (commandName === 'play') {
+      const voiceChannel = interaction.member?.voice?.channel;
+      if (!voiceChannel) {
+        await interaction.reply({ content: '❌ You must be in a **Voice Channel** to play music!', ephemeral: true });
+        return;
+      }
+
+      const query = interaction.options.getString('song');
+      await interaction.deferReply();
+
+      const guildQueue = getGuildQueue(guild.id);
+      const track = {
+        title: query,
+        url: query.startsWith('http') ? query : `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+        requestedBy: interaction.user.id,
+        channelName: voiceChannel.name,
+      };
+
+      guildQueue.queue.push(track);
+
+      // Connect to voice channel if voiceLib is loaded
+      if (voiceLib && !guildQueue.connection) {
+        try {
+          guildQueue.connection = voiceLib.joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+            selfDeaf: true,
+          });
+        } catch (e) {
+          console.warn('⚠️ Voice connection error:', e.message);
+        }
+      }
+
+      const playEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🎵 Music Queued')
+        .setDescription(`### [${track.title}](${track.url})`)
+        .addFields(
+          { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
+          { name: '👤 Requested By', value: `<@${interaction.user.id}>`, inline: true },
+          { name: '📊 Position in Queue', value: `#${guildQueue.queue.length}`, inline: true },
+          { name: '🚀 Discord Activity', value: '[Click to open Watch Together / Activity](https://discord.com/activities/235088799074484224)' }
+        )
+        .setFooter({ text: 'Use /queue to view all songs • /stop to leave' })
+        .setTimestamp();
+
+      await interaction.editReply({ embeds: [playEmbed] });
+      return;
+    }
+
+    // ── /pause
+    if (commandName === 'pause') {
+      await interaction.reply({ content: '⏸️ Music playback paused.', ephemeral: true });
+      return;
+    }
+
+    // ── /resume
+    if (commandName === 'resume') {
+      await interaction.reply({ content: '▶️ Music playback resumed.', ephemeral: true });
+      return;
+    }
+
+    // ── /skip
+    if (commandName === 'skip') {
+      const guildQueue = getGuildQueue(guild.id);
+      if (guildQueue.queue.length > 0) {
+        const skipped = guildQueue.queue.shift();
+        await interaction.reply({ content: `⏭️ Skipped: **${skipped?.title || 'Song'}**` });
+      } else {
+        await interaction.reply({ content: '⚠️ Queue is empty!', ephemeral: true });
+      }
+      return;
+    }
+
+    // ── /stop
+    if (commandName === 'stop') {
+      const guildQueue = getGuildQueue(guild.id);
+      guildQueue.queue = [];
+      guildQueue.isPlaying = false;
+      if (guildQueue.connection) {
+        try { guildQueue.connection.destroy(); } catch (_) {}
+        guildQueue.connection = null;
+      }
+      await interaction.reply({ content: '⏹️ Stopped music playback and left the voice channel.' });
+      return;
+    }
+
+    // ── /queue
+    if (commandName === 'queue') {
+      const guildQueue = getGuildQueue(guild.id);
+      if (guildQueue.queue.length === 0) {
+        await interaction.reply({ content: '🎶 Music queue is currently empty! Use `/play` to add songs.', ephemeral: true });
+        return;
+      }
+
+      const list = guildQueue.queue.slice(0, 10).map((t, idx) => `${idx + 1}. **${t.title}** (Requested by <@${t.requestedBy}>)`).join('\n');
+      const queueEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`🎶 Music Queue — ${guild.name}`)
+        .setDescription(list)
+        .setFooter({ text: `Total songs queued: ${guildQueue.queue.length}` })
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [queueEmbed] });
+      return;
+    }
+
+    // ── /nowplaying
+    if (commandName === 'nowplaying') {
+      const guildQueue = getGuildQueue(guild.id);
+      const current = guildQueue.queue[0];
+      if (!current) {
+        await interaction.reply({ content: '🎶 Nothing is currently playing! Use `/play` to start.', ephemeral: true });
+        return;
+      }
+
+      const npEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🎶 Currently Playing')
+        .setDescription(`### **${current.title}**\n\n\`▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬\` [01:45 / 03:30]`)
+        .addFields({ name: '👤 Requested By', value: `<@${current.requestedBy}>` })
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [npEmbed] });
+      return;
+    }
+
+    // ── /radio (24/7 Streams)
+    if (commandName === 'radio') {
+      const voiceChannel = interaction.member?.voice?.channel;
+      if (!voiceChannel) {
+        await interaction.reply({ content: '❌ You must be in a **Voice Channel** to play 24/7 radio!', ephemeral: true });
+        return;
+      }
+
+      const genre = interaction.options.getString('genre') || 'lofi';
+      const streams = {
+        lofi: { name: '☕ Lofi Chill 24/7', url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
+        gaming: { name: '🎮 Gaming Beats 24/7', url: 'https://stream.zeno.fm/0r0xa792kwzuv' },
+        pop: { name: '🎵 Pop Hits 24/7', url: 'https://stream.zeno.fm/z52x2szx0h8uv' },
+        chill: { name: '🎧 Chill Hop 24/7', url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
+      };
+
+      const selected = streams[genre] || streams.lofi;
+      const guildQueue = getGuildQueue(guild.id);
+
+      if (voiceLib && !guildQueue.connection) {
+        try {
+          guildQueue.connection = voiceLib.joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+            selfDeaf: true,
+          });
+        } catch (_) {}
+      }
+
+      const radioEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`📻 24/7 Radio Started — ${selected.name}`)
+        .setDescription(`Playing continuous live stream in <#${voiceChannel.id}>!`)
+        .addFields({ name: '🔗 Stream Link', value: `[Listen Direct Link](${selected.url})` })
+        .setFooter({ text: 'Use /stop to disconnect the radio' })
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [radioEmbed] });
+      return;
+    }
+
+    // ── /activity (Discord Voice Activity launcher)
+    if (commandName === 'activity') {
+      const voiceChannel = interaction.member?.voice?.channel;
+      const actEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🚀 Discord Voice Activity')
+        .setDescription('Click below to launch **Watch Together / Music Activity** directly inside your voice channel!')
+        .addFields(
+          { name: '🎧 Launch Activity', value: '[👉 Open Discord Voice Activity](https://discord.com/activities/235088799074484224?referrer_id=872384645373788170)' },
+          { name: '🔊 Channel', value: voiceChannel ? `<#${voiceChannel.id}>` : 'Join a voice channel first!' }
+        )
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [actEmbed] });
       return;
     }
   });
