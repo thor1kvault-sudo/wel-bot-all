@@ -660,16 +660,38 @@ function buildSlashCommands() {
   ].map(cmd => cmd.toJSON());
 }
 
-// ─── Register Global Slash Commands (Independent for every server) ───────────
-async function registerSlashCommands(client) {
+async function registerCommandsForGuild(client, guild) {
   const commands = buildSlashCommands();
   const token = process.env.DISCORD_TOKEN;
+  if (!token) return;
   const rest = new REST({ version: '10' }).setToken(token);
 
   try {
-    console.log('⏳ Registering global slash commands...');
+    await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
+    console.log(`✅ Instant slash commands registered for server: "${guild.name}" (${guild.id})`);
+  } catch (err) {
+    console.warn(`⚠️ Guild slash command registration note for ${guild.name}:`, err.message);
+  }
+}
+
+// ─── Register Slash Commands (Instant Sync for connected servers + Global) ─────
+async function registerSlashCommands(client) {
+  const commands = buildSlashCommands();
+  const token = process.env.DISCORD_TOKEN;
+  if (!token) return;
+  const rest = new REST({ version: '10' }).setToken(token);
+
+  try {
+    console.log('⏳ Registering instant slash commands across all connected servers...');
+    
+    // 1. Register per-guild for INSTANT sync in Discord UI!
+    for (const guild of client.guilds.cache.values()) {
+      await registerCommandsForGuild(client, guild);
+    }
+
+    // 2. Register global application commands
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('✅ Global slash commands registered!');
+    console.log('✅ Global slash commands updated!');
   } catch (err) {
     console.error('⚠️ Slash command registration error:', err.message);
   }
