@@ -45,24 +45,41 @@ if (!fs.existsSync(GUILD_CONFIGS_DIR)) {
 
 /**
  * Returns the default config structure for a new server.
- * Uses the guild's actual name, icon, and banner automatically.
+ * Preserves exact THOR APEX welcome text for THOR APEX server,
+ * while automatically adapting to any other public server.
  */
 function getDefaultConfig(guild) {
+  const isThorApex = guild?.name?.toLowerCase()?.includes('thor apex') || guild?.name?.toLowerCase()?.includes('thor');
+  const serverName = guild ? guild.name : 'Your Server';
+
+  // Auto-detect channel IDs if guild channels are cached
+  let welcomeId = '', rulesId = '', rolesId = '', generalId = '', leaveId = '';
+  if (guild?.channels?.cache) {
+    const channels = guild.channels.cache;
+    welcomeId = channels.find(c => c.isTextBased?.() && /welcome|join|greet/i.test(c.name))?.id || '';
+    rulesId = channels.find(c => c.isTextBased?.() && /rule|guideline/i.test(c.name))?.id || '';
+    rolesId = channels.find(c => c.isTextBased?.() && /role/i.test(c.name))?.id || '';
+    generalId = channels.find(c => c.isTextBased?.() && /general|chat|main/i.test(c.name))?.id || '';
+    leaveId = channels.find(c => c.isTextBased?.() && /leave|goodbye|farewell|bye|exit/i.test(c.name))?.id || '';
+  }
+
   return {
-    serverName: guild ? guild.name : 'Your Server',
-    welcomeTitle: guild ? `Welcome to ${guild.name}!` : 'Welcome!',
+    serverName: serverName,
+    welcomeTitle: isThorApex ? 'WELCOME TO THOR APEX !' : `Welcome to ${serverName}!`,
     embedColor: '#5865F2',
     channels: {
-      welcomeChannelId: '',
-      rulesChannelId: '',
-      rolesChannelId: '',
-      generalChannelId: '',
+      welcomeChannelId: welcomeId,
+      leaveChannelId: leaveId,
+      rulesChannelId: rulesId,
+      rolesChannelId: rolesId,
+      generalChannelId: generalId,
     },
     messages: {
       greetingPrefix: 'HEY BUDDY!',
-      welcomeSubtitle: guild ? `Welcome to ${guild.name}!` : 'Welcome to our server!',
+      welcomeSubtitle: isThorApex ? 'Welcome to THOR APEX !' : `Welcome to ${serverName}!`,
       rulesText: 'Please read our rules:',
-      outroText: 'Hope you enjoy your stay here! 🎉',
+      outroText: isThorApex ? 'Hope you enjoy your stay in THOR APEX! 🎉' : 'Hope you enjoy your stay here! 🎉',
+      leaveText: 'Goodbye {username}! We are sad to see you go. We now have **{count}** members.',
     },
     // If false, uses Discord CDN URLs set by admin; if true, auto-uses server icon/banner
     useServerAssets: true,
@@ -107,26 +124,77 @@ function isValidHexColor(str) {
   return /^#[0-9A-Fa-f]{6}$/.test(str);
 }
 
+// ─── Invite Tracking Cache ───────────────────────────────────────────────────
+const guildInvitesCache = new Map(); // guildId => Map(inviteCode => usesCount)
+
+async function cacheGuildInvites(guild) {
+  try {
+    if (!guild || !guild.members?.me?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) return;
+    const invites = await guild.invites.fetch().catch(() => null);
+    if (!invites) return;
+    const inviteMap = new Map();
+    invites.forEach(inv => inviteMap.set(inv.code, inv.uses || 0));
+    guildInvitesCache.set(guild.id, inviteMap);
+  } catch (e) {
+    // ignore missing permissions
+  }
+}
+
+async function findInviter(guild) {
+  try {
+    if (!guild || !guild.members?.me?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) return null;
+    const cachedInvites = guildInvitesCache.get(guild.id) || new Map();
+    const newInvites = await guild.invites.fetch().catch(() => null);
+
+    if (!newInvites) return null;
+
+    let usedInvite = null;
+    newInvites.forEach(inv => {
+      const prevUses = cachedInvites.get(inv.code) || 0;
+      if (inv.uses > prevUses && !usedInvite) {
+        usedInvite = inv;
+      }
+    });
+
+    // Update cache
+    const updatedMap = new Map();
+    newInvites.forEach(inv => updatedMap.set(inv.code, inv.uses || 0));
+    guildInvitesCache.set(guild.id, updatedMap);
+
+    if (usedInvite && usedInvite.inviter) {
+      let totalUses = 0;
+      newInvites.forEach(inv => {
+        if (inv.inviter?.id === usedInvite.inviter.id) {
+          totalUses += (inv.uses || 0);
+        }
+      });
+      return {
+        inviterId: usedInvite.inviter.id,
+        inviterTag: usedInvite.inviter.tag,
+        uses: totalUses,
+        code: usedInvite.code,
+      };
+    }
+  } catch (e) {
+    console.warn('⚠️ Invite tracking note:', e.message);
+  }
+  return null;
+}
+
 // ─── Welcome Embed Builder ────────────────────────────────────────────────────
-function createWelcomeEmbed(member, guild) {
+function createWelcomeEmbed(member, guild, inviterData = null) {
   const config = loadGuildConfig(guild);
 
-  // Resolve logo: use server icon if available & allowed, else fallback to custom URL
-  let logoUrl = null;
-  if (config.useServerAssets !== false && guild.iconURL) {
-    logoUrl = guild.iconURL({ size: 1024, dynamic: true });
-  }
-  if (!logoUrl && config.customImages?.logoUrl?.startsWith('http')) {
-    logoUrl = config.customImages.logoUrl;
+  // Resolve logo: custom URL first, then auto-detect server icon from Discord
+  let logoUrl = config.customImages?.logoUrl?.startsWith('http') ? config.customImages.logoUrl : null;
+  if (!logoUrl && guild?.iconURL) {
+    logoUrl = guild.iconURL({ size: 1024, forceStatic: false });
   }
 
-  // Resolve banner: use server banner if available & allowed, else custom URL
-  let bannerUrl = null;
-  if (config.useServerAssets !== false && guild.bannerURL) {
+  // Resolve banner: custom URL first, then auto-detect server banner from Discord
+  let bannerUrl = config.customImages?.bannerUrl?.startsWith('http') ? config.customImages.bannerUrl : null;
+  if (!bannerUrl && guild?.bannerURL) {
     bannerUrl = guild.bannerURL({ size: 1024 });
-  }
-  if (!bannerUrl && config.customImages?.bannerUrl?.startsWith('http')) {
-    bannerUrl = config.customImages.bannerUrl;
   }
 
   const userId = member?.user?.id ?? member?.id ?? '000000000000000000';
@@ -142,16 +210,16 @@ function createWelcomeEmbed(member, guild) {
   lines.push(`### ${config.messages?.greetingPrefix || 'HEY BUDDY!'} <@${userId}>\n`);
   lines.push(`**${config.messages?.welcomeSubtitle || `Welcome to ${guildName}!`}**\n`);
 
-  if (config.channels?.rulesChannelId) {
-    lines.push(`**${config.messages?.rulesText || 'Please read our rules:'}** ${rulesTag}\n`);
-  }
-  if (config.channels?.rolesChannelId) {
-    lines.push(`**🎭 Get your roles here:** ${rolesTag}\n`);
-  }
-  if (config.channels?.generalChannelId) {
-    lines.push(`**💬 Start chatting in:** ${generalTag}\n`);
+  // Inviter Info
+  if (inviterData && inviterData.inviterId) {
+    lines.push(`**📩 Invited by:** <@${inviterData.inviterId}> (Total Invites: **${inviterData.uses}**)\n`);
+  } else {
+    lines.push(`**📩 Invited by:** Direct Link / Unknown\n`);
   }
 
+  lines.push(`**${config.messages?.rulesText || 'Please read our rules:'}** ${rulesTag}\n`);
+  lines.push(`**🎭 Get your roles here:** ${rolesTag}\n`);
+  lines.push(`**💬 Start chatting in:** ${generalTag}\n`);
   lines.push(`\n### ${config.messages?.outroText || 'Hope you enjoy your stay here! 🎉'}`);
 
   const embedColor = isValidHexColor(config.embedColor) ? config.embedColor : '#5865F2';
@@ -167,7 +235,7 @@ function createWelcomeEmbed(member, guild) {
   embed.setAuthor(authorOptions);
 
   // Thumbnail (member avatar > server icon)
-  const avatarUrl = member?.user?.displayAvatarURL({ size: 256, dynamic: true });
+  const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
   if (avatarUrl) embed.setThumbnail(avatarUrl);
   else if (logoUrl) embed.setThumbnail(logoUrl);
 
@@ -175,7 +243,44 @@ function createWelcomeEmbed(member, guild) {
   if (bannerUrl) embed.setImage(bannerUrl);
 
   // Footer
-  const footerOptions = { text: guildName };
+  const footerOptions = { text: `${guildName} • Member #${guild.memberCount || '1'}` };
+  if (logoUrl) footerOptions.iconURL = logoUrl;
+  embed.setFooter(footerOptions);
+
+  return embed;
+}
+
+// ─── Leave Embed Builder ─────────────────────────────────────────────────────
+function createLeaveEmbed(member, guild) {
+  const config = loadGuildConfig(guild);
+  const guildName = guild.name || config.serverName || 'Server';
+  const username = member.user?.tag || member.user?.username || 'Member';
+
+  let logoUrl = config.customImages?.logoUrl?.startsWith('http') ? config.customImages.logoUrl : null;
+  if (!logoUrl && guild?.iconURL) {
+    logoUrl = guild.iconURL({ size: 1024, forceStatic: false });
+  }
+
+  const rawMsg = config.messages?.leaveText || 'Goodbye **{username}**! We are sad to see you go. We now have **{count}** members.';
+  const formattedMsg = rawMsg
+    .replace(/{user}/g, `<@${member.id}>`)
+    .replace(/{username}/g, username)
+    .replace(/{server}/g, guildName)
+    .replace(/{count}/g, guild.memberCount || 0);
+
+  const embedColor = isValidHexColor(config.embedColor) ? config.embedColor : '#ED4245';
+
+  const embed = new EmbedBuilder()
+    .setColor(embedColor)
+    .setTitle(`👋 Member Left — ${guildName}`)
+    .setDescription(`### ${formattedMsg}`)
+    .setTimestamp();
+
+  const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
+  if (avatarUrl) embed.setThumbnail(avatarUrl);
+  else if (logoUrl) embed.setThumbnail(logoUrl);
+
+  const footerOptions = { text: `${guildName} • Total Members: ${guild.memberCount || 0}` };
   if (logoUrl) footerOptions.iconURL = logoUrl;
   embed.setFooter(footerOptions);
 
@@ -272,19 +377,87 @@ function buildSlashCommands() {
       .setDescription('Reset all welcome settings for this server back to defaults')
       .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 
-    // ── Auto Setup (detects channels automatically)
+    // ── Setup: Leave Channel
     new SlashCommandBuilder()
-      .setName('setup')
-      .setDescription('Auto-setup the welcome bot for this server (detects channels automatically)')
+      .setName('setleave')
+      .setDescription('Set the leave/goodbye channel for this server')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addChannelOption(opt =>
+        opt.setName('channel')
+          .setDescription('The channel where leave/goodbye messages will be sent')
+          .setRequired(true)
+      ),
+
+    // ── Customize: Leave Message Text
+    new SlashCommandBuilder()
+      .setName('setleavetext')
+      .setDescription('Customize the member leave message text')
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
       .addStringOption(opt =>
+        opt.setName('message')
+          .setDescription('Message text (use {username}, {user}, {server}, {count})')
+          .setRequired(true)
+      ),
+
+    // ── Test Leave
+    new SlashCommandBuilder()
+      .setName('testleave')
+      .setDescription('Preview the leave/goodbye message for this server'),
+
+    // ── Check Invites
+    new SlashCommandBuilder()
+      .setName('myinvites')
+      .setDescription('Check how many members you have invited to this server'),
+
+    // ── Auto Setup (detects channels, logo, banner automatically)
+    new SlashCommandBuilder()
+      .setName('setup')
+      .setDescription('Auto-setup the welcome bot for this server (detects channels, logo, banner)')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addAttachmentOption(opt =>
+        opt.setName('logo_file')
+          .setDescription('Upload a custom logo image file from your PC/phone')
+          .setRequired(false)
+      )
+      .addAttachmentOption(opt =>
+        opt.setName('banner_file')
+          .setDescription('Upload a custom banner image file from your PC/phone')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
         opt.setName('color')
-          .setDescription('Embed color (e.g. #FF5733) — leave empty to use default blue')
+          .setDescription('Embed color (e.g. #FF5733) — leave empty for default')
           .setRequired(false)
       )
       .addStringOption(opt =>
         opt.setName('greeting')
           .setDescription('Custom greeting text (e.g. "HEY THERE!") — leave empty for default')
+          .setRequired(false)
+      ),
+
+    // ── Customize Logo & Banner
+    new SlashCommandBuilder()
+      .setName('setimages')
+      .setDescription('Set custom logo or banner image for welcome messages (Upload file or paste URL)')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addAttachmentOption(opt =>
+        opt.setName('logo_file')
+          .setDescription('Upload custom logo image file')
+          .setRequired(false)
+      )
+      .addAttachmentOption(opt =>
+        opt.setName('banner_file')
+          .setDescription('Upload custom banner image file')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('logo_url')
+          .setDescription('Or paste logo image link URL')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('banner_url')
+          .setDescription('Or paste banner image link URL')
           .setRequired(false)
       ),
 
@@ -295,48 +468,46 @@ function buildSlashCommands() {
   ].map(cmd => cmd.toJSON());
 }
 
-// ─── Register Slash Commands ───────────────────────────────────────────────────
+// ─── Register Slash Commands (Global - No Duplicates) ──────────────────────────
 async function registerSlashCommands(client) {
   const commands = buildSlashCommands();
   const token = process.env.DISCORD_TOKEN;
   const rest = new REST({ version: '10' }).setToken(token);
 
   try {
-    console.log('⏳ Registering slash commands globally...');
+    console.log('⏳ Registering global slash commands...');
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
 
-    // Also register guild-level for instant appearance
+    // Clean up any old guild-level duplicate commands so commands appear only ONCE
     for (const guild of client.guilds.cache.values()) {
       try {
         await rest.put(
           Routes.applicationGuildCommands(client.user.id, guild.id),
-          { body: commands }
+          { body: [] }
         );
-        console.log(`✅ Instant commands registered for: "${guild.name}"`);
       } catch (e) {
-        console.warn(`⚠️ Could not register instant commands for ${guild.name}: ${e.message}`);
+        // ignore cleanup errors if missing scope/permission
       }
     }
 
-    console.log('✅ All slash commands registered!');
+    console.log('✅ Global slash commands registered (1 for 1, no duplicates)!');
   } catch (err) {
     console.error('⚠️ Slash command registration error:', err.message);
   }
 }
 
-// ─── Also register commands when bot joins a new server ───────────────────────
+// ─── Clean up guild-level overrides when joining a new server ─────────────────
 async function registerCommandsForGuild(client, guild) {
-  const commands = buildSlashCommands();
   const token = process.env.DISCORD_TOKEN;
   const rest = new REST({ version: '10' }).setToken(token);
   try {
+    // Clear any guild command overrides so global commands are used cleanly without duplicates
     await rest.put(
       Routes.applicationGuildCommands(client.user.id, guild.id),
-      { body: commands }
+      { body: [] }
     );
-    console.log(`✅ Commands registered for new guild: "${guild.name}"`);
   } catch (e) {
-    console.warn(`⚠️ Could not register commands for new guild ${guild.name}: ${e.message}`);
+    // ignore
   }
 }
 
@@ -348,6 +519,7 @@ function startBot() {
       GatewayIntentBits.GuildMembers,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
+      GatewayIntentBits.GuildInvites,
     ],
     partials: [
       Partials.GuildMember,
@@ -365,12 +537,19 @@ function startBot() {
     console.log(`🛡️  Connected to ${client.guilds.cache.size} server(s):`);
     client.guilds.cache.forEach(g => console.log(`   • ${g.name} (${g.id})`));
     console.log('=======================================================\n');
+
+    // Cache invites for all guilds
+    for (const g of client.guilds.cache.values()) {
+      await cacheGuildInvites(g);
+    }
+
     await registerSlashCommands(client);
   });
 
-  // ── Bot Joins a New Server → register commands instantly
+  // ── Bot Joins a New Server → register commands & cache invites
   client.on('guildCreate', async (guild) => {
     console.log(`🆕 Bot added to new server: "${guild.name}" (${guild.id})`);
+    await cacheGuildInvites(guild);
     await registerCommandsForGuild(client, guild);
   });
 
@@ -383,6 +562,9 @@ function startBot() {
       }
 
       console.log(`🔔 New member: ${member.user.tag} in "${member.guild.name}"`);
+
+      // Track who invited this member
+      const inviterData = await findInviter(member.guild);
 
       const config = loadGuildConfig(member.guild);
       let welcomeChannel = null;
@@ -422,7 +604,7 @@ function startBot() {
         }
       }
 
-      const embed = createWelcomeEmbed(member, member.guild);
+      const embed = createWelcomeEmbed(member, member.guild, inviterData);
       await welcomeChannel.send({
         content: `🎉 Welcome <@${member.id}> to **${member.guild.name}**!`,
         embeds: [embed],
@@ -430,6 +612,40 @@ function startBot() {
       console.log(`✅ Welcome sent for ${member.user.tag} in #${welcomeChannel.name}`);
     } catch (err) {
       console.error('❌ guildMemberAdd error:', err);
+    }
+  });
+
+  // ── Member Left (Goodbye Message)
+  client.on('guildMemberRemove', async (member) => {
+    try {
+      if (member.partial) {
+        member = await member.fetch().catch(() => null);
+        if (!member) return;
+      }
+
+      console.log(`👋 Member left: ${member.user?.tag || member.id} from "${member.guild.name}"`);
+
+      const config = loadGuildConfig(member.guild);
+      let leaveChannel = null;
+
+      if (config.channels?.leaveChannelId && /^\d+$/.test(config.channels.leaveChannelId)) {
+        leaveChannel = member.guild.channels.cache.get(config.channels.leaveChannelId)
+          || await member.guild.channels.fetch(config.channels.leaveChannelId).catch(() => null);
+      }
+
+      if (!leaveChannel && member.guild.channels?.cache) {
+        leaveChannel = member.guild.channels.cache.find(c =>
+          c.isTextBased?.() && ['leave', 'goodbye', 'farewell', 'bye', 'exit', 'left'].some(k => c.name.toLowerCase().includes(k))
+        );
+      }
+
+      if (!leaveChannel) return; // No leave channel configured or found
+
+      const leaveEmbed = createLeaveEmbed(member, member.guild);
+      await leaveChannel.send({ embeds: [leaveEmbed] });
+      console.log(`✅ Leave message sent for ${member.user?.tag || member.id} in #${leaveChannel.name}`);
+    } catch (err) {
+      console.error('❌ Error handling member leave:', err);
     }
   });
 
@@ -491,11 +707,30 @@ function startBot() {
           results.push(`⚠️ General Channel → Not found (use /setgeneral manually)`);
         }
 
-        // ── Server icon/banner auto-used
-        config.useServerAssets = true;
-        results.push(`✅ Server Icon → Auto (using your server's icon)`);
-        if (guild.bannerURL()) {
-          results.push(`✅ Server Banner → Auto (using your server's banner)`);
+        // ── Auto-detect or set custom Banner & Logo (File Attachment or Link URL)
+        const logoFile = interaction.options.getAttachment('logo_file');
+        const bannerFile = interaction.options.getAttachment('banner_file');
+        const customLogo = logoFile ? logoFile.url : interaction.options.getString('logo_url');
+        const customBanner = bannerFile ? bannerFile.url : interaction.options.getString('banner_url');
+
+        if (customLogo && customLogo.startsWith('http')) {
+          config.customImages = config.customImages || {};
+          config.customImages.logoUrl = customLogo;
+          results.push(`✅ Server Logo → ${logoFile ? 'Uploaded File set' : 'Custom Link set'}`);
+        } else if (guild.iconURL({ size: 1024 })) {
+          results.push(`✅ Server Logo → Auto-detected from Server Icon`);
+        } else {
+          results.push(`ℹ️ Server Logo → No icon on Discord (use /setimages logo_file:<upload>)`);
+        }
+
+        if (customBanner && customBanner.startsWith('http')) {
+          config.customImages = config.customImages || {};
+          config.customImages.bannerUrl = customBanner;
+          results.push(`✅ Server Banner → ${bannerFile ? 'Uploaded File set' : 'Custom Link set'}`);
+        } else if (guild.bannerURL({ size: 1024 })) {
+          results.push(`✅ Server Banner → Auto-detected from Server Banner`);
+        } else {
+          results.push(`ℹ️ Server Banner → No banner on Discord (use /setimages banner_file:<upload>)`);
         }
 
         // ── Set welcome messages using server name
@@ -533,12 +768,11 @@ function startBot() {
             name: '📌 Next Steps',
             value: [
               '• Run `/testwelcome` to preview your welcome message',
-              '• Fix any ⚠️ channels above using the manual commands',
+              '• Run `/testleave` to preview your member left message',
               '• Run `/welcomeconfig` to see full settings',
-              '• Run `/setwelcometext` to customize messages',
             ].join('\n')
           })
-          .setThumbnail(guild.iconURL({ size: 256, dynamic: true }))
+          .setThumbnail(guild.iconURL({ size: 256, forceStatic: false }))
           .setFooter({ text: 'Use /welcomehelp to see all commands' })
           .setTimestamp();
 
@@ -565,6 +799,42 @@ function startBot() {
       return;
     }
 
+    // ── /testleave
+    if (commandName === 'testleave') {
+      try {
+        const embed = createLeaveEmbed(interaction.member, guild);
+        await interaction.reply({
+          content: `**[TEST LEAVE PREVIEW]** 👋 Goodbye <@${interaction.user.id}>!`,
+          embeds: [embed],
+        });
+      } catch (err) {
+        await safeReply(interaction, `❌ Error: ${err.message}`);
+      }
+      return;
+    }
+
+    // ── /myinvites
+    if (commandName === 'myinvites') {
+      try {
+        const invites = await guild.invites.fetch().catch(() => null);
+        let totalCount = 0;
+        if (invites) {
+          invites.forEach(inv => {
+            if (inv.inviter?.id === interaction.user.id) {
+              totalCount += (inv.uses || 0);
+            }
+          });
+        }
+        await interaction.reply({
+          content: `📩 <@${interaction.user.id}>, you have **${totalCount}** total invites in **${guild.name}**!`,
+          ephemeral: true,
+        });
+      } catch (err) {
+        await safeReply(interaction, `❌ Could not fetch invite stats.`);
+      }
+      return;
+    }
+
     // ── /setwelcome
     if (commandName === 'setwelcome') {
       const channel = interaction.options.getChannel('channel') || interaction.channel;
@@ -575,6 +845,26 @@ function startBot() {
         content: `✅ Welcome channel set to ${channel}!`,
         ephemeral: true,
       });
+      return;
+    }
+
+    // ── /setleave
+    if (commandName === 'setleave') {
+      const channel = interaction.options.getChannel('channel');
+      const config = loadGuildConfig(guild);
+      config.channels.leaveChannelId = channel.id;
+      saveGuildConfig(guild.id, config);
+      await interaction.reply({ content: `✅ Leave/Goodbye channel set to ${channel}!`, ephemeral: true });
+      return;
+    }
+
+    // ── /setleavetext
+    if (commandName === 'setleavetext') {
+      const message = interaction.options.getString('message');
+      const config = loadGuildConfig(guild);
+      config.messages.leaveText = message;
+      saveGuildConfig(guild.id, config);
+      await interaction.reply({ content: `✅ Member leave message updated!\nPreview: "${message}"`, ephemeral: true });
       return;
     }
 
@@ -644,6 +934,36 @@ function startBot() {
       return;
     }
 
+    // ── /setimages (Supports Uploaded Files & Link URLs)
+    if (commandName === 'setimages') {
+      const bannerFile = interaction.options.getAttachment('banner_file');
+      const logoFile = interaction.options.getAttachment('logo_file');
+      const bannerUrl = bannerFile ? bannerFile.url : interaction.options.getString('banner_url');
+      const logoUrl = logoFile ? logoFile.url : interaction.options.getString('logo_url');
+
+      const config = loadGuildConfig(guild);
+      if (!config.customImages) config.customImages = { logoUrl: '', bannerUrl: '' };
+
+      const updates = [];
+      if (bannerUrl) {
+        config.customImages.bannerUrl = bannerUrl;
+        updates.push(`✅ Custom Banner image set (${bannerFile ? 'Uploaded File' : 'URL Link'})`);
+      }
+      if (logoUrl) {
+        config.customImages.logoUrl = logoUrl;
+        updates.push(`✅ Custom Logo image set (${logoFile ? 'Uploaded File' : 'URL Link'})`);
+      }
+
+      if (updates.length === 0) {
+        await interaction.reply({ content: `⚠️ Please upload an image file or provide an image URL link!`, ephemeral: true });
+        return;
+      }
+
+      saveGuildConfig(guild.id, config);
+      await interaction.reply({ content: updates.join('\n') + `\nRun \`/testwelcome\` to preview!`, ephemeral: true });
+      return;
+    }
+
     // ── /welcomeconfig
     if (commandName === 'welcomeconfig') {
       const config = loadGuildConfig(guild);
@@ -695,43 +1015,39 @@ function startBot() {
     if (commandName === 'welcomehelp') {
       const embed = new EmbedBuilder()
         .setColor('#5865F2')
-        .setTitle('🤖 Welcome Bot — Commands')
-        .setDescription('A fully customizable welcome bot. Each server gets its own independent settings.')
+        .setTitle('🤖 Welcome & Goodbye Bot — Commands')
+        .setDescription('A fully customizable welcome & inviter bot. Each server gets its own independent settings.')
         .addFields(
           {
             name: '⚡ Quick Setup (Do This First!)',
             value: [
               '`/setup` — **Auto-detects all channels & sets everything up in 1 command!**',
-              '   *(Optional: add a color like `/setup color:#FF5733`)*',
+              '   *(Supports image upload for logo & banner, custom color, greeting)*',
             ].join('\n'),
           },
           {
-            name: '🛠️ Manual Setup (Admin Only)',
+            name: '🛠️ Channel & Image Setup (Admin Only)',
             value: [
-              '`/setwelcome [channel]` — Set the welcome channel *(defaults to current)*',
-              '`/setrules <channel>` — Set the rules channel shown in welcome',
-              '`/setroles <channel>` — Set the roles channel shown in welcome',
-              '`/setgeneral <channel>` — Set the general/chat channel shown in welcome',
-              '`/setwelcomecolor <#hex>` — Change the embed color',
+              '`/setwelcome [channel]` — Set welcome channel',
+              '`/setleave <channel>` — Set member leave/goodbye channel',
+              '`/setrules <channel>` — Set rules channel',
+              '`/setroles <channel>` — Set roles channel',
+              '`/setgeneral <channel>` — Set general channel',
+              '`/setimages` — Upload logo/banner image files or URLs',
+              '`/setwelcomecolor <#hex>` — Change embed color',
               '`/setwelcometext` — Customize greeting, subtitle, and outro text',
-              '`/resetwelcome` — Reset all settings to default *(Admin only)*',
+              '`/setleavetext <msg>` — Customize member left message',
+              '`/resetwelcome` — Reset all settings to default',
             ].join('\n'),
           },
           {
-            name: '👁️ View & Test',
+            name: '👁️ Invites & Previews',
             value: [
-              '`/welcomeconfig` — View current configuration for this server',
+              '`/myinvites` — Check your total invited members',
               '`/testwelcome` — Preview the welcome message',
+              '`/testleave` — Preview the member left message',
+              '`/welcomeconfig` — View current server settings',
               '`/welcomehelp` — Show this help menu',
-            ].join('\n'),
-          },
-          {
-            name: '✅ Quick Start Guide',
-            value: [
-              '1️⃣ Run `/setup` — auto-detects everything!',
-              '2️⃣ Run `/testwelcome` to preview',
-              '3️⃣ Fix any missed channels manually if needed',
-              '4️⃣ Done! 🎉 Bot will now welcome every new member',
             ].join('\n'),
           }
         )
