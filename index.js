@@ -1134,4 +1134,7 @@ async function safeReply(interaction, content) {
     } else {
       await interaction.reply({ content, ephemeral: true });
     }
-  
+  } catch (_) {}
+}
+
+startBot();
