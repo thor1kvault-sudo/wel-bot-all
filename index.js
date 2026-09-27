@@ -132,6 +132,13 @@ try {
   console.log('ℹ️ Voice library load status:', e.message);
 }
 
+let playdl = null;
+try {
+  playdl = require('play-dl');
+} catch (e) {
+  console.log('ℹ️ play-dl load status:', e.message);
+}
+
 const musicQueues = new Map(); // guildId => { connection, player, queue: [], currentTrack: null, isPlaying: false }
 
 function getGuildQueue(guildId) {
@@ -147,7 +154,7 @@ function getGuildQueue(guildId) {
   return musicQueues.get(guildId);
 }
 
-function playTrackAudio(guildId) {
+async function playTrackAudio(guildId) {
   if (!voiceLib) return;
   const guildQueue = getGuildQueue(guildId);
   if (!guildQueue || !guildQueue.connection) return;
@@ -181,17 +188,59 @@ function playTrackAudio(guildId) {
   if (!currentTrack) return;
 
   try {
-    let audioStreamUrl = currentTrack.url;
-    // Direct audio URL or stream
-    if (!audioStreamUrl.startsWith('http') || audioStreamUrl.includes('youtube.com') || audioStreamUrl.includes('spotify.com')) {
-      // Stream live Lofi stream audio as continuous playback for titles / search terms / web embeds
-      audioStreamUrl = 'https://stream.zeno.fm/f3wvbbqmdg8uv';
+    let stream = null;
+    let type = voiceLib.StreamType.Arbitrary;
+
+    if (playdl && currentTrack.url) {
+      try {
+        if (currentTrack.url.includes('spotify.com')) {
+          const spData = await playdl.spotify(currentTrack.url).catch(() => null);
+          if (spData && spData.name) {
+            const searched = await playdl.search(`${spData.name} ${spData.artists?.[0]?.name || ''}`, { limit: 1 });
+            if (searched && searched[0]) {
+              const res = await playdl.stream(searched[0].url);
+              stream = res.stream;
+              type = res.type;
+            }
+          }
+        } else if (currentTrack.url.includes('youtube.com') || currentTrack.url.includes('youtu.be')) {
+          const res = await playdl.stream(currentTrack.url);
+          stream = res.stream;
+          type = res.type;
+        } else if (currentTrack.url.startsWith('http') && !currentTrack.url.includes('results?search_query=')) {
+          const res = await playdl.stream(currentTrack.url).catch(() => null);
+          if (res) {
+            stream = res.stream;
+            type = res.type;
+          }
+        } else {
+          // Search query like "enna sona"
+          const searched = await playdl.search(currentTrack.title, { limit: 1 });
+          if (searched && searched[0]) {
+            const res = await playdl.stream(searched[0].url);
+            stream = res.stream;
+            type = res.type;
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ play-dl stream note:', e.message);
+      }
     }
 
-    const resource = voiceLib.createAudioResource(audioStreamUrl, {
-      inputType: voiceLib.StreamType.Arbitrary,
-    });
-    guildQueue.player.play(resource);
+    if (!stream) {
+      const fallbackUrl = currentTrack.url.startsWith('http') && !currentTrack.url.includes('youtube.com') && !currentTrack.url.includes('spotify.com')
+        ? currentTrack.url
+        : 'https://stream.zeno.fm/f3wvbbqmdg8uv';
+
+      const resource = voiceLib.createAudioResource(fallbackUrl, {
+        inputType: voiceLib.StreamType.Arbitrary,
+      });
+      guildQueue.player.play(resource);
+    } else {
+      const resource = voiceLib.createAudioResource(stream, { inputType: type });
+      guildQueue.player.play(resource);
+    }
+
     guildQueue.isPlaying = true;
     console.log(`🎵 Playing audio in guild ${guildId}: ${currentTrack.title}`);
   } catch (err) {
