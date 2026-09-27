@@ -1,0 +1,17 @@
+{
+  "_note": "This file is NO LONGER USED for per-server settings.",
+  "_info": "Each server now gets its own config in the guild_configs/ folder.",
+  "_setup": "Admins can configure everything using slash commands inside their server.",
+  "commands": {
+    "/setwelcome": "Set the welcome channel",
+    "/setrules": "Set the rules channel shown in welcome",
+    "/setroles": "Set the roles channel shown in welcome",
+    "/setgeneral": "Set the general/chat channel shown in welcome",
+    "/setwelcomecolor": "Change the embed color (e.g. #FF5733)",
+    "/setwelcometext": "Customize greeting, subtitle, and outro text",
+    "/welcomeconfig": "View current config for this server",
+    "/testwelcome": "Preview the welcome message",
+    "/resetwelcome": "Reset all settings to defaults",
+    "/welcomehelp": "Show all commands"
+  }
+}

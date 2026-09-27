@@ -1,0 +1,4 @@
+node_modules/
+.env
+bot.zip
+guild_configs/

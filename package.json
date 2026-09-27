@@ -1,0 +1,16 @@
+{
+  "name": "multi-server-welcome-bot",
+  "version": "2.0.0",
+  "description": "A fully public multi-server Discord welcome bot. Each server gets its own independent configuration via slash commands.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.7"
+  }
+}
