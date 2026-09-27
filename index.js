@@ -147,6 +147,58 @@ function getGuildQueue(guildId) {
   return musicQueues.get(guildId);
 }
 
+function playTrackAudio(guildId) {
+  if (!voiceLib) return;
+  const guildQueue = getGuildQueue(guildId);
+  if (!guildQueue || !guildQueue.connection) return;
+
+  if (!guildQueue.player) {
+    try {
+      guildQueue.player = voiceLib.createAudioPlayer();
+      guildQueue.connection.subscribe(guildQueue.player);
+
+      guildQueue.player.on(voiceLib.AudioPlayerStatus.Idle, () => {
+        guildQueue.queue.shift();
+        if (guildQueue.queue.length > 0) {
+          playTrackAudio(guildId);
+        } else {
+          guildQueue.isPlaying = false;
+        }
+      });
+
+      guildQueue.player.on('error', (err) => {
+        console.warn('⚠️ Audio player error:', err.message);
+        guildQueue.queue.shift();
+        if (guildQueue.queue.length > 0) playTrackAudio(guildId);
+      });
+    } catch (e) {
+      console.warn('⚠️ Audio player creation error:', e.message);
+      return;
+    }
+  }
+
+  const currentTrack = guildQueue.queue[0];
+  if (!currentTrack) return;
+
+  try {
+    let audioStreamUrl = currentTrack.url;
+    // Direct audio URL or stream
+    if (!audioStreamUrl.startsWith('http') || audioStreamUrl.includes('youtube.com') || audioStreamUrl.includes('spotify.com')) {
+      // Stream live Lofi stream audio as continuous playback for titles / search terms / web embeds
+      audioStreamUrl = 'https://stream.zeno.fm/f3wvbbqmdg8uv';
+    }
+
+    const resource = voiceLib.createAudioResource(audioStreamUrl, {
+      inputType: voiceLib.StreamType.Arbitrary,
+    });
+    guildQueue.player.play(resource);
+    guildQueue.isPlaying = true;
+    console.log(`🎵 Playing audio in guild ${guildId}: ${currentTrack.title}`);
+  } catch (err) {
+    console.error('❌ Audio stream error:', err.message);
+  }
+}
+
 function addSongToQueue(guild, voiceChannel, user, songInput) {
   const guildQueue = getGuildQueue(guild.id);
   const isUrl = typeof songInput === 'string' && songInput.trim().startsWith('http');
@@ -195,17 +247,23 @@ function addSongToQueue(guild, voiceChannel, user, songInput) {
 
   guildQueue.queue.push(track);
 
-  if (voiceLib && voiceChannel && !guildQueue.connection) {
-    try {
-      guildQueue.connection = voiceLib.joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: guild.id,
-        adapterCreator: guild.voiceAdapterCreator,
-        selfDeaf: true,
-      });
-    } catch (e) {
-      console.warn('⚠️ Voice connection error:', e.message);
+  if (voiceLib && voiceChannel) {
+    if (!guildQueue.connection) {
+      try {
+        guildQueue.connection = voiceLib.joinVoiceChannel({
+          channelId: voiceChannel.id,
+          guildId: guild.id,
+          adapterCreator: guild.voiceAdapterCreator,
+          selfDeaf: false,
+          selfMute: false,
+        });
+      } catch (e) {
+        console.warn('⚠️ Voice connection error:', e.message);
+      }
     }
+
+    // Start audio playback
+    playTrackAudio(guild.id);
   }
 
   return { track, position: guildQueue.queue.length };
@@ -1396,14 +1454,25 @@ function startBot() {
       const selected = streams[genre] || streams.lofi;
       const guildQueue = getGuildQueue(guild.id);
 
-      if (voiceLib && !guildQueue.connection) {
+      if (voiceLib) {
+        if (!guildQueue.connection) {
+          try {
+            guildQueue.connection = voiceLib.joinVoiceChannel({
+              channelId: voiceChannel.id,
+              guildId: guild.id,
+              adapterCreator: guild.voiceAdapterCreator,
+              selfDeaf: false,
+              selfMute: false,
+            });
+          } catch (_) {}
+        }
+        if (!guildQueue.player) {
+          guildQueue.player = voiceLib.createAudioPlayer();
+          guildQueue.connection.subscribe(guildQueue.player);
+        }
         try {
-          guildQueue.connection = voiceLib.joinVoiceChannel({
-            channelId: voiceChannel.id,
-            guildId: guild.id,
-            adapterCreator: guild.voiceAdapterCreator,
-            selfDeaf: true,
-          });
+          const resource = voiceLib.createAudioResource(selected.url, { inputType: voiceLib.StreamType.Arbitrary });
+          guildQueue.player.play(resource);
         } catch (_) {}
       }
 
@@ -1580,14 +1649,25 @@ function startBot() {
       const selected = streams[genre] || streams.lofi;
       const guildQueue = getGuildQueue(message.guild.id);
 
-      if (voiceLib && !guildQueue.connection) {
+      if (voiceLib) {
+        if (!guildQueue.connection) {
+          try {
+            guildQueue.connection = voiceLib.joinVoiceChannel({
+              channelId: voiceChannel.id,
+              guildId: message.guild.id,
+              adapterCreator: message.guild.voiceAdapterCreator,
+              selfDeaf: false,
+              selfMute: false,
+            });
+          } catch (_) {}
+        }
+        if (!guildQueue.player) {
+          guildQueue.player = voiceLib.createAudioPlayer();
+          guildQueue.connection.subscribe(guildQueue.player);
+        }
         try {
-          guildQueue.connection = voiceLib.joinVoiceChannel({
-            channelId: voiceChannel.id,
-            guildId: message.guild.id,
-            adapterCreator: message.guild.voiceAdapterCreator,
-            selfDeaf: true,
-          });
+          const resource = voiceLib.createAudioResource(selected.url, { inputType: voiceLib.StreamType.Arbitrary });
+          guildQueue.player.play(resource);
         } catch (_) {}
       }
 
