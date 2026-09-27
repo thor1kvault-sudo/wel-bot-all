@@ -183,15 +183,69 @@ async function findInviter(guild) {
 
 // ─── Welcome Embed Builder ────────────────────────────────────────────────────
 function createWelcomeEmbed(member, guild, inviterData = null) {
+  const isThorApex = guild?.name?.toLowerCase()?.includes('thor apex') || guild?.name?.toLowerCase()?.includes('thor');
+
+  // ── PERMANENT ORIGINAL CODE FOR YOUR THOR APEX SERVER (UNTOUCHED) ──
+  if (isThorApex) {
+    const userId = member?.user?.id ?? member?.id ?? '000000000000000000';
+    const channels = guild?.channels?.cache;
+
+    const rulesCh = channels?.find(c => /rule/i.test(c.name)) || 'Rules';
+    const funCh = channels?.find(c => /fun/i.test(c.name)) || 'FUN TIME';
+    const editCh = channels?.find(c => /editing|edit/i.test(c.name)) || 'PC EDITING';
+    const gamingCh = channels?.find(c => /gaming|game/i.test(c.name)) || 'GAMING-TEXT';
+    const generalCh = channels?.find(c => /general|chat/i.test(c.name)) || 'General';
+
+    const rulesTag = typeof rulesCh === 'string' ? `\`#${rulesCh}\`` : `<#${rulesCh.id}>`;
+    const funTag = typeof funCh === 'string' ? `\`#${funCh}\`` : `<#${funCh.id}>`;
+    const editTag = typeof editCh === 'string' ? `\`#${editCh}\`` : `<#${editCh.id}>`;
+    const gamingTag = typeof gamingCh === 'string' ? `\`#${gamingCh}\`` : `<#${gamingCh.id}>`;
+    const generalTag = typeof generalCh === 'string' ? `\`#${generalCh}\`` : `<#${generalCh.id}>`;
+
+    const lines = [
+      `### HEY BUDDY! <@${userId}>\n`,
+      `**Welcome To THOR APEX !**\n`,
+      `**Get started with below:** ⚡ THOR APEX ⚡ ➔ ${rulesTag}\n`,
+      `**Follow The Server Guidelines:** ⚡ THOR APEX ⚡ ➔ ${rulesTag}\n`,
+      `**Fun With Us:** ⚡ THOR APEX ⚡ ➔ ${funTag}\n`,
+      `**Editing Zone:** ⚡ THOR APEX ⚡ ➔ ${editTag}\n`,
+      `**Gaming Zone:** ⚡ THOR APEX ⚡ ➔ ${gamingTag}\n`,
+      `**Join And Chill With Us!:** ⚡ THOR APEX ⚡ ➔ ${generalTag}\n`,
+      `\n### Thanks For Joining. Hope You Have A Great Time Here!`
+    ];
+
+    const embed = new EmbedBuilder()
+      .setColor('#FF0000')
+      .setDescription(lines.join('\n'))
+      .setTimestamp();
+
+    const logoUrl = guild.iconURL({ size: 1024, forceStatic: false });
+    const authorOptions = { name: 'THOR APEX !' };
+    if (logoUrl) authorOptions.iconURL = logoUrl;
+    embed.setAuthor(authorOptions);
+
+    const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
+    if (avatarUrl) embed.setThumbnail(avatarUrl);
+    else if (logoUrl) embed.setThumbnail(logoUrl);
+
+    const bannerUrl = guild.bannerURL({ size: 1024 });
+    if (bannerUrl) embed.setImage(bannerUrl);
+
+    const footerOptions = { text: 'THOR APEX !' };
+    if (logoUrl) footerOptions.iconURL = logoUrl;
+    embed.setFooter(footerOptions);
+
+    return embed;
+  }
+
+  // ── NEW DYNAMIC CODE FOR ALL OTHER SERVERS (MAXXZ FAM & PUBLIC SERVERS) ──
   const config = loadGuildConfig(guild);
 
-  // Resolve logo: custom URL first, then auto-detect server icon from Discord
   let logoUrl = config.customImages?.logoUrl?.startsWith('http') ? config.customImages.logoUrl : null;
   if (!logoUrl && guild?.iconURL) {
     logoUrl = guild.iconURL({ size: 1024, forceStatic: false });
   }
 
-  // Resolve banner: custom URL first, then auto-detect server banner from Discord
   let bannerUrl = config.customImages?.bannerUrl?.startsWith('http') ? config.customImages.bannerUrl : null;
   if (!bannerUrl && guild?.bannerURL) {
     bannerUrl = guild.bannerURL({ size: 1024 });
@@ -200,17 +254,14 @@ function createWelcomeEmbed(member, guild, inviterData = null) {
   const userId = member?.user?.id ?? member?.id ?? '000000000000000000';
   const guildName = guild.name || config.serverName || 'Your Server';
 
-  // Build channel mentions
   const rulesTag = formatChannelMention(config.channels?.rulesChannelId, 'rules');
   const rolesTag = formatChannelMention(config.channels?.rolesChannelId, 'roles');
   const generalTag = formatChannelMention(config.channels?.generalChannelId, 'general');
 
-  // Build embed description dynamically
   const lines = [];
   lines.push(`### ${config.messages?.greetingPrefix || 'HEY BUDDY!'} <@${userId}>\n`);
   lines.push(`**${config.messages?.welcomeSubtitle || `Welcome to ${guildName}!`}**\n`);
 
-  // Inviter Info
   if (inviterData && inviterData.inviterId) {
     lines.push(`**📩 Invited by:** <@${inviterData.inviterId}> (Total Invites: **${inviterData.uses}**)\n`);
   } else {
@@ -229,20 +280,16 @@ function createWelcomeEmbed(member, guild, inviterData = null) {
     .setDescription(lines.join('\n'))
     .setTimestamp();
 
-  // Author
   const authorOptions = { name: config.welcomeTitle || `Welcome to ${guildName}!` };
   if (logoUrl) authorOptions.iconURL = logoUrl;
   embed.setAuthor(authorOptions);
 
-  // Thumbnail (member avatar > server icon)
   const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
   if (avatarUrl) embed.setThumbnail(avatarUrl);
   else if (logoUrl) embed.setThumbnail(logoUrl);
 
-  // Banner image
   if (bannerUrl) embed.setImage(bannerUrl);
 
-  // Footer
   const footerOptions = { text: `${guildName} • Member #${guild.memberCount || '1'}` };
   if (logoUrl) footerOptions.iconURL = logoUrl;
   embed.setFooter(footerOptions);
@@ -468,7 +515,7 @@ function buildSlashCommands() {
   ].map(cmd => cmd.toJSON());
 }
 
-// ─── Register Slash Commands (Global - No Duplicates) ──────────────────────────
+// ─── Register Global Slash Commands (Independent for every server) ───────────
 async function registerSlashCommands(client) {
   const commands = buildSlashCommands();
   const token = process.env.DISCORD_TOKEN;
@@ -477,37 +524,9 @@ async function registerSlashCommands(client) {
   try {
     console.log('⏳ Registering global slash commands...');
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-
-    // Clean up any old guild-level duplicate commands so commands appear only ONCE
-    for (const guild of client.guilds.cache.values()) {
-      try {
-        await rest.put(
-          Routes.applicationGuildCommands(client.user.id, guild.id),
-          { body: [] }
-        );
-      } catch (e) {
-        // ignore cleanup errors if missing scope/permission
-      }
-    }
-
-    console.log('✅ Global slash commands registered (1 for 1, no duplicates)!');
+    console.log('✅ Global slash commands registered!');
   } catch (err) {
     console.error('⚠️ Slash command registration error:', err.message);
-  }
-}
-
-// ─── Clean up guild-level overrides when joining a new server ─────────────────
-async function registerCommandsForGuild(client, guild) {
-  const token = process.env.DISCORD_TOKEN;
-  const rest = new REST({ version: '10' }).setToken(token);
-  try {
-    // Clear any guild command overrides so global commands are used cleanly without duplicates
-    await rest.put(
-      Routes.applicationGuildCommands(client.user.id, guild.id),
-      { body: [] }
-    );
-  } catch (e) {
-    // ignore
   }
 }
 
