@@ -272,6 +272,22 @@ function buildSlashCommands() {
       .setDescription('Reset all welcome settings for this server back to defaults')
       .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 
+    // ── Auto Setup (detects channels automatically)
+    new SlashCommandBuilder()
+      .setName('setup')
+      .setDescription('Auto-setup the welcome bot for this server (detects channels automatically)')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addStringOption(opt =>
+        opt.setName('color')
+          .setDescription('Embed color (e.g. #FF5733) — leave empty to use default blue')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('greeting')
+          .setDescription('Custom greeting text (e.g. "HEY THERE!") — leave empty for default')
+          .setRequired(false)
+      ),
+
     // ── Help
     new SlashCommandBuilder()
       .setName('welcomehelp')
@@ -423,6 +439,118 @@ function startBot() {
 
     const { commandName, guild } = interaction;
 
+    // ── /setup (Auto-detects everything!)
+    if (commandName === 'setup') {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const config = loadGuildConfig(guild);
+        const channels = guild.channels.cache;
+        const results = [];
+
+        // ── Auto-detect Welcome Channel
+        const welcomeCh = channels.find(c =>
+          c.isTextBased() && ['welcome', 'welcomes', 'join', 'arrivals', 'greet', 'joined'].some(k => c.name.toLowerCase().includes(k))
+        );
+        if (welcomeCh) {
+          config.channels.welcomeChannelId = welcomeCh.id;
+          results.push(`✅ Welcome Channel → <#${welcomeCh.id}>`);
+        } else {
+          results.push(`⚠️ Welcome Channel → Not found (use /setwelcome manually)`);
+        }
+
+        // ── Auto-detect Rules Channel
+        const rulesCh = channels.find(c =>
+          c.isTextBased() && ['rule', 'rules', 'guidelines', 'tos', 'terms'].some(k => c.name.toLowerCase().includes(k))
+        );
+        if (rulesCh) {
+          config.channels.rulesChannelId = rulesCh.id;
+          results.push(`✅ Rules Channel → <#${rulesCh.id}>`);
+        } else {
+          results.push(`⚠️ Rules Channel → Not found (use /setrules manually)`);
+        }
+
+        // ── Auto-detect Roles Channel
+        const rolesCh = channels.find(c =>
+          c.isTextBased() && ['role', 'roles', 'self-role', 'selfrole', 'pick-role', 'get-role', 'colour', 'color'].some(k => c.name.toLowerCase().includes(k))
+        );
+        if (rolesCh) {
+          config.channels.rolesChannelId = rolesCh.id;
+          results.push(`✅ Roles Channel → <#${rolesCh.id}>`);
+        } else {
+          results.push(`⚠️ Roles Channel → Not found (use /setroles manually)`);
+        }
+
+        // ── Auto-detect General Channel
+        const generalCh = channels.find(c =>
+          c.isTextBased() && ['general', 'chat', 'lounge', 'talk', 'main', 'lobby', 'hangout'].some(k => c.name.toLowerCase().includes(k))
+        );
+        if (generalCh) {
+          config.channels.generalChannelId = generalCh.id;
+          results.push(`✅ General Channel → <#${generalCh.id}>`);
+        } else {
+          results.push(`⚠️ General Channel → Not found (use /setgeneral manually)`);
+        }
+
+        // ── Server icon/banner auto-used
+        config.useServerAssets = true;
+        results.push(`✅ Server Icon → Auto (using your server's icon)`);
+        if (guild.bannerURL()) {
+          results.push(`✅ Server Banner → Auto (using your server's banner)`);
+        }
+
+        // ── Set welcome messages using server name
+        config.serverName = guild.name;
+        config.welcomeTitle = `Welcome to ${guild.name}!`;
+        config.messages.welcomeSubtitle = `Welcome to ${guild.name}!`;
+        results.push(`✅ Server Name → ${guild.name}`);
+
+        // ── Custom color (if provided)
+        const colorInput = interaction.options.getString('color');
+        if (colorInput && isValidHexColor(colorInput.trim())) {
+          config.embedColor = colorInput.trim();
+          results.push(`✅ Embed Color → ${colorInput.trim()}`);
+        } else {
+          config.embedColor = '#5865F2';
+          results.push(`✅ Embed Color → #5865F2 (default Discord blue)`);
+        }
+
+        // ── Custom greeting (if provided)
+        const greetingInput = interaction.options.getString('greeting');
+        if (greetingInput) {
+          config.messages.greetingPrefix = greetingInput;
+          results.push(`✅ Greeting → "${greetingInput}"`);
+        }
+
+        // ── Save everything
+        saveGuildConfig(guild.id, config);
+
+        // ── Build result embed
+        const setupEmbed = new EmbedBuilder()
+          .setColor(config.embedColor)
+          .setTitle(`⚡ Auto-Setup Complete — ${guild.name}`)
+          .setDescription(results.join('\n'))
+          .addFields({
+            name: '📌 Next Steps',
+            value: [
+              '• Run `/testwelcome` to preview your welcome message',
+              '• Fix any ⚠️ channels above using the manual commands',
+              '• Run `/welcomeconfig` to see full settings',
+              '• Run `/setwelcometext` to customize messages',
+            ].join('\n')
+          })
+          .setThumbnail(guild.iconURL({ size: 256, dynamic: true }))
+          .setFooter({ text: 'Use /welcomehelp to see all commands' })
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [setupEmbed] });
+        console.log(`⚡ /setup completed for "${guild.name}" (${guild.id})`);
+      } catch (err) {
+        console.error('❌ /setup error:', err);
+        await interaction.editReply({ content: `❌ Setup failed: ${err.message}` });
+      }
+      return;
+    }
+
     // ── /testwelcome
     if (commandName === 'testwelcome') {
       try {
@@ -571,7 +699,14 @@ function startBot() {
         .setDescription('A fully customizable welcome bot. Each server gets its own independent settings.')
         .addFields(
           {
-            name: '🛠️ Setup (Admin Only)',
+            name: '⚡ Quick Setup (Do This First!)',
+            value: [
+              '`/setup` — **Auto-detects all channels & sets everything up in 1 command!**',
+              '   *(Optional: add a color like `/setup color:#FF5733`)*',
+            ].join('\n'),
+          },
+          {
+            name: '🛠️ Manual Setup (Admin Only)',
             value: [
               '`/setwelcome [channel]` — Set the welcome channel *(defaults to current)*',
               '`/setrules <channel>` — Set the rules channel shown in welcome',
@@ -593,10 +728,10 @@ function startBot() {
           {
             name: '✅ Quick Start Guide',
             value: [
-              '1️⃣ Run `/setwelcome` in your welcome channel',
-              '2️⃣ Run `/setrules`, `/setroles`, `/setgeneral` to add channel links',
-              '3️⃣ Run `/setwelcomecolor #5865F2` to pick your color',
-              '4️⃣ Run `/testwelcome` to preview — done! 🎉',
+              '1️⃣ Run `/setup` — auto-detects everything!',
+              '2️⃣ Run `/testwelcome` to preview',
+              '3️⃣ Fix any missed channels manually if needed',
+              '4️⃣ Done! 🎉 Bot will now welcome every new member',
             ].join('\n'),
           }
         )
