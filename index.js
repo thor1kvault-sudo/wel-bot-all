@@ -49,7 +49,7 @@ if (!fs.existsSync(GUILD_CONFIGS_DIR)) {
  * while automatically adapting to any other public server.
  */
 function getDefaultConfig(guild) {
-  const isThorApex = guild?.name?.toLowerCase()?.includes('thor apex') || guild?.name?.toLowerCase()?.includes('thor');
+  const isThorApex = guild?.name?.toLowerCase()?.includes('thor apex');
   const serverName = guild ? guild.name : 'Your Server';
 
   // Auto-detect channel IDs if guild channels are cached
@@ -183,7 +183,7 @@ async function findInviter(guild) {
 
 // ─── Welcome Embed Builder ────────────────────────────────────────────────────
 function createWelcomeEmbed(member, guild, inviterData = null) {
-  const isThorApex = guild?.name?.toLowerCase()?.includes('thor apex') || guild?.name?.toLowerCase()?.includes('thor');
+  const isThorApex = guild?.name?.toLowerCase()?.includes('thor apex');
 
   // ── PERMANENT ORIGINAL CODE FOR YOUR THOR APEX SERVER (UNTOUCHED) ──
   if (isThorApex) {
