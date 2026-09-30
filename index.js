@@ -7,6 +7,7 @@ require('dotenv').config();
 const fs2   = require('fs');
 const http  = require('http');
 const https = require('https');
+const path2 = require('path');
 
 try { const ff = require('ffmpeg-static'); if (ff) process.env.FFMPEG_PATH = ff; } catch (_) {}
 
@@ -18,6 +19,66 @@ http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ status: 'ok', bot: 'THOR APEX All-in-One Bot', uptime: Math.floor(process.uptime()) }));
 }).listen(PORT, '0.0.0.0', () => console.log('Health check server running on port ' + PORT));
+
+const BOT_OWNER_ID = process.env.OWNER_ID || '';
+const DATA_DIR = path2.join(__dirname, 'data');
+if (!fs2.existsSync(DATA_DIR)) fs2.mkdirSync(DATA_DIR, { recursive: true });
+
+function loadData(f) {
+  const p = path2.join(DATA_DIR, f);
+  if (fs2.existsSync(p)) { try { return JSON.parse(fs2.readFileSync(p, 'utf8')); } catch (_) {} }
+  return {};
+}
+function saveData(f, d) { try { fs2.writeFileSync(path2.join(DATA_DIR, f), JSON.stringify(d, null, 2)); } catch (e) { console.error('Save error:', e.message); } }
+
+let config     = loadData('config.json');
+let warnings   = loadData('warnings.json');
+let inviteData = loadData('invites.json');
+const saveConfig     = () => saveData('config.json',   config);
+const saveWarnings   = () => saveData('warnings.json', warnings);
+const saveInviteData = () => saveData('invites.json',  inviteData);
+
+const DEFSEC = {
+  antiRaid: false, antiSpam: true, antiLink: true, antiAds: true,
+  wordFilter: true, altDetection: true, altMinDays: 7, antiNuke: true,
+  lockdown: false,
+  blacklistedWords: ['nigga','nigger','fuck','shit','bitch','asshole','retard'],
+  allowedLinks: [], raidThreshold: 10, spamThreshold: 3, spamWindow: 4000, nukeThreshold: 1,
+  emojiLimit: 5,
+  automodPunishment: 'kick',
+  tagNotify: true,
+  antiCaps: true,
+  antiInvites: true,
+  antiMassMention: true,
+  antiEmojiSpam: true,
+  antiNsfwLink: true,
+  whitelistedUsers: [],
+  whitelistedRoles: [],
+};
+
+if (!config.embedColor) {
+  config = {
+    welcomeChannelId: '', leaveChannelId: '', rulesChannelId: '', rolesChannelId: '',
+    generalChannelId: '', logChannelId: '', voiceLogChannelId: '', roleLogChannelId: '', memberLogChannelId: '', muteRoleId: '', autoRoleId: '',
+    embedColor: '#FF0000', welcomeTitle: 'THOR APEX !',
+    greetingPrefix: 'HEY BUDDY!', welcomeSubtitle: 'Welcome To THOR APEX !',
+    outroText: 'Thanks For Joining. Hope You Have A Great Time Here!',
+    leaveText: 'Goodbye **{username}**! We now have **{count}** members.',
+    security: DEFSEC, ...config,
+  };
+  if (!config.security) config.security = { ...DEFSEC };
+  if (config.security.tagNotify === undefined) config.security.tagNotify = true;
+  saveConfig();
+}
+
+// ── Voice / Music
+let voiceLib = null; try { voiceLib = require('@discordjs/voice'); } catch (e) { console.log('Voice:', e.message); }
+let playdl   = null; try { playdl   = require('play-dl');          } catch (e) { console.log('play-dl:', e.message); }
+let isPlayDlReady = false;
+async function ensurePlayDlReady() {
+  if (!playdl || isPlayDlReady) return;
+  try { const c = await playdl.getFreeClientID(); if (c) { await playdl.setToken({ soundcloud: { client_id: c } }); isPlayDlReady = true; } } catch (_) {}
+}
 
 function getSpotifyTrackInfo(spotifyUrl) {
   return new Promise((resolve) => {
@@ -275,7 +336,11 @@ const PERM_LIST = [
 function isWhitelisted(member, permType) {
   if (!member) return false;
   if (member.id === BOT_OWNER_ID || member.id === member.guild?.ownerId) return true;
-  if (member.permissions?.has(PermissionsBitField.Flags.Administrator)) return true;
+  if (member.id === member.guild?.client?.user?.id) return true;
+
+  // Administrator only bypasses general chat automod (when permType is undefined)
+  if (!permType && member.permissions?.has(PermissionsBitField.Flags.Administrator)) return true;
+
   const s = config.security || {};
   const wUsers = s.whitelistedUsers || [];
   const wRoles = s.whitelistedRoles || [];
@@ -444,6 +509,9 @@ async function handleNukeAction(guild, executor, permType, actionName) {
 function isHex(s) { return /^#[0-9A-Fa-f]{6}$/.test(s); }
 async function getLogChannel(guild, primaryId, fallbackRegexes) {
   if (!guild) return null;
+  if (guild.channels?.cache?.size === 0) {
+    await guild.channels.fetch().catch(() => {});
+  }
   if (primaryId) {
     let ch = guild.channels.cache.get(primaryId);
     if (!ch) ch = await guild.channels.fetch(primaryId).catch(() => null);
@@ -1006,14 +1074,52 @@ async function startBot() {
     if (cmd === 'lockdown' && isAdmin) { config.security.lockdown = !config.security.lockdown; saveConfig(); if (config.security.lockdown) { for (const [, ch] of message.guild.channels.cache) if (ch.isTextBased()) await ch.permissionOverwrites.create(message.guild.roles.everyone, { SendMessages: false }).catch(() => {}); return message.reply('LOCKDOWN ACTIVATED!'); } else { for (const [, ch] of message.guild.channels.cache) if (ch.isTextBased()) await ch.permissionOverwrites.delete(message.guild.roles.everyone).catch(() => {}); return message.reply('Lockdown lifted!'); } }
   });
 
-  // ── Ultimate Anti-Nuke Event Handlers
+  // ── Message Delete & Edit Logging
+  client.on('messageDelete', async (message) => {
+    try {
+      if (!message.guild || message.author?.bot) return;
+      let executor = null;
+      try {
+        const logs = await message.guild.fetchAuditLogs({ type: AuditLogEvent.MessageDelete, limit: 1 }).catch(() => null);
+        const entry = logs?.entries.first();
+        if (entry && entry.target?.id === message.author?.id && Date.now() - entry.createdTimestamp < 4000) {
+          executor = entry.executor;
+        }
+      } catch (_) {}
+
+      const embed = new EmbedBuilder()
+        .setColor('#ED4245')
+        .setTitle('🗑️ Message Deleted')
+        .setDescription(`**Author:** ${message.author ? `${message.author.tag} (<@${message.author.id}>)` : 'Unknown'}\n**Channel:** <#${message.channel.id}>\n**Content:**\n${message.content || '*[Attachment / Embed]*'}${executor ? `\n**Deleted By:** ${executor.tag} (<@${executor.id}>)` : ''}`)
+        .setTimestamp();
+      await sendLog(message.guild, embed);
+    } catch (_) {}
+  });
+
+  client.on('messageUpdate', async (oldMessage, newMessage) => {
+    try {
+      if (!newMessage.guild || newMessage.author?.bot) return;
+      if (oldMessage.content === newMessage.content) return;
+
+      const embed = new EmbedBuilder()
+        .setColor('#FEE75C')
+        .setTitle('✏️ Message Edited')
+        .setDescription(`**Author:** ${newMessage.author.tag} (<@${newMessage.author.id}>)\n**Channel:** <#${newMessage.channel.id}>\n**Before:** ${oldMessage.content || '*None*'}\n**After:** ${newMessage.content || '*None*'}`)
+        .setTimestamp();
+      await sendLog(newMessage.guild, embed);
+    } catch (_) {}
+  });
+
+  // ── Ultimate Anti-Nuke Event Handlers & Server Logs
   client.on('channelDelete', async (channel) => {
     if (!channel.guild) return;
     try {
       const logs = await channel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelDelete, limit: 1 }).catch(() => null);
-      const entry = logs?.entries.first(); if (!entry) return;
-      if (Date.now() - entry.createdTimestamp > 8000) return;
-      await handleNukeAction(channel.guild, entry.executor, 'antiChannelDelete', 'Channel Deleted (' + channel.name + ')');
+      const entry = logs?.entries.first();
+      if (entry && Date.now() - entry.createdTimestamp < 8000) {
+        await handleNukeAction(channel.guild, entry.executor, 'antiChannelDelete', 'Channel Deleted (' + channel.name + ')');
+      }
+      await sendLog(channel.guild, new EmbedBuilder().setColor('#ED4245').setTitle('🗑️ Channel Deleted').setDescription(`**Channel:** #${channel.name} (\`${channel.id}\`)${entry?.executor ? `\n**Action By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1021,9 +1127,11 @@ async function startBot() {
     if (!channel.guild) return;
     try {
       const logs = await channel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelCreate, limit: 1 }).catch(() => null);
-      const entry = logs?.entries.first(); if (!entry) return;
-      if (Date.now() - entry.createdTimestamp > 8000) return;
-      await handleNukeAction(channel.guild, entry.executor, 'antiChannelCreate', 'Channel Created (' + channel.name + ')');
+      const entry = logs?.entries.first();
+      if (entry && Date.now() - entry.createdTimestamp < 8000) {
+        await handleNukeAction(channel.guild, entry.executor, 'antiChannelCreate', 'Channel Created (' + channel.name + ')');
+      }
+      await sendLog(channel.guild, new EmbedBuilder().setColor('#57F287').setTitle('📁 Channel Created').setDescription(`**Channel:** <#${channel.id}> (\`${channel.name}\`)${entry?.executor ? `\n**Created By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1031,9 +1139,11 @@ async function startBot() {
     if (!newChannel.guild) return;
     try {
       const logs = await newChannel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelUpdate, limit: 1 }).catch(() => null);
-      const entry = logs?.entries.first(); if (!entry) return;
-      if (Date.now() - entry.createdTimestamp > 8000) return;
-      await handleNukeAction(newChannel.guild, entry.executor, 'antiChannelUpdate', 'Channel Modified (' + newChannel.name + ')');
+      const entry = logs?.entries.first();
+      if (entry && Date.now() - entry.createdTimestamp < 8000) {
+        await handleNukeAction(newChannel.guild, entry.executor, 'antiChannelUpdate', 'Channel Modified (' + newChannel.name + ')');
+      }
+      await sendLog(newChannel.guild, new EmbedBuilder().setColor('#FEE75C').setTitle('⚙️ Channel Updated').setDescription(`**Channel:** <#${newChannel.id}>${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1041,9 +1151,11 @@ async function startBot() {
     if (!role.guild) return;
     try {
       const logs = await role.guild.fetchAuditLogs({ type: AuditLogEvent.RoleDelete, limit: 1 }).catch(() => null);
-      const entry = logs?.entries.first(); if (!entry) return;
-      if (Date.now() - entry.createdTimestamp > 8000) return;
-      await handleNukeAction(role.guild, entry.executor, 'antiRoleDelete', 'Role Deleted (' + role.name + ')');
+      const entry = logs?.entries.first();
+      if (entry && Date.now() - entry.createdTimestamp < 8000) {
+        await handleNukeAction(role.guild, entry.executor, 'antiRoleDelete', 'Role Deleted (' + role.name + ')');
+      }
+      await sendRoleLog(role.guild, new EmbedBuilder().setColor('#ED4245').setTitle('🗑️ Role Deleted').setDescription(`**Role:** ${role.name} (\`${role.id}\`)${entry?.executor ? `\n**Deleted By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1051,9 +1163,11 @@ async function startBot() {
     if (!role.guild) return;
     try {
       const logs = await role.guild.fetchAuditLogs({ type: AuditLogEvent.RoleCreate, limit: 1 }).catch(() => null);
-      const entry = logs?.entries.first(); if (!entry) return;
-      if (Date.now() - entry.createdTimestamp > 8000) return;
-      await handleNukeAction(role.guild, entry.executor, 'antiRoleCreate', 'Role Created (' + role.name + ')');
+      const entry = logs?.entries.first();
+      if (entry && Date.now() - entry.createdTimestamp < 8000) {
+        await handleNukeAction(role.guild, entry.executor, 'antiRoleCreate', 'Role Created (' + role.name + ')');
+      }
+      await sendRoleLog(role.guild, new EmbedBuilder().setColor('#57F287').setTitle('🛡️ Role Created').setDescription(`**Role:** <@&${role.id}> (\`${role.name}\`)${entry?.executor ? `\n**Created By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1066,21 +1180,32 @@ async function startBot() {
         PermissionsBitField.Flags.BanMembers, PermissionsBitField.Flags.KickMembers,
       ];
       const gained = dangerous.some(f => !oldRole.permissions.has(f) && newRole.permissions.has(f));
-      if (gained) {
-        const logs = await newRole.guild.fetchAuditLogs({ type: AuditLogEvent.RoleUpdate, limit: 1 }).catch(() => null);
-        const entry = logs?.entries.first(); if (!entry) return;
-        if (Date.now() - entry.createdTimestamp > 8000) return;
+      const logs = await newRole.guild.fetchAuditLogs({ type: AuditLogEvent.RoleUpdate, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first();
+
+      if (gained && entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(newRole.guild, entry.executor, 'antiRoleUpdate', 'Dangerous Permissions Granted to Role (' + newRole.name + ')');
       }
+      await sendRoleLog(newRole.guild, new EmbedBuilder().setColor('#FEE75C').setTitle('🛠️ Role Updated').setDescription(`**Role:** <@&${newRole.id}> (\`${newRole.name}\`)${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
   client.on('guildBanAdd', async (ban) => {
     try {
       const logs = await ban.guild.fetchAuditLogs({ type: AuditLogEvent.MemberBanAdd, limit: 1 }).catch(() => null);
-      const entry = logs?.entries.first(); if (!entry) return;
-      if (Date.now() - entry.createdTimestamp > 8000) return;
-      await handleNukeAction(ban.guild, entry.executor, 'antiBan', 'Member Banned (' + ban.user.tag + ')');
+      const entry = logs?.entries.first();
+      if (entry && Date.now() - entry.createdTimestamp < 8000) {
+        await handleNukeAction(ban.guild, entry.executor, 'antiBan', 'Member Banned (' + ban.user.tag + ')');
+      }
+      await sendLog(ban.guild, new EmbedBuilder().setColor('#ED4245').setTitle('⛔ Member Banned').setDescription(`**User:** ${ban.user.tag} (\`${ban.user.id}\`)${entry?.executor ? `\n**Banned By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+    } catch (_) {}
+  });
+
+  client.on('guildBanRemove', async (ban) => {
+    try {
+      const logs = await ban.guild.fetchAuditLogs({ type: AuditLogEvent.MemberBanRemove, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first();
+      await sendLog(ban.guild, new EmbedBuilder().setColor('#57F287').setTitle('🔓 Member Unbanned').setDescription(`**User:** ${ban.user.tag} (\`${ban.user.id}\`)${entry?.executor ? `\n**Unbanned By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1092,6 +1217,7 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(channel.guild, entry.executor, 'antiWebhookCreate', 'Webhook Created in #' + channel.name);
       }
+      await sendLog(channel.guild, new EmbedBuilder().setColor('#FEE75C').setTitle('🔗 Webhook Updated').setDescription(`**Channel:** <#${channel.id}>${entry?.executor ? `\n**Action By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1102,6 +1228,7 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(newGuild, entry.executor, 'antiGuildUpdate', 'Server Settings Modified');
       }
+      await sendLog(newGuild, new EmbedBuilder().setColor('#FEE75C').setTitle('🏰 Server Settings Updated').setDescription(`**Server Name:** ${newGuild.name}${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
