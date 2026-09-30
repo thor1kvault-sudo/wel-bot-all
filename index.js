@@ -308,6 +308,70 @@ function buildAutoModPanel(guild, statusMsg) {
 
   return { embeds: [embed], components: [row1, row2] };
 }
+
+function getEventPunishment(eventId) {
+  const sec = config.security || {};
+  if (sec.eventPunishments && sec.eventPunishments[eventId]) {
+    const p = sec.eventPunishments[eventId];
+    return p.charAt(0).toUpperCase() + p.slice(1);
+  }
+  const defP = sec.automodPunishment || 'Mute';
+  return defP.charAt(0).toUpperCase() + defP.slice(1);
+}
+
+function buildPunishmentPanel(guild, statusMsg, selectedEventId) {
+  const sec = config.security || {};
+  if (!sec.eventPunishments) sec.eventPunishments = {};
+
+  const lines = [];
+  if (statusMsg) lines.push(statusMsg + '\n');
+
+  AUTOMOD_EVENTS.forEach(ev => {
+    const pun = getEventPunishment(ev.id);
+    lines.push(`**${ev.label}**\n${pun}\n`);
+  });
+
+  const logo = guild?.iconURL({ size: 1024, forceStatic: false });
+  const embed = new EmbedBuilder()
+    .setColor('#57F287')
+    .setTitle(`Current Automod Punishments for ${guild.name} ⚡`)
+    .setDescription(lines.join('\n'))
+    .setFooter({ text: 'Keep the default punishment (Mute) to prevent server raids without kicking or banning raiders' })
+    .setTimestamp();
+
+  if (logo) embed.setThumbnail(logo);
+
+  const components = [];
+
+  if (!selectedEventId) {
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId('am_pun_sel_event')
+      .setPlaceholder('Select events to update punishment')
+      .addOptions(
+        AUTOMOD_EVENTS.map(ev => ({
+          label: ev.label,
+          value: ev.id,
+          description: 'Current Punishment: ' + getEventPunishment(ev.id),
+        }))
+      );
+    components.push(new ActionRowBuilder().addComponents(selectMenu));
+  } else {
+    const evObj = AUTOMOD_EVENTS.find(e => e.id === selectedEventId);
+    const actionMenu = new StringSelectMenuBuilder()
+      .setCustomId('am_pun_sel_action_' + selectedEventId)
+      .setPlaceholder(`Select action for ${evObj?.label || 'Event'}`)
+      .addOptions([
+        { label: 'Mute', value: 'mute', description: 'Mute the member', emoji: '🔇' },
+        { label: 'Kick', value: 'kick', description: 'Kick the member from server', emoji: '🚫' },
+        { label: 'Ban', value: 'ban', description: 'Ban the member from server', emoji: '⛔' },
+        { label: 'Warn', value: 'warn', description: 'Issue warning to member', emoji: '⚠️' },
+        { label: 'Delete Message Only', value: 'delete', description: 'Delete message without member penalty', emoji: '🗑️' },
+      ]);
+    components.push(new ActionRowBuilder().addComponents(actionMenu));
+  }
+
+  return { embeds: [embed], components };
+}
 const PERM_LIST = [
   { id: 'antiBan', label: 'Anti Ban' },
   { id: 'antiUnban', label: 'Anti Unban' },
@@ -414,10 +478,16 @@ function countEmojis(str) {
   return custom + unicode;
 }
 
-async function executePunishment(member, action, reason, channel) {
+async function executePunishment(member, action, reason, channel, eventId) {
   const guild = member.guild;
   const user  = member.user || member;
-  const pun   = (action || config.security?.automodPunishment || 'kick').toLowerCase();
+  const sec   = config.security || {};
+  let pun = action;
+  if (!pun && eventId && sec.eventPunishments && sec.eventPunishments[eventId]) {
+    pun = sec.eventPunishments[eventId];
+  }
+  if (!pun) pun = sec.automodPunishment || 'mute';
+  pun = pun.toLowerCase();
 
   try {
     if (pun === 'kick') {
@@ -679,7 +749,8 @@ function buildCmds() {
     new SlashCommandBuilder().setName('queue').setDescription('View or add to music queue').addStringOption(o => o.setName('song').setDescription('Song to add').setRequired(false)),
     new SlashCommandBuilder().setName('nowplaying').setDescription('Show currently playing song'),
     new SlashCommandBuilder().setName('radio').setDescription('Play 24/7 radio stream').addStringOption(o => o.setName('genre').setDescription('Genre').setRequired(false).addChoices({ name: 'Lofi Chill', value: 'lofi' }, { name: 'Gaming Beats', value: 'gaming' }, { name: 'Pop Hits', value: 'pop' }, { name: 'Chill Hop', value: 'chill' })),
-    new SlashCommandBuilder().setName('automod').setDescription('Manage AutoMod rules, punishments and limits').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('What to do').setRequired(true).addChoices({ name: 'enable', value: 'enable' }, { name: 'disable', value: 'disable' }, { name: 'config / status', value: 'status' }, { name: 'set punishment action', value: 'punishment' }, { name: 'set spam message limit', value: 'spamlimit' }, { name: 'set max emoji limit', value: 'emojilimit' })).addStringOption(o => o.setName('punishment').setDescription('Action: kick, ban, mute, warn, delete').setRequired(false).addChoices({ name: 'kick', value: 'kick' }, { name: 'ban', value: 'ban' }, { name: 'mute', value: 'mute' }, { name: 'warn', value: 'warn' }, { name: 'delete message only', value: 'delete' })).addIntegerOption(o => o.setName('limit').setDescription('Limit number (e.g. 3 messages, 5 emojis)').setRequired(false)),
+    new SlashCommandBuilder().setName('automod').setDescription('Toggle or view AutoMod setup').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'enable', value: 'enable' }, { name: 'disable', value: 'disable' }, { name: 'status', value: 'status' }, { name: 'punishment', value: 'punishment' })),
+    new SlashCommandBuilder().setName('automodpunishment').setDescription('Manage AutoMod punishment actions for each event').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
     new SlashCommandBuilder().setName('whitelist').setDescription('Interactive Whitelist management for Anti-Nuke & Security').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'manage (interactive panel)', value: 'manage' }, { name: 'add user', value: 'add_user' }, { name: 'remove user', value: 'remove_user' }, { name: 'add role', value: 'add_role' }, { name: 'remove role', value: 'remove_role' }, { name: 'list whitelisted', value: 'list' })).addUserOption(o => o.setName('user').setDescription('User').setRequired(false)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(false)),
     new SlashCommandBuilder().setName('tagnotify').setDescription('Toggle DM notifications when someone is tagged in server').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
     new SlashCommandBuilder().setName('help').setDescription('Show all bot commands'),
@@ -938,7 +1009,7 @@ async function startBot() {
       // 1. Anti-Spam Check (> 3 messages)
       if (sec.antiSpam !== false && isSpamming(message.author.id)) {
         await message.delete().catch(() => {});
-        await executePunishment(member, sec.automodPunishment || 'kick', 'Spamming (> ' + (sec.spamThreshold || 3) + ' msgs)', message.channel);
+        await executePunishment(member, null, 'Spamming (> ' + (sec.spamThreshold || 3) + ' msgs)', message.channel, 'antiSpam');
         return;
       }
       // 2. Anti-Caps Check (> 70% uppercase)
@@ -948,7 +1019,7 @@ async function startBot() {
           const caps = letters.replace(/[^A-Z]/g, '').length;
           if (caps / letters.length > 0.7) {
             await message.delete().catch(() => {});
-            await executePunishment(member, sec.automodPunishment || 'kick', 'Excessive CAPS lock', message.channel);
+            await executePunishment(member, null, 'Excessive CAPS lock', message.channel, 'antiCaps');
             return;
           }
         }
@@ -957,7 +1028,7 @@ async function startBot() {
       if (sec.antiInvites !== false) {
         if (/discord\.gg\/|discord\.com\/invite\/|dsc\.gg\//i.test(message.content)) {
           await message.delete().catch(() => {});
-          await executePunishment(member, sec.automodPunishment || 'kick', 'Discord Invite Link', message.channel);
+          await executePunishment(member, null, 'Discord Invite Link', message.channel, 'antiInvites');
           return;
         }
       }
@@ -967,7 +1038,7 @@ async function startBot() {
           const ok = (sec.allowedLinks || []).some(d => message.content.includes(d));
           if (!ok) {
             await message.delete().catch(() => {});
-            await executePunishment(member, sec.automodPunishment || 'kick', 'External Link / Advertisement', message.channel);
+            await executePunishment(member, null, 'External Link / Advertisement', message.channel, 'antiLink');
             return;
           }
         }
@@ -976,7 +1047,7 @@ async function startBot() {
       if (sec.antiNsfwLink !== false) {
         if (/https?:\/\/[^\s]*(porn|xxx|hentai|sex|nsfw|adult|xvideos|pornhub)/i.test(message.content)) {
           await message.delete().catch(() => {});
-          await executePunishment(member, sec.automodPunishment || 'kick', 'NSFW Link Detected', message.channel);
+          await executePunishment(member, null, 'NSFW Link Detected', message.channel, 'antiNsfwLink');
           return;
         }
       }
@@ -985,7 +1056,7 @@ async function startBot() {
         const totalMentions = message.mentions.users.size + message.mentions.roles.size;
         if (totalMentions >= 5) {
           await message.delete().catch(() => {});
-          await executePunishment(member, sec.automodPunishment || 'kick', 'Mass Mention (' + totalMentions + ' mentions)', message.channel);
+          await executePunishment(member, null, 'Mass Mention (' + totalMentions + ' mentions)', message.channel, 'antiMassMention');
           return;
         }
       }
@@ -994,7 +1065,7 @@ async function startBot() {
         const eCount = countEmojis(message.content);
         if (eCount > (sec.emojiLimit || 5)) {
           await message.delete().catch(() => {});
-          await executePunishment(member, sec.automodPunishment || 'kick', 'Emoji Spam (' + eCount + ' emojis)', message.channel);
+          await executePunishment(member, null, 'Emoji Spam (' + eCount + ' emojis)', message.channel, 'antiEmojiSpam');
           return;
         }
       }
@@ -1004,7 +1075,7 @@ async function startBot() {
         const bad = (sec.blacklistedWords || []).find(w => lower.includes(w.toLowerCase()));
         if (bad) {
           await message.delete().catch(() => {});
-          await executePunishment(member, sec.automodPunishment || 'kick', 'Word Filter Violation', message.channel);
+          await executePunishment(member, null, 'Word Filter Violation', message.channel, 'wordFilter');
           return;
         }
       }
@@ -1350,6 +1421,23 @@ async function startBot() {
         await interaction.update(buildAutoModPanel(interaction.guild, '✅ **Selected AutoMod events updated!**'));
         return;
       }
+      if (id === 'am_pun_sel_event') {
+        const selectedEventId = interaction.values[0];
+        await interaction.update(buildPunishmentPanel(interaction.guild, null, selectedEventId));
+        return;
+      }
+      if (id.startsWith('am_pun_sel_action_')) {
+        const eventId = id.replace('am_pun_sel_action_', '');
+        const selectedAction = interaction.values[0];
+        if (!config.security) config.security = {};
+        if (!config.security.eventPunishments) config.security.eventPunishments = {};
+        config.security.eventPunishments[eventId] = selectedAction;
+        config.security.automodPunishment = selectedAction;
+        saveConfig();
+        const evObj = AUTOMOD_EVENTS.find(e => e.id === eventId);
+        await interaction.update(buildPunishmentPanel(interaction.guild, `✅ **Punishment for ${evObj?.label || 'Event'} set to ${selectedAction.toUpperCase()}!**`));
+        return;
+      }
       if (id.startsWith('wl_sel_')) {
         const targetId = id.replace('wl_sel_', '');
         const selectedPerm = interaction.values[0];
@@ -1365,6 +1453,7 @@ async function startBot() {
     if (interaction.isButton()) {
       const id = interaction.customId;
       if (id === 'am_enable_all') {
+        await interaction.deferUpdate().catch(() => {});
         if (!config.security) config.security = {};
         AUTOMOD_EVENTS.forEach(ev => config.security[ev.id] = true);
         config.security.antiSpam = true;
@@ -1372,8 +1461,8 @@ async function startBot() {
         config.security.wordFilter = true;
         config.security.antiNuke = true;
         saveConfig();
-        await setupAutoMod(interaction.guild, config.logChannelId);
-        await interaction.update(buildAutoModPanel(interaction.guild, '✅ **ALL 7 AutoMod events & Native Discord rules are now ENABLED!**'));
+        await setupAutoMod(interaction.guild, config.logChannelId).catch(() => {});
+        await interaction.editReply(buildAutoModPanel(interaction.guild, '✅ **ALL 7 AutoMod events & Native Discord rules are now ENABLED!**')).catch(() => {});
         return;
       }
       if (id === 'am_cancel') {
@@ -1431,44 +1520,28 @@ async function startBot() {
 
     if (commandName === 'automod') {
       const action = interaction.options.getString('action');
-      const punOpt = interaction.options.getString('punishment');
-      const limitOpt = interaction.options.getInteger('limit');
-      const sec = config.security || {};
       await interaction.deferReply({ ephemeral: true });
 
       if (action === 'punishment') {
-        if (!punOpt) return interaction.editReply({ content: 'Please select a punishment action (`kick`, `ban`, `mute`, `warn`, or `delete`)!' });
-        sec.automodPunishment = punOpt.toLowerCase();
-        saveConfig();
-        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('⚙️ AutoMod Punishment Updated').setDescription('AutoMod punishment is now set to **' + punOpt.toUpperCase() + '**!').setTimestamp()] });
-        return;
-      }
-      if (action === 'spamlimit') {
-        if (!limitOpt || limitOpt < 1) return interaction.editReply({ content: 'Please enter a valid limit number (e.g. 3)!' });
-        sec.spamThreshold = limitOpt;
-        saveConfig();
-        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('⚙️ AutoMod Spam Limit Updated').setDescription('AutoMod will now punish anyone sending more than **' + limitOpt + '** messages in 4 seconds.').setTimestamp()] });
-        return;
-      }
-      if (action === 'emojilimit') {
-        if (!limitOpt || limitOpt < 1) return interaction.editReply({ content: 'Please enter a valid emoji limit (e.g. 5)!' });
-        sec.emojiLimit = limitOpt;
-        saveConfig();
-        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('⚙️ AutoMod Emoji Limit Updated').setDescription('AutoMod will now punish messages with more than **' + limitOpt + '** emojis.').setTimestamp()] });
-        return;
-      }
-      if (action === 'enable') {
-        await interaction.editReply(buildAutoModPanel(guild));
+        await interaction.editReply(buildPunishmentPanel(guild));
         return;
       }
       if (action === 'disable') {
+        if (!config.security) config.security = {};
+        AUTOMOD_EVENTS.forEach(ev => config.security[ev.id] = false);
+        saveConfig();
         const amResults = await disableAutoMod(guild);
-        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('🤖 AutoMod Disabled').setDescription(amResults.join('\n')).setTimestamp()] }); return;
-      }
-      if (action === 'status' || action === 'config') {
-        await interaction.editReply(buildAutoModPanel(guild));
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('🤖 AutoMod Disabled').setDescription(amResults.join('\n')).setTimestamp()] });
         return;
       }
+      await interaction.editReply(buildAutoModPanel(guild));
+      return;
+    }
+
+    if (commandName === 'automodpunishment') {
+      await interaction.deferReply({ ephemeral: true });
+      await interaction.editReply(buildPunishmentPanel(guild));
+      return;
     }
 
     if (commandName === 'whitelist') {
