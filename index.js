@@ -626,6 +626,9 @@ async function startBot() {
     partials: [Partials.GuildMember, Partials.User, Partials.Channel, Partials.Message],
   });
 
+  client.on('error', err => console.error('Discord Client Error:', err?.message || err));
+  client.on('warn',  info => console.warn('Discord Client Warning:', info));
+
   client.once('clientReady', async () => {
     console.log('=======================================================');
     console.log('THOR APEX All-in-One Bot is ONLINE!');
