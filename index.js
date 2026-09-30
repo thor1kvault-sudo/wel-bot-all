@@ -1,1884 +1,729 @@
 const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  PermissionsBitField,
-  REST,
-  Routes,
-  SlashCommandBuilder,
+  Client, GatewayIntentBits, Partials, EmbedBuilder,
+  PermissionsBitField, REST, Routes, SlashCommandBuilder, AuditLogEvent,
 } = require('discord.js');
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
-const http = require('http');
-const https = require('https');
+const fs2   = require('fs');
+const path2 = require('path');
+const http  = require('http');
 
-try {
-  const ffmpegStatic = require('ffmpeg-static');
-  if (ffmpegStatic) process.env.FFMPEG_PATH = ffmpegStatic;
-} catch (_) {}
+try { const ff = require('ffmpeg-static'); if (ff) process.env.FFMPEG_PATH = ff; } catch (_) {}
 
-// ─── Global Error Handlers ───────────────────────────────────────────────────
-process.on('unhandledRejection', (reason) => {
-  console.error('⚠️ Unhandled Promise Rejection:', reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err);
-});
+process.on('unhandledRejection', r => console.error('Unhandled Rejection:', r));
+process.on('uncaughtException',  e => console.error('Uncaught Exception:', e));
 
-// ─── HTTP Health Check Server ─────────────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
-const server = http.createServer((req, res) => {
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({
-    status: 'ok',
-    bot: 'Multi-Server Welcome Bot',
-    uptime: Math.floor(process.uptime()),
-    timestamp: new Date().toISOString()
-  }));
-});
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Health check server running on port ${PORT}`);
-});
+  res.end(JSON.stringify({ status: 'ok', bot: 'THOR APEX All-in-One Bot', uptime: Math.floor(process.uptime()) }));
+}).listen(PORT, '0.0.0.0', () => console.log('Health server on port ' + PORT));
 
-// ─── Per-Server Config Storage ────────────────────────────────────────────────
-// Each server (guild) gets its own config file stored in ./guild_configs/<guildId>.json
-const GUILD_CONFIGS_DIR = path.join(__dirname, 'guild_configs');
-if (!fs.existsSync(GUILD_CONFIGS_DIR)) {
-  fs.mkdirSync(GUILD_CONFIGS_DIR, { recursive: true });
+const BOT_OWNER_ID = process.env.OWNER_ID || '';
+const DATA_DIR = path2.join(__dirname, 'data');
+if (!fs2.existsSync(DATA_DIR)) fs2.mkdirSync(DATA_DIR, { recursive: true });
+
+function loadData(f) {
+  const p = path2.join(DATA_DIR, f);
+  if (fs2.existsSync(p)) { try { return JSON.parse(fs2.readFileSync(p, 'utf8')); } catch (_) {} }
+  return {};
 }
+function saveData(f, d) { try { fs2.writeFileSync(path2.join(DATA_DIR, f), JSON.stringify(d, null, 2)); } catch (e) { console.error('Save error:', e.message); } }
 
-/**
- * Returns the default config structure for a new server.
- * Preserves exact THOR APEX welcome text for THOR APEX server,
- * while automatically adapting to any other public server.
- */
-function getDefaultConfig(guild) {
-  const isThorApex = guild?.name?.toLowerCase()?.includes('thor apex');
-  const serverName = guild ? guild.name : 'Your Server';
+let config     = loadData('config.json');
+let warnings   = loadData('warnings.json');
+let inviteData = loadData('invites.json');
+const saveConfig     = () => saveData('config.json',   config);
+const saveWarnings   = () => saveData('warnings.json', warnings);
+const saveInviteData = () => saveData('invites.json',  inviteData);
 
-  // Auto-detect channel IDs if guild channels are cached
-  let welcomeId = '', rulesId = '', rolesId = '', generalId = '', leaveId = '';
-  if (guild?.channels?.cache) {
-    const channels = guild.channels.cache;
-    welcomeId = channels.find(c => c.isTextBased?.() && /welcome|join|greet/i.test(c.name))?.id || '';
-    rulesId = channels.find(c => c.isTextBased?.() && /rule|guideline/i.test(c.name))?.id || '';
-    rolesId = channels.find(c => c.isTextBased?.() && /role/i.test(c.name))?.id || '';
-    generalId = channels.find(c => c.isTextBased?.() && /general|chat|main/i.test(c.name))?.id || '';
-    leaveId = channels.find(c => c.isTextBased?.() && /leave|goodbye|farewell|bye|exit/i.test(c.name))?.id || '';
-  }
+const DEFSEC = {
+  antiRaid: false, antiSpam: true, antiLink: true, antiAds: true,
+  wordFilter: true, altDetection: true, altMinDays: 7, antiNuke: true,
+  lockdown: false,
+  blacklistedWords: ['nigga','nigger','fuck','shit','bitch','asshole','retard'],
+  allowedLinks: [], raidThreshold: 10, spamThreshold: 5, spamWindow: 5000, nukeThreshold: 5,
+};
 
-  return {
-    serverName: serverName,
-    welcomeTitle: isThorApex ? 'WELCOME TO THOR APEX !' : `Welcome to ${serverName}!`,
-    embedColor: '#5865F2',
-    channels: {
-      welcomeChannelId: welcomeId,
-      leaveChannelId: leaveId,
-      rulesChannelId: rulesId,
-      rolesChannelId: rolesId,
-      generalChannelId: generalId,
-    },
-    messages: {
-      greetingPrefix: 'HEY BUDDY!',
-      welcomeSubtitle: isThorApex ? 'Welcome to THOR APEX !' : `Welcome to ${serverName}!`,
-      rulesText: 'Please read our rules:',
-      outroText: isThorApex ? 'Hope you enjoy your stay in THOR APEX! 🎉' : 'Hope you enjoy your stay here! 🎉',
-      leaveText: 'Goodbye {username}! We are sad to see you go. We now have **{count}** members.',
-    },
-    // If false, uses Discord CDN URLs set by admin; if true, auto-uses server icon/banner
-    useServerAssets: true,
-    customImages: {
-      logoUrl: '',
-      bannerUrl: '',
-    }
+if (!config.embedColor) {
+  config = {
+    welcomeChannelId: '', leaveChannelId: '', rulesChannelId: '', rolesChannelId: '',
+    generalChannelId: '', logChannelId: '', muteRoleId: '', autoRoleId: '',
+    embedColor: '#5865F2', welcomeTitle: 'WELCOME TO THOR APEX!',
+    greetingPrefix: 'HEY BUDDY!', welcomeSubtitle: 'Welcome to THOR APEX!',
+    outroText: 'Hope you enjoy your stay in THOR APEX!',
+    leaveText: 'Goodbye **{username}**! We now have **{count}** members.',
+    security: DEFSEC, ...config,
   };
+  if (!config.security) config.security = { ...DEFSEC };
+  saveConfig();
 }
 
-/** Load config for a specific guild. Returns default config if none exists yet. */
-function loadGuildConfig(guild) {
-  const filePath = path.join(GUILD_CONFIGS_DIR, `${guild.id}.json`);
-  if (fs.existsSync(filePath)) {
-    try {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch (e) {
-      console.warn(`⚠️ Could not parse config for guild ${guild.id}, using defaults.`);
-    }
-  }
-  return getDefaultConfig(guild);
-}
-
-/** Save config for a specific guild. */
-function saveGuildConfig(guildId, config) {
-  const filePath = path.join(GUILD_CONFIGS_DIR, `${guildId}.json`);
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(config, null, 2));
-    console.log(`💾 Config saved for guild: ${guildId}`);
-  } catch (err) {
-    console.error(`❌ Failed to save config for guild ${guildId}:`, err);
-  }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function formatChannelMention(channelId, fallbackName) {
-  if (!channelId || !/^\d+$/.test(channelId)) return `\`#${fallbackName}\``;
-  return `<#${channelId}>`;
-}
-
-function isValidHexColor(str) {
-  return /^#[0-9A-Fa-f]{6}$/.test(str);
-}
-
-// ─── Music Bot Storage & Voice Library ─────────────────────────────────────────
-let voiceLib = null;
-try {
-  voiceLib = require('@discordjs/voice');
-} catch (e) {
-  console.log('ℹ️ Voice library load status:', e.message);
-}
-
-let playdl = null;
-try {
-  playdl = require('play-dl');
-} catch (e) {
-  console.log('ℹ️ play-dl load status:', e.message);
-}
-
+// ── Voice / Music
+let voiceLib = null; try { voiceLib = require('@discordjs/voice'); } catch (e) { console.log('Voice:', e.message); }
+let playdl   = null; try { playdl   = require('play-dl');          } catch (e) { console.log('play-dl:', e.message); }
 let isPlayDlReady = false;
 async function ensurePlayDlReady() {
   if (!playdl || isPlayDlReady) return;
-  try {
-    const cid = await playdl.getFreeClientID();
-    if (cid) {
-      await playdl.setToken({ soundcloud: { client_id: cid } });
-      isPlayDlReady = true;
-      console.log('✅ play-dl audio streaming engine initialized');
-    }
-  } catch (err) {
-    console.warn('⚠️ play-dl init note:', err.message);
-  }
+  try { const c = await playdl.getFreeClientID(); if (c) { await playdl.setToken({ soundcloud: { client_id: c } }); isPlayDlReady = true; } } catch (_) {}
 }
 
-function getSpotifyTrackInfo(spotifyUrl) {
-  return new Promise((resolve) => {
-    try {
-      const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(spotifyUrl)}`;
-      https.get(oembedUrl, (res) => {
-        let raw = '';
-        res.on('data', chunk => raw += chunk);
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(raw);
-            resolve(data.title || null);
-          } catch (_) {
-            resolve(null);
-          }
-        });
-      }).on('error', () => resolve(null));
-    } catch (_) {
-      resolve(null);
-    }
-  });
+const musicQueues = new Map();
+function getQ(gid) {
+  if (!musicQueues.has(gid)) musicQueues.set(gid, { connection: null, player: null, queue: [], isPlaying: false });
+  return musicQueues.get(gid);
 }
-
-const musicQueues = new Map(); // guildId => { connection, player, queue: [], currentTrack: null, isPlaying: false }
-
-function getGuildQueue(guildId) {
-  if (!musicQueues.has(guildId)) {
-    musicQueues.set(guildId, {
-      connection: null,
-      player: null,
-      queue: [],
-      currentTrack: null,
-      isPlaying: false,
-    });
-  }
-  return musicQueues.get(guildId);
-}
-
-async function playTrackAudio(guildId) {
+async function playTrack(gid) {
   if (!voiceLib) return;
-  const guildQueue = getGuildQueue(guildId);
-  if (!guildQueue || !guildQueue.connection) return;
-
+  const q = getQ(gid); if (!q || !q.connection) return;
   await ensurePlayDlReady();
-
-  try {
-    if (guildQueue.connection.state.status !== voiceLib.VoiceConnectionStatus.Ready) {
-      await voiceLib.entersState(guildQueue.connection, voiceLib.VoiceConnectionStatus.Ready, 20_000);
-    }
-  } catch (err) {
-    console.warn('⚠️ Voice connection readiness note:', err.message);
-  }
-
-  if (!guildQueue.player) {
+  if (!q.player) {
     try {
-      guildQueue.player = voiceLib.createAudioPlayer({
-        behaviors: {
-          noSubscriber: voiceLib.NoSubscriberBehavior.Play,
-          maxMissedFrames: Math.round(5000 / 20),
-        },
-      });
-
-      guildQueue.connection.subscribe(guildQueue.player);
-
-      guildQueue.player.on(voiceLib.AudioPlayerStatus.Idle, (oldState) => {
-        if (oldState.status === voiceLib.AudioPlayerStatus.Playing || oldState.status === voiceLib.AudioPlayerStatus.Buffering) {
-          console.log(`🎵 Track finished in guild ${guildId}, advancing queue`);
-          guildQueue.queue.shift();
-          if (guildQueue.queue.length > 0) {
-            playTrackAudio(guildId);
-          } else {
-            guildQueue.isPlaying = false;
-          }
+      q.player = voiceLib.createAudioPlayer({ behaviors: { noSubscriber: voiceLib.NoSubscriberBehavior.Play, maxMissedFrames: Math.round(5000/20) } });
+      q.connection.subscribe(q.player);
+      q.player.on(voiceLib.AudioPlayerStatus.Idle, old => {
+        if (old.status === voiceLib.AudioPlayerStatus.Playing || old.status === voiceLib.AudioPlayerStatus.Buffering) {
+          q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false;
         }
       });
-
-      guildQueue.player.on('error', (err) => {
-        console.warn('⚠️ Audio player error:', err.message);
-        guildQueue.queue.shift();
-        if (guildQueue.queue.length > 0) {
-          playTrackAudio(guildId);
-        } else {
-          guildQueue.isPlaying = false;
-        }
-      });
-    } catch (e) {
-      console.warn('⚠️ Audio player creation error:', e.message);
-      return;
-    }
-  } else if (guildQueue.connection) {
-    // Re-subscribe if connection was recreated
-    try { guildQueue.connection.subscribe(guildQueue.player); } catch (_) {}
-  }
-
-  const currentTrack = guildQueue.queue[0];
-  if (!currentTrack) {
-    guildQueue.isPlaying = false;
-    return;
-  }
-
+      q.player.on('error', () => { q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false; });
+    } catch (_) { return; }
+  } else if (q.connection) { try { q.connection.subscribe(q.player); } catch (_) {} }
+  const track = q.queue[0]; if (!track) { q.isPlaying = false; return; }
   try {
-    let streamObj = null;
-
+    let so = null;
     if (playdl) {
-      try {
-        let searchQuery = currentTrack.title || currentTrack.query;
-
-        // If it's a Spotify link, fetch title from public Spotify OEmbed API
-        if (currentTrack.url && currentTrack.url.includes('spotify.com')) {
-          const spTitle = await getSpotifyTrackInfo(currentTrack.url);
-          if (spTitle) {
-            searchQuery = spTitle;
-            currentTrack.title = `🟢 ${spTitle}`;
-          }
-        }
-
-        // Clean query if it was a raw YouTube url to search title instead
-        if (searchQuery.includes('youtube.com/watch') || searchQuery.includes('youtu.be/')) {
-          const u = new URL(searchQuery);
-          searchQuery = u.searchParams.get('v') || searchQuery;
-        }
-
-        const searched = await playdl.search(searchQuery, { source: { soundcloud: 'tracks' }, limit: 1 });
-        if (searched && searched[0] && searched[0].url) {
-          const res = await playdl.stream(searched[0].url);
-          if (res && res.stream) {
-            streamObj = res;
-            if (!currentTrack.title || currentTrack.title.startsWith('http') || currentTrack.title.includes('🟢 Spotify Track')) {
-              currentTrack.title = searched[0].name || searchQuery;
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('⚠️ Audio stream search error:', e.message);
-      }
+      const sr = await playdl.search(track.title || track.query, { source: { soundcloud: 'tracks' }, limit: 1 });
+      if (sr && sr[0] && sr[0].url) { const r = await playdl.stream(sr[0].url); if (r && r.stream) so = r; }
     }
-
-    if (!streamObj) {
-      const fallbackUrl = currentTrack.url && currentTrack.url.startsWith('http') && !currentTrack.url.includes('youtube.com') && !currentTrack.url.includes('spotify.com')
-        ? currentTrack.url
-        : 'https://stream.zeno.fm/f3wvbbqmdg8uv';
-
-      https.get(fallbackUrl, (audioStream) => {
-        try {
-          const resource = voiceLib.createAudioResource(audioStream, {
-            inputType: voiceLib.StreamType.Arbitrary,
-          });
-          guildQueue.player.play(resource);
-          guildQueue.isPlaying = true;
-          console.log(`🎵 [PLAYING] ${currentTrack.title} in guild ${guildId}`);
-        } catch (e) {
-          console.error('Audio resource error:', e);
-        }
-      }).on('error', (err) => {
-        console.warn('⚠️ Audio stream request error:', err.message);
-      });
-    } else {
-      const resource = voiceLib.createAudioResource(streamObj.stream, {
-        inputType: streamObj.type || voiceLib.StreamType.Arbitrary,
-      });
-      guildQueue.player.play(resource);
-      guildQueue.isPlaying = true;
-      console.log(`🎵 [PLAYING] ${currentTrack.title} in guild ${guildId}`);
-    }
-  } catch (err) {
-    console.error('❌ Audio stream error:', err.message);
+    if (!so) { q.queue.shift(); if (q.queue.length > 0) playTrack(gid); return; }
+    const res = voiceLib.createAudioResource(so.stream, { inputType: so.type });
+    q.isPlaying = true; q.player.play(res);
+  } catch (_) { q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false; }
+}
+function addToQ(guild, vc, user, query) {
+  const q = getQ(guild.id); let title = query, isUrl = false;
+  try { new URL(query); isUrl = true; title = 'Song Link'; } catch (_) {}
+  const track = { title, query, url: isUrl ? query : '', requestedBy: user.id };
+  q.queue.push(track);
+  if (voiceLib && vc) {
+    if (!q.connection) { try { q.connection = voiceLib.joinVoiceChannel({ channelId: vc.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator, selfDeaf: false }); } catch (_) {} }
+    if (!q.isPlaying) playTrack(guild.id);
   }
+  return { track, position: q.queue.length };
 }
 
-function addSongToQueue(guild, voiceChannel, user, songInput) {
-  const guildQueue = getGuildQueue(guild.id);
-  const isUrl = typeof songInput === 'string' && songInput.trim().startsWith('http');
-  const queryStr = songInput.trim();
-
-  let trackTitle = queryStr;
-  let provider = 'Music';
-
-  if (isUrl) {
-    try {
-      const u = new URL(queryStr);
-      const host = u.hostname.toLowerCase();
-      if (host.includes('spotify.com')) {
-        provider = 'Spotify 🟢';
-        trackTitle = '🟢 Spotify Track';
-      } else if (host.includes('youtube.com') || host.includes('youtu.be')) {
-        provider = 'YouTube 🔴';
-        trackTitle = '🔴 YouTube Song';
-      } else if (host.includes('soundcloud.com')) {
-        provider = 'SoundCloud 🟠';
-        trackTitle = '🟠 SoundCloud Track';
-      } else {
-        provider = u.hostname.replace('www.', '');
-        trackTitle = `🎵 Song Link (${provider})`;
-      }
-    } catch (_) {
-      trackTitle = '🎵 Song Link';
-    }
-  }
-
-  const track = {
-    title: trackTitle,
-    query: queryStr,
-    url: isUrl ? queryStr : '',
-    requestedBy: user.id,
-    channelName: voiceChannel ? voiceChannel.name : 'Voice Channel',
-    provider: provider,
-  };
-
-  guildQueue.queue.push(track);
-
-  if (voiceLib && voiceChannel) {
-    if (!guildQueue.connection) {
-      try {
-        guildQueue.connection = voiceLib.joinVoiceChannel({
-          channelId: voiceChannel.id,
-          guildId: guild.id,
-          adapterCreator: guild.voiceAdapterCreator,
-          selfDeaf: false,
-          selfMute: false,
-        });
-      } catch (e) {
-        console.warn('⚠️ Voice connection error:', e.message);
-      }
-    } else if (guildQueue.connection.joinConfig?.channelId !== voiceChannel.id) {
-      try {
-        guildQueue.connection = voiceLib.joinVoiceChannel({
-          channelId: voiceChannel.id,
-          guildId: guild.id,
-          adapterCreator: guild.voiceAdapterCreator,
-          selfDeaf: false,
-          selfMute: false,
-        });
-      } catch (e) {
-        console.warn('⚠️ Voice channel switch note:', e.message);
-      }
-    }
-
-    if (!guildQueue.isPlaying) {
-      playTrackAudio(guild.id);
-    }
-  }
-
-  return { track, position: guildQueue.queue.length };
-}
-
-// ─── Invite Tracking Cache ───────────────────────────────────────────────────
-const guildInvitesCache = new Map(); // guildId => Map(inviteCode => usesCount)
-
-async function cacheGuildInvites(guild) {
+// ── Invite Tracking
+const invCache = new Map();
+async function cacheInvites(guild) {
   try {
-    if (!guild || !guild.members?.me?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) return;
-    const invites = await guild.invites.fetch().catch(() => null);
-    if (!invites) return;
-    const inviteMap = new Map();
-    invites.forEach(inv => inviteMap.set(inv.code, inv.uses || 0));
-    guildInvitesCache.set(guild.id, inviteMap);
-  } catch (e) {
-    // ignore missing permissions
-  }
+    if (!guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) return;
+    const inv = await guild.invites.fetch().catch(() => null);
+    if (!inv) return;
+    const m = new Map(); inv.forEach(i => m.set(i.code, i.uses || 0));
+    invCache.set(guild.id, m);
+  } catch (_) {}
 }
-
 async function findInviter(guild) {
   try {
-    if (!guild || !guild.members?.me?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) return null;
-    const cachedInvites = guildInvitesCache.get(guild.id) || new Map();
-    const newInvites = await guild.invites.fetch().catch(() => null);
-
-    if (!newInvites) return null;
-
-    let usedInvite = null;
-    newInvites.forEach(inv => {
-      const prevUses = cachedInvites.get(inv.code) || 0;
-      if (inv.uses > prevUses && !usedInvite) {
-        usedInvite = inv;
-      }
-    });
-
-    // Update cache
-    const updatedMap = new Map();
-    newInvites.forEach(inv => updatedMap.set(inv.code, inv.uses || 0));
-    guildInvitesCache.set(guild.id, updatedMap);
-
-    if (usedInvite && usedInvite.inviter) {
-      let totalUses = 0;
-      newInvites.forEach(inv => {
-        if (inv.inviter?.id === usedInvite.inviter.id) {
-          totalUses += (inv.uses || 0);
-        }
-      });
-      return {
-        inviterId: usedInvite.inviter.id,
-        inviterTag: usedInvite.inviter.tag,
-        uses: totalUses,
-        code: usedInvite.code,
-      };
+    if (!guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) return null;
+    const cached = invCache.get(guild.id) || new Map();
+    const ni = await guild.invites.fetch().catch(() => null);
+    if (!ni) return null;
+    let used = null; ni.forEach(i => { if (i.uses > (cached.get(i.code) || 0) && !used) used = i; });
+    const upd = new Map(); ni.forEach(i => upd.set(i.code, i.uses || 0)); invCache.set(guild.id, upd);
+    if (used && used.inviter) {
+      let total = 0; ni.forEach(i => { if (i.inviter && i.inviter.id === used.inviter.id) total += (i.uses || 0); });
+      const uid = used.inviter.id;
+      if (!inviteData[uid]) inviteData[uid] = { uses: 0 };
+      inviteData[uid].uses = total; saveInviteData();
+      return { inviterId: uid, inviterTag: used.inviter.tag, uses: total };
     }
-  } catch (e) {
-    console.warn('⚠️ Invite tracking note:', e.message);
-  }
+  } catch (_) {}
   return null;
 }
 
-// ─── Welcome Embed Builder ────────────────────────────────────────────────────
-function createWelcomeEmbed(member, guild, inviterData = null) {
-  const isThorApex = guild?.name?.toLowerCase()?.includes('thor apex');
-
-  // ── PERMANENT ORIGINAL CODE FOR YOUR THOR APEX SERVER (UNTOUCHED) ──
-  if (isThorApex) {
-    const userId = member?.user?.id ?? member?.id ?? '000000000000000000';
-    const channels = guild?.channels?.cache;
-
-    const rulesCh = channels?.find(c => /rule/i.test(c.name)) || 'Rules';
-    const funCh = channels?.find(c => /fun/i.test(c.name)) || 'FUN TIME';
-    const editCh = channels?.find(c => /editing|edit/i.test(c.name)) || 'PC EDITING';
-    const gamingCh = channels?.find(c => /gaming|game/i.test(c.name)) || 'GAMING-TEXT';
-    const generalCh = channels?.find(c => /general|chat/i.test(c.name)) || 'General';
-
-    const rulesTag = typeof rulesCh === 'string' ? `\`#${rulesCh}\`` : `<#${rulesCh.id}>`;
-    const funTag = typeof funCh === 'string' ? `\`#${funCh}\`` : `<#${funCh.id}>`;
-    const editTag = typeof editCh === 'string' ? `\`#${editCh}\`` : `<#${editCh.id}>`;
-    const gamingTag = typeof gamingCh === 'string' ? `\`#${gamingCh}\`` : `<#${gamingCh.id}>`;
-    const generalTag = typeof generalCh === 'string' ? `\`#${generalCh}\`` : `<#${generalCh.id}>`;
-
-    const lines = [
-      `### HEY BUDDY! <@${userId}>\n`,
-      `**Welcome To THOR APEX !**\n`,
-      `**Get started with below:** ⚡ THOR APEX ⚡ ➔ ${rulesTag}\n`,
-      `**Follow The Server Guidelines:** ⚡ THOR APEX ⚡ ➔ ${rulesTag}\n`,
-      `**Fun With Us:** ⚡ THOR APEX ⚡ ➔ ${funTag}\n`,
-      `**Editing Zone:** ⚡ THOR APEX ⚡ ➔ ${editTag}\n`,
-      `**Gaming Zone:** ⚡ THOR APEX ⚡ ➔ ${gamingTag}\n`,
-      `**Join And Chill With Us!:** ⚡ THOR APEX ⚡ ➔ ${generalTag}\n`,
-      `\n### Thanks For Joining. Hope You Have A Great Time Here!`
-    ];
-
-    const embed = new EmbedBuilder()
-      .setColor('#FF0000')
-      .setDescription(lines.join('\n'))
-      .setTimestamp();
-
-    const logoUrl = guild.iconURL({ size: 1024, forceStatic: false });
-    const authorOptions = { name: 'THOR APEX !' };
-    if (logoUrl) authorOptions.iconURL = logoUrl;
-    embed.setAuthor(authorOptions);
-
-    const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
-    if (avatarUrl) embed.setThumbnail(avatarUrl);
-    else if (logoUrl) embed.setThumbnail(logoUrl);
-
-    const bannerUrl = guild.bannerURL({ size: 1024 });
-    if (bannerUrl) embed.setImage(bannerUrl);
-
-    const footerOptions = { text: 'THOR APEX !' };
-    if (logoUrl) footerOptions.iconURL = logoUrl;
-    embed.setFooter(footerOptions);
-
-    return embed;
-  }
-
-  // ── NEW DYNAMIC CODE FOR ALL OTHER SERVERS (MAXXZ FAM & PUBLIC SERVERS) ──
-  const config = loadGuildConfig(guild);
-
-  let logoUrl = config.customImages?.logoUrl?.startsWith('http') ? config.customImages.logoUrl : null;
-  if (!logoUrl && guild?.iconURL) {
-    logoUrl = guild.iconURL({ size: 1024, forceStatic: false });
-  }
-
-  let bannerUrl = config.customImages?.bannerUrl?.startsWith('http') ? config.customImages.bannerUrl : null;
-  if (!bannerUrl && guild?.bannerURL) {
-    bannerUrl = guild.bannerURL({ size: 1024 });
-  }
-
-  const userId = member?.user?.id ?? member?.id ?? '000000000000000000';
-  const guildName = guild.name || config.serverName || 'Your Server';
-
-  const rulesTag = formatChannelMention(config.channels?.rulesChannelId, 'rules');
-  const rolesTag = formatChannelMention(config.channels?.rolesChannelId, 'roles');
-  const generalTag = formatChannelMention(config.channels?.generalChannelId, 'general');
-
-  const lines = [];
-  lines.push(`### ${config.messages?.greetingPrefix || 'HEY BUDDY!'} <@${userId}>\n`);
-  lines.push(`**${config.messages?.welcomeSubtitle || `Welcome to ${guildName}!`}**\n`);
-
-  if (inviterData && inviterData.inviterId) {
-    lines.push(`**📩 Invited by:** <@${inviterData.inviterId}> (Total Invites: **${inviterData.uses}**)\n`);
-  } else {
-    lines.push(`**📩 Invited by:** Direct Link / Unknown\n`);
-  }
-
-  lines.push(`**${config.messages?.rulesText || 'Please read our rules:'}** ${rulesTag}\n`);
-  lines.push(`**🎭 Get your roles here:** ${rolesTag}\n`);
-  lines.push(`**💬 Start chatting in:** ${generalTag}\n`);
-  lines.push(`\n### ${config.messages?.outroText || 'Hope you enjoy your stay here! 🎉'}`);
-
-  const embedColor = isValidHexColor(config.embedColor) ? config.embedColor : '#5865F2';
-
-  const embed = new EmbedBuilder()
-    .setColor(embedColor)
-    .setDescription(lines.join('\n'))
-    .setTimestamp();
-
-  const authorOptions = { name: config.welcomeTitle || `Welcome to ${guildName}!` };
-  if (logoUrl) authorOptions.iconURL = logoUrl;
-  embed.setAuthor(authorOptions);
-
-  const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
-  if (avatarUrl) embed.setThumbnail(avatarUrl);
-  else if (logoUrl) embed.setThumbnail(logoUrl);
-
-  if (bannerUrl) embed.setImage(bannerUrl);
-
-  const footerOptions = { text: `${guildName} • Member #${guild.memberCount || '1'}` };
-  if (logoUrl) footerOptions.iconURL = logoUrl;
-  embed.setFooter(footerOptions);
-
-  return embed;
+// ── Security Helpers
+const spamMap = new Map();
+function isSpamming(uid) {
+  const now = Date.now(), thr = config.security?.spamThreshold || 5, win = config.security?.spamWindow || 5000;
+  if (!spamMap.has(uid)) spamMap.set(uid, []);
+  const t = spamMap.get(uid).filter(x => now - x < win); t.push(now); spamMap.set(uid, t);
+  return t.length >= thr;
+}
+const recentJoins = [];
+function isRaiding() {
+  const now = Date.now(), thr = config.security?.raidThreshold || 10;
+  const r = recentJoins.filter(t => now - t < 10000); r.push(now); recentJoins.length = 0; recentJoins.push(...r);
+  return r.length >= thr;
+}
+const nukeMap = new Map();
+function isNuking(uid) {
+  const now = Date.now(), thr = config.security?.nukeThreshold || 5;
+  if (!nukeMap.has(uid)) nukeMap.set(uid, []);
+  const t = nukeMap.get(uid).filter(x => now - x < 10000); t.push(now); nukeMap.set(uid, t);
+  return t.length >= thr;
 }
 
-// ─── Leave Embed Builder ─────────────────────────────────────────────────────
-function createLeaveEmbed(member, guild) {
-  const config = loadGuildConfig(guild);
-  const guildName = guild.name || config.serverName || 'Server';
+function isHex(s) { return /^#[0-9A-Fa-f]{6}$/.test(s); }
+async function sendLog(guild, embed) {
+  if (!config.logChannelId) return;
+  try { const ch = guild.channels.cache.get(config.logChannelId); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+}
+async function safeReply(i, content, eph = true) {
+  try { if (i.replied || i.deferred) await i.followUp({ content, ephemeral: eph }); else await i.reply({ content, ephemeral: eph }); } catch (_) {}
+}
+async function getMuteRole(guild) {
+  if (config.muteRoleId) { const r = guild.roles.cache.get(config.muteRoleId); if (r) return r; }
+  let role = guild.roles.cache.find(r => r.name.toLowerCase() === 'muted');
+  if (role) return role;
+  try {
+    role = await guild.roles.create({ name: 'Muted', color: '#818386', reason: 'THOR APEX Security' });
+    for (const [, ch] of guild.channels.cache) if (ch.isTextBased()) await ch.permissionOverwrites.create(role, { SendMessages: false, AddReactions: false }).catch(() => {});
+    config.muteRoleId = role.id; saveConfig(); return role;
+  } catch (_) { return null; }
+}
+
+// ── Embed Builders
+function mkWelcomeEmbed(member, guild, inviterData) {
+  const chs = guild?.channels?.cache;
+  const rCh   = (config.rulesChannelId && chs?.get(config.rulesChannelId)) || chs?.find(c => /rule/i.test(c.name));
+  const funCh  = chs?.find(c => /fun/i.test(c.name));
+  const editCh = chs?.find(c => /edit/i.test(c.name));
+  const gameCh = chs?.find(c => /gaming|game/i.test(c.name));
+  const genCh  = (config.generalChannelId && chs?.get(config.generalChannelId)) || chs?.find(c => /general|chat/i.test(c.name));
+  const rolCh  = (config.rolesChannelId && chs?.get(config.rolesChannelId)) || chs?.find(c => /role/i.test(c.name));
+  const tag = (ch, fb) => ch ? ('<#' + (typeof ch === 'string' ? ch : ch.id) + '>') : ('`#' + fb + '`');
+  const uid = member?.user?.id || member?.id || '0';
+  const lines = [
+    '### ' + (config.greetingPrefix || 'HEY BUDDY!') + ' <@' + uid + '>\n',
+    '**' + (config.welcomeSubtitle || 'Welcome to THOR APEX!') + '**\n',
+  ];
+  if (inviterData?.inviterId) lines.push('**Invited by:** <@' + inviterData.inviterId + '> (Total Invites: **' + inviterData.uses + '**)\n');
+  else lines.push('**Invited by:** Direct Link / Unknown\n');
+  lines.push('**Get Started:** ' + tag(rCh, 'rules') + '\n', '**Rules:** ' + tag(rCh, 'rules') + '\n');
+  if (funCh)  lines.push('**Fun Zone:** ' + tag(funCh, 'fun') + '\n');
+  if (editCh) lines.push('**Editing:** ' + tag(editCh, 'editing') + '\n');
+  if (gameCh) lines.push('**Gaming:** ' + tag(gameCh, 'gaming') + '\n');
+  lines.push('**Chill Here:** ' + tag(genCh, 'general') + '\n');
+  if (rolCh)  lines.push('**Get Roles:** ' + tag(rolCh, 'roles') + '\n');
+  lines.push('\n### ' + (config.outroText || 'Thanks For Joining!'));
+  const logo   = guild.iconURL({ size: 1024, forceStatic: false });
+  const banner = guild.bannerURL({ size: 1024 });
+  const avatar = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
+  const embed  = new EmbedBuilder().setColor(isHex(config.embedColor) ? config.embedColor : '#5865F2').setDescription(lines.join('\n')).setTimestamp();
+  if (logo) embed.setAuthor({ name: config.welcomeTitle || 'WELCOME TO THOR APEX!', iconURL: logo }); else embed.setAuthor({ name: config.welcomeTitle || 'WELCOME TO THOR APEX!' });
+  if (avatar) embed.setThumbnail(avatar); else if (logo) embed.setThumbnail(logo);
+  if (banner) embed.setImage(banner);
+  embed.setFooter({ text: 'THOR APEX Member #' + guild.memberCount, iconURL: logo || undefined });
+  return embed;
+}
+function mkLeaveEmbed(member, guild) {
   const username = member.user?.tag || member.user?.username || 'Member';
-
-  let logoUrl = config.customImages?.logoUrl?.startsWith('http') ? config.customImages.logoUrl : null;
-  if (!logoUrl && guild?.iconURL) {
-    logoUrl = guild.iconURL({ size: 1024, forceStatic: false });
-  }
-
-  const rawMsg = config.messages?.leaveText || 'Goodbye **{username}**! We are sad to see you go. We now have **{count}** members.';
-  const formattedMsg = rawMsg
-    .replace(/{user}/g, `<@${member.id}>`)
-    .replace(/{username}/g, username)
-    .replace(/{server}/g, guildName)
-    .replace(/{count}/g, guild.memberCount || 0);
-
-  const embedColor = isValidHexColor(config.embedColor) ? config.embedColor : '#ED4245';
-
-  const embed = new EmbedBuilder()
-    .setColor(embedColor)
-    .setTitle(`👋 Member Left — ${guildName}`)
-    .setDescription(`### ${formattedMsg}`)
-    .setTimestamp();
-
-  const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
-  if (avatarUrl) embed.setThumbnail(avatarUrl);
-  else if (logoUrl) embed.setThumbnail(logoUrl);
-
-  const footerOptions = { text: `${guildName} • Total Members: ${guild.memberCount || 0}` };
-  if (logoUrl) footerOptions.iconURL = logoUrl;
-  embed.setFooter(footerOptions);
-
+  const logo = guild.iconURL({ size: 1024, forceStatic: false });
+  const msg  = (config.leaveText || 'Goodbye **{username}**! We now have **{count}** members.').replace(/{user}/g, '<@' + member.id + '>').replace(/{username}/g, username).replace(/{server}/g, guild.name).replace(/{count}/g, guild.memberCount || 0);
+  const embed = new EmbedBuilder().setColor('#ED4245').setTitle('Member Left - ' + guild.name).setDescription('### ' + msg).setTimestamp();
+  const av = member?.user?.displayAvatarURL({ size: 256, forceStatic: false }); if (av) embed.setThumbnail(av);
+  embed.setFooter({ text: 'THOR APEX Total Members: ' + (guild.memberCount || 0), iconURL: logo || undefined });
   return embed;
 }
 
-// ─── Slash Commands Definition ─────────────────────────────────────────────────
-function buildSlashCommands() {
+// ── Slash Commands Builder
+function buildCmds() {
   return [
-    // ── Setup: Welcome Channel
-    new SlashCommandBuilder()
-      .setName('setwelcome')
-      .setDescription('Set the welcome channel for this server')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addChannelOption(opt =>
-        opt.setName('channel')
-          .setDescription('The channel where welcome messages will be sent')
-          .setRequired(false)
-      ),
-
-    // ── Setup: Rules Channel
-    new SlashCommandBuilder()
-      .setName('setrules')
-      .setDescription('Set the rules channel shown in welcome messages')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addChannelOption(opt =>
-        opt.setName('channel').setDescription('Rules channel').setRequired(true)
-      ),
-
-    // ── Setup: Roles Channel
-    new SlashCommandBuilder()
-      .setName('setroles')
-      .setDescription('Set the roles channel shown in welcome messages')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addChannelOption(opt =>
-        opt.setName('channel').setDescription('Roles channel').setRequired(true)
-      ),
-
-    // ── Setup: General Channel
-    new SlashCommandBuilder()
-      .setName('setgeneral')
-      .setDescription('Set the general channel shown in welcome messages')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addChannelOption(opt =>
-        opt.setName('channel').setDescription('General channel').setRequired(true)
-      ),
-
-    // ── Customize: Embed Color
-    new SlashCommandBuilder()
-      .setName('setwelcomecolor')
-      .setDescription('Set the embed color for welcome messages (e.g. #FF5733)')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addStringOption(opt =>
-        opt.setName('color')
-          .setDescription('Hex color code, e.g. #FF5733')
-          .setRequired(true)
-      ),
-
-    // ── Customize: Greeting text
-    new SlashCommandBuilder()
-      .setName('setwelcometext')
-      .setDescription('Customize the welcome message text')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addStringOption(opt =>
-        opt.setName('greeting')
-          .setDescription('Opening greeting (e.g. "HELLO THERE!")')
-          .setRequired(false)
-      )
-      .addStringOption(opt =>
-        opt.setName('subtitle')
-          .setDescription('Welcome subtitle (e.g. "Welcome to Our Server!")')
-          .setRequired(false)
-      )
-      .addStringOption(opt =>
-        opt.setName('outro')
-          .setDescription('Closing line of the welcome message')
-          .setRequired(false)
-      ),
-
-    // ── View current setup
-    new SlashCommandBuilder()
-      .setName('welcomeconfig')
-      .setDescription('View the current welcome bot configuration for this server')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
-
-    // ── Test welcome
-    new SlashCommandBuilder()
-      .setName('testwelcome')
-      .setDescription('Preview the welcome message for this server'),
-
-    // ── Reset config
-    new SlashCommandBuilder()
-      .setName('resetwelcome')
-      .setDescription('Reset all welcome settings for this server back to defaults')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
-
-    // ── Setup: Leave Channel
-    new SlashCommandBuilder()
-      .setName('setleave')
-      .setDescription('Set the leave/goodbye channel for this server')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addChannelOption(opt =>
-        opt.setName('channel')
-          .setDescription('The channel where leave/goodbye messages will be sent')
-          .setRequired(true)
-      ),
-
-    // ── Customize: Leave Message Text
-    new SlashCommandBuilder()
-      .setName('setleavetext')
-      .setDescription('Customize the member leave message text')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addStringOption(opt =>
-        opt.setName('message')
-          .setDescription('Message text (use {username}, {user}, {server}, {count})')
-          .setRequired(true)
-      ),
-
-    // ── Test Leave
-    new SlashCommandBuilder()
-      .setName('testleave')
-      .setDescription('Preview the leave/goodbye message for this server'),
-
-    // ── Check Invites
-    new SlashCommandBuilder()
-      .setName('myinvites')
-      .setDescription('Check how many members you have invited to this server'),
-
-    // ── Auto Setup (detects channels, logo, banner automatically)
-    new SlashCommandBuilder()
-      .setName('setup')
-      .setDescription('Auto-setup the welcome bot for this server (detects channels, logo, banner)')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addAttachmentOption(opt =>
-        opt.setName('logo_file')
-          .setDescription('Upload a custom logo image file from your PC/phone')
-          .setRequired(false)
-      )
-      .addAttachmentOption(opt =>
-        opt.setName('banner_file')
-          .setDescription('Upload a custom banner image file from your PC/phone')
-          .setRequired(false)
-      )
-      .addStringOption(opt =>
-        opt.setName('color')
-          .setDescription('Embed color (e.g. #FF5733) — leave empty for default')
-          .setRequired(false)
-      )
-      .addStringOption(opt =>
-        opt.setName('greeting')
-          .setDescription('Custom greeting text (e.g. "HEY THERE!") — leave empty for default')
-          .setRequired(false)
-      ),
-
-    // ── Customize Logo & Banner
-    new SlashCommandBuilder()
-      .setName('setimages')
-      .setDescription('Set custom logo or banner image for welcome messages (Upload file or paste URL)')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addAttachmentOption(opt =>
-        opt.setName('logo_file')
-          .setDescription('Upload custom logo image file')
-          .setRequired(false)
-      )
-      .addAttachmentOption(opt =>
-        opt.setName('banner_file')
-          .setDescription('Upload custom banner image file')
-          .setRequired(false)
-      )
-      .addStringOption(opt =>
-        opt.setName('logo_url')
-          .setDescription('Or paste logo image link URL')
-          .setRequired(false)
-      )
-      .addStringOption(opt =>
-        opt.setName('banner_url')
-          .setDescription('Or paste banner image link URL')
-          .setRequired(false)
-      ),
-
-    // ── Music / Song Commands ──
-    new SlashCommandBuilder()
-      .setName('play')
-      .setDescription('Play a song or stream in your voice channel')
-      .addStringOption(opt =>
-        opt.setName('song')
-          .setDescription('Song name, stream link, or YouTube title')
-          .setRequired(true)
-      ),
-
-    new SlashCommandBuilder()
-      .setName('pause')
-      .setDescription('Pause current music playback'),
-
-    new SlashCommandBuilder()
-      .setName('resume')
-      .setDescription('Resume music playback'),
-
-    new SlashCommandBuilder()
-      .setName('skip')
-      .setDescription('Skip the currently playing song'),
-
-    new SlashCommandBuilder()
-      .setName('stop')
-      .setDescription('Stop music playback and leave voice channel'),
-
-    new SlashCommandBuilder()
-      .setName('queue')
-      .setDescription('Show current music queue or add a song/link to queue')
-      .addStringOption(opt =>
-        opt.setName('song')
-          .setDescription('Optional song name or song link URL to paste into queue')
-          .setRequired(false)
-      ),
-
-    new SlashCommandBuilder()
-      .setName('nowplaying')
-      .setDescription('Show currently playing song info'),
-
-    new SlashCommandBuilder()
-      .setName('radio')
-      .setDescription('Play 24/7 radio stream (Lofi, Gaming, Pop, Chill)')
-      .addStringOption(opt =>
-        opt.setName('genre')
-          .setDescription('Choose radio genre')
-          .setRequired(false)
-          .addChoices(
-            { name: '☕ Lofi Chill 24/7', value: 'lofi' },
-            { name: '🎮 Gaming Beats 24/7', value: 'gaming' },
-            { name: '🎵 Pop Hits 24/7', value: 'pop' },
-            { name: '🎧 Chill Hop 24/7', value: 'chill' }
-          )
-      ),
-
-    // ── Help
-    new SlashCommandBuilder()
-      .setName('welcomehelp')
-      .setDescription('Show all available Welcome & Music Bot commands'),
-  ].map(cmd => cmd.toJSON());
+    new SlashCommandBuilder().setName('setup').setDescription('Auto-setup the bot').setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    new SlashCommandBuilder().setName('setwelcome').setDescription('Set welcome channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(false)),
+    new SlashCommandBuilder().setName('setleave').setDescription('Set leave channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setrules').setDescription('Set rules channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setroles').setDescription('Set roles channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setgeneral').setDescription('Set general channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setlog').setDescription('Set mod log channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setwelcomecolor').setDescription('Set embed color').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('color').setDescription('Hex e.g. #FF5733').setRequired(true)),
+    new SlashCommandBuilder().setName('setwelcometext').setDescription('Customize welcome text').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('greeting').setDescription('Greeting prefix').setRequired(false)).addStringOption(o => o.setName('subtitle').setDescription('Welcome subtitle').setRequired(false)).addStringOption(o => o.setName('outro').setDescription('Closing line').setRequired(false)),
+    new SlashCommandBuilder().setName('setleavetext').setDescription('Customize leave text').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('message').setDescription('Use {username} {user} {count}').setRequired(true)),
+    new SlashCommandBuilder().setName('setautorole').setDescription('Set auto-role for new members').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(true)),
+    new SlashCommandBuilder().setName('welcomeconfig').setDescription('View bot config').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+    new SlashCommandBuilder().setName('testwelcome').setDescription('Preview welcome message'),
+    new SlashCommandBuilder().setName('testleave').setDescription('Preview leave message'),
+    new SlashCommandBuilder().setName('security').setDescription('View security settings').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+    new SlashCommandBuilder().setName('antispam').setDescription('Toggle anti-spam').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
+    new SlashCommandBuilder().setName('antilink').setDescription('Toggle anti-link/ads').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
+    new SlashCommandBuilder().setName('antiraid').setDescription('Toggle anti-raid').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
+    new SlashCommandBuilder().setName('antinuke').setDescription('Toggle anti-nuke').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
+    new SlashCommandBuilder().setName('altdetection').setDescription('Toggle alt account detection').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })).addIntegerOption(o => o.setName('mindays').setDescription('Min account age in days').setRequired(false)),
+    new SlashCommandBuilder().setName('wordfilter').setDescription('Toggle word filter').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
+    new SlashCommandBuilder().setName('addword').setDescription('Add word to blacklist').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('word').setDescription('Word').setRequired(true)),
+    new SlashCommandBuilder().setName('removeword').setDescription('Remove word from blacklist').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('word').setDescription('Word').setRequired(true)),
+    new SlashCommandBuilder().setName('lockdown').setDescription('Toggle server lockdown').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
+    new SlashCommandBuilder().setName('warn').setDescription('Warn a member').setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(false)),
+    new SlashCommandBuilder().setName('warnings').setDescription('View warnings for a user').setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
+    new SlashCommandBuilder().setName('clearwarns').setDescription('Clear all warnings for a user').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
+    new SlashCommandBuilder().setName('mute').setDescription('Mute a member').setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(false)),
+    new SlashCommandBuilder().setName('unmute').setDescription('Unmute a member').setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
+    new SlashCommandBuilder().setName('kick').setDescription('Kick a member').setDefaultMemberPermissions(PermissionsBitField.Flags.KickMembers).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(false)),
+    new SlashCommandBuilder().setName('ban').setDescription('Ban a member').setDefaultMemberPermissions(PermissionsBitField.Flags.BanMembers).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(false)),
+    new SlashCommandBuilder().setName('unban').setDescription('Unban a user by ID').setDefaultMemberPermissions(PermissionsBitField.Flags.BanMembers).addStringOption(o => o.setName('userid').setDescription('User ID').setRequired(true)),
+    new SlashCommandBuilder().setName('purge').setDescription('Delete messages in bulk').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages).addIntegerOption(o => o.setName('amount').setDescription('1-100').setRequired(true).setMinValue(1).setMaxValue(100)),
+    new SlashCommandBuilder().setName('myinvites').setDescription('Check your total invites'),
+    new SlashCommandBuilder().setName('invites').setDescription('Check invites for a user').addUserOption(o => o.setName('user').setDescription('User').setRequired(false)),
+    new SlashCommandBuilder().setName('invitetop').setDescription('Top inviters leaderboard'),
+    new SlashCommandBuilder().setName('play').setDescription('Play a song').addStringOption(o => o.setName('song').setDescription('Song name or link').setRequired(true)),
+    new SlashCommandBuilder().setName('pause').setDescription('Pause music'),
+    new SlashCommandBuilder().setName('resume').setDescription('Resume music'),
+    new SlashCommandBuilder().setName('skip').setDescription('Skip current song'),
+    new SlashCommandBuilder().setName('stop').setDescription('Stop music and leave voice'),
+    new SlashCommandBuilder().setName('queue').setDescription('View or add to music queue').addStringOption(o => o.setName('song').setDescription('Song to add').setRequired(false)),
+    new SlashCommandBuilder().setName('nowplaying').setDescription('Show currently playing song'),
+    new SlashCommandBuilder().setName('radio').setDescription('Play 24/7 radio stream').addStringOption(o => o.setName('genre').setDescription('Genre').setRequired(false).addChoices({ name: 'Lofi Chill', value: 'lofi' }, { name: 'Gaming Beats', value: 'gaming' }, { name: 'Pop Hits', value: 'pop' }, { name: 'Chill Hop', value: 'chill' })),
+    new SlashCommandBuilder().setName('automod').setDescription('Manage Discord native AutoMod rules').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('What to do').setRequired(true).addChoices({ name: 'enable', value: 'enable' }, { name: 'disable', value: 'disable' }, { name: 'status', value: 'status' })),
+    new SlashCommandBuilder().setName('help').setDescription('Show all bot commands'),
+  ].map(c => c.toJSON());
 }
 
-async function registerCommandsForGuild(client, guild) {
-  const commands = buildSlashCommands();
-  const token = process.env.DISCORD_TOKEN;
-  if (!token) return;
-  const rest = new REST({ version: '10' }).setToken(token);
+const RADIO_STREAMS = {
+  lofi:   { name: 'Lofi Chill 24/7',   url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
+  gaming: { name: 'Gaming Beats 24/7', url: 'https://stream.zeno.fm/0r0xa792kwzuv' },
+  pop:    { name: 'Pop Hits 24/7',     url: 'https://stream.zeno.fm/z52x2szx0h8uv' },
+  chill:  { name: 'Chill Hop 24/7',    url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
+};
 
-  try {
-    await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
-    console.log(`✅ Instant slash commands registered for server: "${guild.name}" (${guild.id})`);
-  } catch (err) {
-    console.warn(`⚠️ Guild slash command registration note for ${guild.name}:`, err.message);
-  }
-}
-
-// ─── Register Slash Commands (Instant Sync for connected servers + Global) ─────
-async function registerSlashCommands(client) {
-  const commands = buildSlashCommands();
-  const token = process.env.DISCORD_TOKEN;
-  if (!token) return;
-  const rest = new REST({ version: '10' }).setToken(token);
-
-  try {
-    console.log('⏳ Registering instant slash commands across all connected servers...');
-    
-    // 1. Register per-guild for INSTANT sync in Discord UI!
-    for (const guild of client.guilds.cache.values()) {
-      await registerCommandsForGuild(client, guild);
-    }
-
-    // 2. Register global application commands
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('✅ Global slash commands updated!');
-  } catch (err) {
-    console.error('⚠️ Slash command registration error:', err.message);
-  }
-}
-
-// ─── Main Bot ──────────────────────────────────────────────────────────────────
-function startBot() {
+// ── Main Bot
+async function startBot() {
   const client = new Client({
     intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMembers,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-      GatewayIntentBits.GuildInvites,
-      GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
+      GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent,
+      GatewayIntentBits.GuildInvites, GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.GuildModeration,
     ],
-    partials: [
-      Partials.GuildMember,
-      Partials.User,
-      Partials.Channel,
-      Partials.Message,
-    ],
+    partials: [Partials.GuildMember, Partials.User, Partials.Channel, Partials.Message],
   });
 
-  // ── Bot Ready
   client.once('clientReady', async () => {
-    console.log('\n=======================================================');
-    console.log('🤖 Multi-Server Welcome Bot is ONLINE!');
-    console.log(`🏷️  Logged in as: ${client.user.tag}`);
-    console.log(`🛡️  Connected to ${client.guilds.cache.size} server(s):`);
-    client.guilds.cache.forEach(g => console.log(`   • ${g.name} (${g.id})`));
-    console.log('=======================================================\n');
-
-    // Cache invites for all guilds
-    for (const g of client.guilds.cache.values()) {
-      await cacheGuildInvites(g);
-    }
-
-    await registerSlashCommands(client);
+    console.log('=======================================================');
+    console.log('THOR APEX All-in-One Bot is ONLINE!');
+    console.log('Logged in as: ' + client.user.tag);
+    console.log('Servers: ' + client.guilds.cache.size);
+    client.guilds.cache.forEach(g => console.log('  ' + g.name + ' (' + g.id + ')'));
+    console.log('=======================================================');
+    for (const g of client.guilds.cache.values()) await cacheInvites(g);
+    await regCmds(client);
   });
 
-  // ── Bot Joins a New Server → register commands & cache invites
+  async function regCmds(c) {
+    const token = process.env.DISCORD_TOKEN; if (!token) return;
+    const rest  = new REST({ version: '10' }).setToken(token);
+    const cmds  = buildCmds();
+    try {
+      for (const guild of c.guilds.cache.values()) {
+        await rest.put(Routes.applicationGuildCommands(c.user.id, guild.id), { body: cmds });
+        console.log('Commands registered: ' + guild.name);
+      }
+      await rest.put(Routes.applicationCommands(c.user.id), { body: cmds });
+      console.log('Global commands updated!');
+    } catch (err) { console.error('Command registration error:', err.message); }
+  }
+
   client.on('guildCreate', async (guild) => {
-    console.log(`🆕 Bot added to new server: "${guild.name}" (${guild.id})`);
-    await cacheGuildInvites(guild);
-    await registerCommandsForGuild(client, guild);
+    console.log('Joined: ' + guild.name);
+    await cacheInvites(guild);
+    const token = process.env.DISCORD_TOKEN;
+    if (token) { const rest = new REST({ version: '10' }).setToken(token); await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: buildCmds() }).catch(() => {}); }
   });
 
-  // ── New Member Joined
+  // ── Member Joined
   client.on('guildMemberAdd', async (member) => {
     try {
-      if (member.partial) {
-        member = await member.fetch().catch(() => null);
-        if (!member) return;
+      if (member.partial) { member = await member.fetch().catch(() => null); if (!member) return; }
+      const guild = member.guild; const sec = config.security || {};
+      console.log('Joined: ' + member.user.tag + ' in ' + guild.name);
+
+      // Alt Detection
+      if (sec.altDetection) {
+        const minDays = sec.altMinDays || 7;
+        const ageDays = Math.floor((Date.now() - member.user.createdTimestamp) / 86400000);
+        if (ageDays < minDays) {
+          try { await member.kick('Alt account - ' + ageDays + ' days old, min ' + minDays); } catch (_) {}
+          await sendLog(guild, new EmbedBuilder().setColor('#FF0000').setTitle('Alt Account Kicked').addFields({ name: 'User', value: member.user.tag + ' (' + member.id + ')' }, { name: 'Account Age', value: ageDays + ' days' }, { name: 'Minimum', value: minDays + ' days' }).setTimestamp());
+          return;
+        }
       }
-
-      console.log(`🔔 New member: ${member.user.tag} in "${member.guild.name}"`);
-
-      // Track who invited this member
-      const inviterData = await findInviter(member.guild);
-
-      const config = loadGuildConfig(member.guild);
-      let welcomeChannel = null;
-
-      // 1. Try the configured welcome channel ID
-      if (config.channels?.welcomeChannelId && /^\d+$/.test(config.channels.welcomeChannelId)) {
-        welcomeChannel = member.guild.channels.cache.get(config.channels.welcomeChannelId)
-          || await member.guild.channels.fetch(config.channels.welcomeChannelId).catch(() => null);
-      }
-
-      // 2. Fallback: search by name
-      if (!welcomeChannel) {
-        welcomeChannel = member.guild.channels.cache.find(c =>
-          c.isTextBased() && ['welcome', 'join', 'arrivals', 'greet'].some(kw => c.name.includes(kw))
-        );
-      }
-
-      // 3. Fallback: system channel
-      if (!welcomeChannel) welcomeChannel = member.guild.systemChannel;
-
-      if (!welcomeChannel) {
-        console.error(`❌ No welcome channel found in "${member.guild.name}". Use /setwelcome to configure.`);
+      // Anti-Raid
+      if (sec.antiRaid && isRaiding()) {
+        config.security.lockdown = true; saveConfig();
+        try { await member.kick('Anti-Raid: raid detected'); } catch (_) {}
+        await sendLog(guild, new EmbedBuilder().setColor('#FF6600').setTitle('RAID DETECTED - Lockdown Activated!').setTimestamp());
         return;
       }
+      // Lockdown
+      if (sec.lockdown) { try { await member.kick('Server is in lockdown.'); } catch (_) {} return; }
 
-      // Check permissions
-      const botMember = member.guild.members.me;
-      if (botMember) {
-        const perms = welcomeChannel.permissionsFor(botMember);
-        if (!perms?.has(PermissionsBitField.Flags.SendMessages)) {
-          console.error(`❌ Missing SendMessages in #${welcomeChannel.name}`);
-          return;
-        }
-        if (!perms?.has(PermissionsBitField.Flags.EmbedLinks)) {
-          console.error(`❌ Missing EmbedLinks in #${welcomeChannel.name}`);
-          return;
-        }
-      }
+      const inviterData = await findInviter(guild);
 
-      const embed = createWelcomeEmbed(member, member.guild, inviterData);
-      await welcomeChannel.send({
-        content: `🎉 Welcome <@${member.id}> to **${member.guild.name}**!`,
-        embeds: [embed],
-      });
-      console.log(`✅ Welcome sent for ${member.user.tag} in #${welcomeChannel.name}`);
-    } catch (err) {
-      console.error('❌ guildMemberAdd error:', err);
-    }
+      // Welcome
+      let wCh = null;
+      if (config.welcomeChannelId) wCh = guild.channels.cache.get(config.welcomeChannelId) || await guild.channels.fetch(config.welcomeChannelId).catch(() => null);
+      if (!wCh) wCh = guild.channels.cache.find(c => c.isTextBased() && /welcome|join|arrivals/i.test(c.name));
+      if (!wCh) wCh = guild.systemChannel;
+      if (wCh) { await wCh.send({ content: 'Welcome <@' + member.id + '> to **' + guild.name + '**!', embeds: [mkWelcomeEmbed(member, guild, inviterData)] }); console.log('Welcome sent for ' + member.user.tag); }
+
+      // Auto-Role
+      if (config.autoRoleId) { try { const role = guild.roles.cache.get(config.autoRoleId); if (role) await member.roles.add(role, 'Auto-Role'); } catch (_) {} }
+    } catch (err) { console.error('guildMemberAdd error:', err); }
   });
 
-  // ── Member Left (Goodbye Message)
+  // ── Member Left
   client.on('guildMemberRemove', async (member) => {
     try {
-      if (member.partial) {
-        member = await member.fetch().catch(() => null);
-        if (!member) return;
-      }
-
-      console.log(`👋 Member left: ${member.user?.tag || member.id} from "${member.guild.name}"`);
-
-      const config = loadGuildConfig(member.guild);
-      let leaveChannel = null;
-
-      if (config.channels?.leaveChannelId && /^\d+$/.test(config.channels.leaveChannelId)) {
-        leaveChannel = member.guild.channels.cache.get(config.channels.leaveChannelId)
-          || await member.guild.channels.fetch(config.channels.leaveChannelId).catch(() => null);
-      }
-
-      if (!leaveChannel && member.guild.channels?.cache) {
-        leaveChannel = member.guild.channels.cache.find(c =>
-          c.isTextBased?.() && ['leave', 'goodbye', 'farewell', 'bye', 'exit', 'left'].some(k => c.name.toLowerCase().includes(k))
-        );
-      }
-
-      if (!leaveChannel) return; // No leave channel configured or found
-
-      const leaveEmbed = createLeaveEmbed(member, member.guild);
-      await leaveChannel.send({ embeds: [leaveEmbed] });
-      console.log(`✅ Leave message sent for ${member.user?.tag || member.id} in #${leaveChannel.name}`);
-    } catch (err) {
-      console.error('❌ Error handling member leave:', err);
-    }
+      if (member.partial) { member = await member.fetch().catch(() => null); if (!member) return; }
+      let lCh = null;
+      if (config.leaveChannelId) lCh = member.guild.channels.cache.get(config.leaveChannelId);
+      if (!lCh) lCh = member.guild.channels.cache.find(c => c.isTextBased() && /leave|goodbye|farewell/i.test(c.name));
+      if (!lCh) return;
+      await lCh.send({ embeds: [mkLeaveEmbed(member, member.guild)] });
+    } catch (err) { console.error('guildMemberRemove error:', err); }
   });
+
+  // ── Messages
+  client.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.guild) return;
+    const member  = message.member;
+    const isAdmin = member?.permissions?.has(PermissionsBitField.Flags.Administrator);
+    const isMod   = member?.permissions?.has(PermissionsBitField.Flags.ModerateMembers);
+    const sec = config.security || {};
+
+    if (!isAdmin && !isMod) {
+      // Anti-Spam
+      if (sec.antiSpam && isSpamming(message.author.id)) {
+        await message.delete().catch(() => {});
+        const mr = await getMuteRole(message.guild);
+        if (mr && member) {
+          try {
+            await member.roles.add(mr, 'Auto-muted: Spamming');
+            await message.channel.send({ content: '<@' + message.author.id + '> muted for spamming!' });
+            setTimeout(async () => { try { await member.roles.remove(mr); } catch (_) {} }, 5 * 60 * 1000);
+          } catch (_) {}
+        }
+        await sendLog(message.guild, new EmbedBuilder().setColor('#FF6600').setTitle('Anti-Spam - User Muted').addFields({ name: 'User', value: message.author.tag }, { name: 'Channel', value: '<#' + message.channel.id + '>' }).setTimestamp());
+        return;
+      }
+      // Anti-Link
+      if (sec.antiLink) {
+        const hasInv = /discord\.gg\/|discord\.com\/invite\//i.test(message.content);
+        const hasExt = sec.antiAds && /https?:\/\/(?!discord\.com)/i.test(message.content);
+        if (hasInv || hasExt) {
+          const ok = (sec.allowedLinks || []).some(d => message.content.includes(d));
+          if (!ok) {
+            await message.delete().catch(() => {});
+            try { await message.channel.send({ content: '<@' + message.author.id + '> Links/ads are not allowed here!' }); } catch (_) {}
+            await sendLog(message.guild, new EmbedBuilder().setColor('#FF6600').setTitle('Anti-Link - Link Blocked').addFields({ name: 'User', value: message.author.tag }, { name: 'Type', value: hasInv ? 'Discord Invite' : 'External Link' }).setTimestamp());
+            return;
+          }
+        }
+      }
+      // Word Filter
+      if (sec.wordFilter) {
+        const lower = message.content.toLowerCase();
+        const bad = (sec.blacklistedWords || []).find(w => lower.includes(w.toLowerCase()));
+        if (bad) {
+          await message.delete().catch(() => {});
+          try { await message.channel.send({ content: '<@' + message.author.id + '> Watch your language!' }); } catch (_) {}
+          await sendLog(message.guild, new EmbedBuilder().setColor('#FF6600').setTitle('Word Filter - Message Deleted').addFields({ name: 'User', value: message.author.tag }).setTimestamp());
+          return;
+        }
+      }
+    }
+
+    const content = message.content.trim();
+    if (!content.startsWith('!')) return;
+    const args = content.slice(1).trim().split(/ +/);
+    const cmd  = args.shift().toLowerCase();
+
+    if (cmd === 'play' || cmd === 'p') { const inp = args.join(' '); const vc = message.member?.voice?.channel; if (!vc) return message.reply('Join a Voice Channel first!'); if (!inp) return message.reply('Provide a song name or link!'); const r = addToQ(message.guild, vc, message.author, inp); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(r.position === 1 ? 'Now Playing' : 'Added to Queue').setDescription('**' + r.track.title + '**').setTimestamp()] }); }
+    if (cmd === 'stop') { const q = getQ(message.guild.id); q.queue = []; q.isPlaying = false; if (q.connection) { try { q.connection.destroy(); } catch (_) {} q.connection = null; } return message.reply('Stopped.'); }
+    if (cmd === 'skip' || cmd === 's') { const q = getQ(message.guild.id); if (q.queue.length > 0) { const s = q.queue.shift(); return message.reply('Skipped: **' + (s?.title || 'Song') + '**'); } return message.reply('Queue empty!'); }
+    if (cmd === 'pause') return message.reply('Paused.');
+    if (cmd === 'resume') return message.reply('Resumed.');
+    if (cmd === 'queue' || cmd === 'q') { const inp = args.join(' '); const vc = message.member?.voice?.channel; if (inp) { if (!vc) return message.reply('Join Voice first!'); const r = addToQ(message.guild, vc, message.author, inp); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Added to Queue').setDescription('**' + r.track.title + '**').setTimestamp()] }); } const q = getQ(message.guild.id); if (q.queue.length === 0) return message.reply('Queue empty! Use !play'); const list = q.queue.slice(0, 10).map((t, i) => (i + 1) + '. **' + t.title + '**').join('\n'); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Music Queue').setDescription(list).setFooter({ text: 'Total: ' + q.queue.length }).setTimestamp()] }); }
+    if (cmd === 'np' || cmd === 'nowplaying') { const q = getQ(message.guild.id); const t = q.queue[0]; if (!t) return message.reply('Nothing playing!'); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Now Playing').setDescription('**' + t.title + '**').setTimestamp()] }); }
+    if (cmd === 'radio') { const vc = message.member?.voice?.channel; if (!vc) return message.reply('Join Voice first!'); const genre = args[0]?.toLowerCase() || 'lofi'; const sel = RADIO_STREAMS[genre] || RADIO_STREAMS.lofi; const q = getQ(message.guild.id); if (voiceLib) { if (!q.connection) { try { q.connection = voiceLib.joinVoiceChannel({ channelId: vc.id, guildId: message.guild.id, adapterCreator: message.guild.voiceAdapterCreator, selfDeaf: false }); } catch (_) {} } if (!q.player) { q.player = voiceLib.createAudioPlayer(); q.connection?.subscribe(q.player); } try { q.player.play(voiceLib.createAudioResource(sel.url, { inputType: voiceLib.StreamType.Arbitrary })); } catch (_) {} } return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Radio: ' + sel.name).setDescription('Playing in <#' + vc.id + '>!').setTimestamp()] }); }
+    if (cmd === 'testwelcome') return message.reply({ content: '[TEST] Welcome <@' + message.author.id + '>!', embeds: [mkWelcomeEmbed(message.member, message.guild)] });
+    if (cmd === 'warn' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); const reason = args.slice(1).join(' ') || 'No reason'; if (!uid) return message.reply('Usage: !warn @user [reason]'); if (!warnings[uid]) warnings[uid] = []; warnings[uid].push({ reason, mod: message.author.tag, ts: Date.now() }); saveWarnings(); return message.reply('<@' + uid + '> warned. Reason: **' + reason + '** (Total: ' + warnings[uid].length + ')'); }
+    if (cmd === 'mute' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); const reason = args.slice(1).join(' ') || 'No reason'; if (!uid) return message.reply('Usage: !mute @user'); try { const t = await message.guild.members.fetch(uid); const mr = await getMuteRole(message.guild); if (mr) { await t.roles.add(mr, reason); return message.reply('<@' + uid + '> muted.'); } } catch (_) { return message.reply('Could not mute.'); } }
+    if (cmd === 'unmute' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); if (!uid) return message.reply('Usage: !unmute @user'); try { const t = await message.guild.members.fetch(uid); const mr = await getMuteRole(message.guild); if (mr) { await t.roles.remove(mr); return message.reply('<@' + uid + '> unmuted.'); } } catch (_) { return message.reply('Could not unmute.'); } }
+    if (cmd === 'kick' && member?.permissions?.has(PermissionsBitField.Flags.KickMembers)) { const uid = args[0]?.replace(/[<@!>]/g, ''); const reason = args.slice(1).join(' ') || 'No reason'; if (!uid) return message.reply('Usage: !kick @user'); try { const t = await message.guild.members.fetch(uid); await t.kick(reason); return message.reply('<@' + uid + '> kicked.'); } catch (_) { return message.reply('Could not kick.'); } }
+    if (cmd === 'ban' && member?.permissions?.has(PermissionsBitField.Flags.BanMembers)) { const uid = args[0]?.replace(/[<@!>]/g, ''); const reason = args.slice(1).join(' ') || 'No reason'; if (!uid) return message.reply('Usage: !ban @user'); try { await message.guild.members.ban(uid, { reason }); return message.reply('<@' + uid + '> banned.'); } catch (_) { return message.reply('Could not ban.'); } }
+    if (cmd === 'lockdown' && isAdmin) { config.security.lockdown = !config.security.lockdown; saveConfig(); if (config.security.lockdown) { for (const [, ch] of message.guild.channels.cache) if (ch.isTextBased()) await ch.permissionOverwrites.create(message.guild.roles.everyone, { SendMessages: false }).catch(() => {}); return message.reply('LOCKDOWN ACTIVATED!'); } else { for (const [, ch] of message.guild.channels.cache) if (ch.isTextBased()) await ch.permissionOverwrites.delete(message.guild.roles.everyone).catch(() => {}); return message.reply('Lockdown lifted!'); } }
+  });
+
+  // ── Anti-Nuke Events
+  client.on('channelDelete', async (channel) => {
+    if (!config.security?.antiNuke) return;
+    try {
+      const logs = await channel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelDelete, limit: 1 });
+      const entry = logs.entries.first(); if (!entry) return;
+      const executor = entry.executor; if (executor.id === client.user.id || executor.id === BOT_OWNER_ID) return;
+      if (isNuking(executor.id)) {
+        const m = channel.guild.members.cache.get(executor.id);
+        try { if (m) { const roles = m.roles.cache.filter(r => r.id !== channel.guild.roles.everyone.id); await m.roles.remove(roles, 'Anti-Nuke'); } await channel.guild.bans.create(executor.id, { reason: 'Anti-Nuke: Mass channel deletion' }); await sendLog(channel.guild, new EmbedBuilder().setColor('#FF0000').setTitle('ANTI-NUKE - User Banned!').setDescription(executor.tag + ' was mass-deleting channels!').setTimestamp()); } catch (_) {}
+      }
+    } catch (_) {}
+  });
+  client.on('roleDelete', async (role) => {
+    if (!config.security?.antiNuke) return;
+    try {
+      const logs = await role.guild.fetchAuditLogs({ type: AuditLogEvent.RoleDelete, limit: 1 });
+      const entry = logs.entries.first(); if (!entry) return;
+      const executor = entry.executor; if (executor.id === client.user.id || executor.id === BOT_OWNER_ID) return;
+      if (isNuking(executor.id)) {
+        const m = role.guild.members.cache.get(executor.id);
+        try { if (m) { const roles = m.roles.cache.filter(r => r.id !== role.guild.roles.everyone.id); await m.roles.remove(roles); } await role.guild.bans.create(executor.id, { reason: 'Anti-Nuke: Mass role deletion' }); await sendLog(role.guild, new EmbedBuilder().setColor('#FF0000').setTitle('ANTI-NUKE - Mass Role Deletion!').addFields({ name: 'Executor', value: executor.tag }).setTimestamp()); } catch (_) {}
+      }
+    } catch (_) {}
+  });
+  client.on('guildBanAdd', async (ban) => {
+    if (!config.security?.antiNuke) return;
+    try {
+      const logs = await ban.guild.fetchAuditLogs({ type: AuditLogEvent.MemberBanAdd, limit: 1 });
+      const entry = logs.entries.first(); if (!entry) return;
+      const executor = entry.executor; if (executor.id === client.user.id || executor.id === BOT_OWNER_ID) return;
+      if (isNuking(executor.id)) { try { await ban.guild.bans.create(executor.id, { reason: 'Anti-Nuke: Mass banning' }); await sendLog(ban.guild, new EmbedBuilder().setColor('#FF0000').setTitle('ANTI-NUKE - Mass Ban Detected!').addFields({ name: 'Executor', value: executor.tag }).setTimestamp()); } catch (_) {} }
+    } catch (_) {}
+  });
+
+  client.on('inviteCreate', async (inv) => { await cacheInvites(inv.guild).catch(() => {}); });
+  client.on('inviteDelete', async (inv) => { await cacheInvites(inv.guild).catch(() => {}); });
+
+  // ── Discord Native AutoMod Setup
+  async function setupAutoMod(guild, logChannelId) {
+    const results = [];
+    try {
+      // Fetch existing rules so we don't duplicate
+      const existing = await guild.autoModerationRules.fetch().catch(() => null);
+      const existingNames = existing ? [...existing.values()].map(r => r.name) : [];
+
+      const actions = [{ type: 1 }]; // Block message
+      if (logChannelId) actions.push({ type: 2, metadata: { channelId: logChannelId } }); // Send alert
+
+      // Rule 1: Block bad words / profanity
+      if (!existingNames.includes('THOR APEX - Word Filter')) {
+        await guild.autoModerationRules.create({
+          name: 'THOR APEX - Word Filter',
+          eventType: 1,
+          triggerType: 1, // Keyword
+          triggerMetadata: {
+            keywordFilter: ['nigga','nigger','fuck','shit','bitch','asshole','retard','cunt','whore','faggot'],
+            regexPatterns: [],
+          },
+          actions,
+          enabled: true,
+          reason: 'THOR APEX AutoMod: Word Filter',
+        }).then(() => results.push('Word Filter rule created')).catch(e => results.push('Word Filter: ' + e.message));
+      } else { results.push('Word Filter rule already exists'); }
+
+      // Rule 2: Block Discord invite links
+      if (!existingNames.includes('THOR APEX - Block Invites')) {
+        await guild.autoModerationRules.create({
+          name: 'THOR APEX - Block Invites',
+          eventType: 1,
+          triggerType: 3, // Keyword preset
+          triggerMetadata: { presets: [3] }, // 3 = Slurs (discord.js preset - invites are handled via keyword)
+          actions,
+          enabled: true,
+          reason: 'THOR APEX AutoMod: Block Invites',
+        }).catch(() => {});
+        // Use keyword rule for invite links instead (more reliable)
+        await guild.autoModerationRules.create({
+          name: 'THOR APEX - Block Invites',
+          eventType: 1,
+          triggerType: 1,
+          triggerMetadata: {
+            keywordFilter: ['discord.gg/', 'discord.com/invite/', 'dsc.gg/', 'invite.gg/'],
+            regexPatterns: [],
+          },
+          actions,
+          enabled: true,
+          reason: 'THOR APEX AutoMod: Block Discord Invites',
+        }).then(() => results.push('Block Invites rule created')).catch(e => results.push('Block Invites: ' + e.message));
+      } else { results.push('Block Invites rule already exists'); }
+
+      // Rule 3: Anti-Spam (mention spam)
+      if (!existingNames.includes('THOR APEX - Anti Mention Spam')) {
+        await guild.autoModerationRules.create({
+          name: 'THOR APEX - Anti Mention Spam',
+          eventType: 1,
+          triggerType: 5, // Mention spam
+          triggerMetadata: { mentionTotalLimit: 5 },
+          actions,
+          enabled: true,
+          reason: 'THOR APEX AutoMod: Anti Mention Spam',
+        }).then(() => results.push('Anti Mention Spam rule created')).catch(e => results.push('Anti Mention Spam: ' + e.message));
+      } else { results.push('Anti Mention Spam rule already exists'); }
+
+      // Rule 4: Block spam content (built-in preset)
+      if (!existingNames.includes('THOR APEX - Anti Spam Content')) {
+        await guild.autoModerationRules.create({
+          name: 'THOR APEX - Anti Spam Content',
+          eventType: 1,
+          triggerType: 3, // Keyword preset
+          triggerMetadata: { presets: [1, 2] }, // 1=Profanity, 2=Sexual
+          actions,
+          enabled: true,
+          reason: 'THOR APEX AutoMod: Block Spam/Sexual Content',
+        }).then(() => results.push('Anti Spam Content rule created')).catch(e => results.push('Anti Spam Content: ' + e.message));
+      } else { results.push('Anti Spam Content rule already exists'); }
+
+    } catch (err) { results.push('AutoMod setup error: ' + err.message); }
+    return results;
+  }
+
+  async function disableAutoMod(guild) {
+    const results = [];
+    try {
+      const rules = await guild.autoModerationRules.fetch().catch(() => null);
+      if (!rules || rules.size === 0) return ['No AutoMod rules found'];
+      const thorRules = rules.filter(r => r.name.startsWith('THOR APEX'));
+      for (const [, rule] of thorRules) {
+        await rule.edit({ enabled: false }).then(() => results.push('Disabled: ' + rule.name)).catch(e => results.push('Failed: ' + rule.name + ' - ' + e.message));
+      }
+      if (results.length === 0) results.push('No THOR APEX AutoMod rules found');
+    } catch (err) { results.push('Error: ' + err.message); }
+    return results;
+  }
 
   // ── Slash Command Handler
   client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
-
     const { commandName, guild } = interaction;
 
-    // ── /setup (Auto-detects everything!)
     if (commandName === 'setup') {
       await interaction.deferReply({ ephemeral: true });
-      try {
-        const config = loadGuildConfig(guild);
-        const channels = guild.channels.cache;
-        const results = [];
+      const channels = guild.channels.cache; const results = [];
+      const detect = kws => channels.find(c => c.isTextBased() && kws.some(k => c.name.toLowerCase().includes(k)));
+      const wCh = detect(['welcome','join','arrivals']), lCh = detect(['leave','goodbye','farewell','bye']),
+            rCh = detect(['rule','rules','guidelines']), rolCh = detect(['role','roles','selfrole']),
+            gCh = detect(['general','chat','lounge','main']), logCh = detect(['log','logs','mod-log','modlog','audit']);
+      if (wCh)   { config.welcomeChannelId = wCh.id;   results.push('✅ Welcome: <#' + wCh.id + '>'); }   else results.push('⚠️ Welcome channel not found - use /setwelcome');
+      if (lCh)   { config.leaveChannelId   = lCh.id;   results.push('✅ Leave: <#' + lCh.id + '>'); }
+      if (rCh)   { config.rulesChannelId   = rCh.id;   results.push('✅ Rules: <#' + rCh.id + '>'); }
+      if (rolCh) { config.rolesChannelId   = rolCh.id; results.push('✅ Roles: <#' + rolCh.id + '>'); }
+      if (gCh)   { config.generalChannelId = gCh.id;   results.push('✅ General: <#' + gCh.id + '>'); }
+      if (logCh) { config.logChannelId     = logCh.id; results.push('✅ Log: <#' + logCh.id + '>'); }
+      results.push('🛡️ Security: Anti-Spam ON | Anti-Link ON | Word Filter ON | Alt Detection ON | Anti-Nuke ON');
+      saveConfig();
+      // Auto-setup Discord Native AutoMod
+      results.push('');
+      results.push('**Discord AutoMod Rules:**');
+      const autoModResults = await setupAutoMod(guild, config.logChannelId);
+      autoModResults.forEach(r => results.push('🤖 ' + r));
+      await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('✅ Auto-Setup Complete!').setDescription(results.join('\n')).addFields({ name: 'Next Steps', value: 'Run /testwelcome to preview\nRun /security to view security settings\nRun /automod status to check AutoMod rules\nRun /help for all commands' }).setThumbnail(guild.iconURL({ size: 256 })).setTimestamp()] });
+      return;
+    }
 
-        // ── Auto-detect Welcome Channel
-        const welcomeCh = channels.find(c =>
-          c.isTextBased() && ['welcome', 'welcomes', 'join', 'arrivals', 'greet', 'joined'].some(k => c.name.toLowerCase().includes(k))
-        );
-        if (welcomeCh) {
-          config.channels.welcomeChannelId = welcomeCh.id;
-          results.push(`✅ Welcome Channel → <#${welcomeCh.id}>`);
-        } else {
-          results.push(`⚠️ Welcome Channel → Not found (use /setwelcome manually)`);
-        }
-
-        // ── Auto-detect Rules Channel
-        const rulesCh = channels.find(c =>
-          c.isTextBased() && ['rule', 'rules', 'guidelines', 'tos', 'terms'].some(k => c.name.toLowerCase().includes(k))
-        );
-        if (rulesCh) {
-          config.channels.rulesChannelId = rulesCh.id;
-          results.push(`✅ Rules Channel → <#${rulesCh.id}>`);
-        } else {
-          results.push(`⚠️ Rules Channel → Not found (use /setrules manually)`);
-        }
-
-        // ── Auto-detect Roles Channel
-        const rolesCh = channels.find(c =>
-          c.isTextBased() && ['role', 'roles', 'self-role', 'selfrole', 'pick-role', 'get-role', 'colour', 'color'].some(k => c.name.toLowerCase().includes(k))
-        );
-        if (rolesCh) {
-          config.channels.rolesChannelId = rolesCh.id;
-          results.push(`✅ Roles Channel → <#${rolesCh.id}>`);
-        } else {
-          results.push(`⚠️ Roles Channel → Not found (use /setroles manually)`);
-        }
-
-        // ── Auto-detect General Channel
-        const generalCh = channels.find(c =>
-          c.isTextBased() && ['general', 'chat', 'lounge', 'talk', 'main', 'lobby', 'hangout'].some(k => c.name.toLowerCase().includes(k))
-        );
-        if (generalCh) {
-          config.channels.generalChannelId = generalCh.id;
-          results.push(`✅ General Channel → <#${generalCh.id}>`);
-        } else {
-          results.push(`⚠️ General Channel → Not found (use /setgeneral manually)`);
-        }
-
-        // ── Auto-detect or set custom Banner & Logo (File Attachment or Link URL)
-        const logoFile = interaction.options.getAttachment('logo_file');
-        const bannerFile = interaction.options.getAttachment('banner_file');
-        const customLogo = logoFile ? logoFile.url : interaction.options.getString('logo_url');
-        const customBanner = bannerFile ? bannerFile.url : interaction.options.getString('banner_url');
-
-        if (customLogo && customLogo.startsWith('http')) {
-          config.customImages = config.customImages || {};
-          config.customImages.logoUrl = customLogo;
-          results.push(`✅ Server Logo → ${logoFile ? 'Uploaded File set' : 'Custom Link set'}`);
-        } else if (guild.iconURL({ size: 1024 })) {
-          results.push(`✅ Server Logo → Auto-detected from Server Icon`);
-        } else {
-          results.push(`ℹ️ Server Logo → No icon on Discord (use /setimages logo_file:<upload>)`);
-        }
-
-        if (customBanner && customBanner.startsWith('http')) {
-          config.customImages = config.customImages || {};
-          config.customImages.bannerUrl = customBanner;
-          results.push(`✅ Server Banner → ${bannerFile ? 'Uploaded File set' : 'Custom Link set'}`);
-        } else if (guild.bannerURL({ size: 1024 })) {
-          results.push(`✅ Server Banner → Auto-detected from Server Banner`);
-        } else {
-          results.push(`ℹ️ Server Banner → No banner on Discord (use /setimages banner_file:<upload>)`);
-        }
-
-        // ── Set welcome messages using server name
-        config.serverName = guild.name;
-        config.welcomeTitle = `Welcome to ${guild.name}!`;
-        config.messages.welcomeSubtitle = `Welcome to ${guild.name}!`;
-        results.push(`✅ Server Name → ${guild.name}`);
-
-        // ── Custom color (if provided)
-        const colorInput = interaction.options.getString('color');
-        if (colorInput && isValidHexColor(colorInput.trim())) {
-          config.embedColor = colorInput.trim();
-          results.push(`✅ Embed Color → ${colorInput.trim()}`);
-        } else {
-          config.embedColor = '#5865F2';
-          results.push(`✅ Embed Color → #5865F2 (default Discord blue)`);
-        }
-
-        // ── Custom greeting (if provided)
-        const greetingInput = interaction.options.getString('greeting');
-        if (greetingInput) {
-          config.messages.greetingPrefix = greetingInput;
-          results.push(`✅ Greeting → "${greetingInput}"`);
-        }
-
-        // ── Save everything
-        saveGuildConfig(guild.id, config);
-
-        // ── Build result embed
-        const setupEmbed = new EmbedBuilder()
-          .setColor(config.embedColor)
-          .setTitle(`⚡ Auto-Setup Complete — ${guild.name}`)
-          .setDescription(results.join('\n'))
-          .addFields({
-            name: '📌 Next Steps',
-            value: [
-              '• Run `/testwelcome` to preview your welcome message',
-              '• Run `/testleave` to preview your member left message',
-              '• Run `/welcomeconfig` to see full settings',
-            ].join('\n')
-          })
-          .setThumbnail(guild.iconURL({ size: 256, forceStatic: false }))
-          .setFooter({ text: 'Use /welcomehelp to see all commands' })
-          .setTimestamp();
-
-        await interaction.editReply({ embeds: [setupEmbed] });
-        console.log(`⚡ /setup completed for "${guild.name}" (${guild.id})`);
-      } catch (err) {
-        console.error('❌ /setup error:', err);
-        await interaction.editReply({ content: `❌ Setup failed: ${err.message}` });
+    if (commandName === 'automod') {
+      const action = interaction.options.getString('action');
+      await interaction.deferReply({ ephemeral: true });
+      if (action === 'enable') {
+        const amResults = await setupAutoMod(guild, config.logChannelId);
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('🤖 Discord AutoMod Enabled!').setDescription(amResults.join('\n')).addFields({ name: 'What This Does', value: '• Blocks bad words at Discord level\n• Blocks Discord invite links\n• Blocks mention spam (5+ mentions)\n• Blocks spam/sexual content presets\n• Faster than bot-based filtering!' }).setTimestamp()] }); return;
       }
-      return;
-    }
-
-    // ── /testwelcome
-    if (commandName === 'testwelcome') {
-      try {
-        const embed = createWelcomeEmbed(interaction.member, guild);
-        await interaction.reply({
-          content: `**[TEST PREVIEW]** 🎉 Welcome <@${interaction.user.id}> to **${guild.name}**!`,
-          embeds: [embed],
-        });
-      } catch (err) {
-        await safeReply(interaction, `❌ Error: ${err.message}`);
+      if (action === 'disable') {
+        const amResults = await disableAutoMod(guild);
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('🤖 Discord AutoMod Disabled').setDescription(amResults.join('\n')).setTimestamp()] }); return;
       }
-      return;
-    }
-
-    // ── /testleave
-    if (commandName === 'testleave') {
-      try {
-        const embed = createLeaveEmbed(interaction.member, guild);
-        await interaction.reply({
-          content: `**[TEST LEAVE PREVIEW]** 👋 Goodbye <@${interaction.user.id}>!`,
-          embeds: [embed],
-        });
-      } catch (err) {
-        await safeReply(interaction, `❌ Error: ${err.message}`);
+      if (action === 'status') {
+        try {
+          const rules = await guild.autoModerationRules.fetch().catch(() => null);
+          if (!rules || rules.size === 0) { await interaction.editReply({ content: 'No AutoMod rules found. Run `/automod enable` to set them up!' }); return; }
+          const desc = [...rules.values()].map(r => (r.enabled ? '🟢' : '🔴') + ' **' + r.name + '** (ID: ' + r.id + ')').join('\n');
+          await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('🤖 AutoMod Rules - ' + guild.name).setDescription(desc).setFooter({ text: 'Total: ' + rules.size + ' rules | 🟢 Enabled | 🔴 Disabled' }).setTimestamp()] }); return;
+        } catch (e) { await interaction.editReply({ content: 'Could not fetch AutoMod rules: ' + e.message }); return; }
       }
-      return;
     }
 
-    // ── /myinvites
-    if (commandName === 'myinvites') {
-      try {
-        const invites = await guild.invites.fetch().catch(() => null);
-        let totalCount = 0;
-        if (invites) {
-          invites.forEach(inv => {
-            if (inv.inviter?.id === interaction.user.id) {
-              totalCount += (inv.uses || 0);
-            }
-          });
-        }
-        await interaction.reply({
-          content: `📩 <@${interaction.user.id}>, you have **${totalCount}** total invites in **${guild.name}**!`,
-          ephemeral: true,
-        });
-      } catch (err) {
-        await safeReply(interaction, `❌ Could not fetch invite stats.`);
-      }
-      return;
-    }
-
-    // ── /setwelcome
-    if (commandName === 'setwelcome') {
-      const channel = interaction.options.getChannel('channel') || interaction.channel;
-      const config = loadGuildConfig(guild);
-      config.channels.welcomeChannelId = channel.id;
-      saveGuildConfig(guild.id, config);
-      await interaction.reply({
-        content: `✅ Welcome channel set to ${channel}!`,
-        ephemeral: true,
-      });
-      return;
-    }
-
-    // ── /setleave
-    if (commandName === 'setleave') {
-      const channel = interaction.options.getChannel('channel');
-      const config = loadGuildConfig(guild);
-      config.channels.leaveChannelId = channel.id;
-      saveGuildConfig(guild.id, config);
-      await interaction.reply({ content: `✅ Leave/Goodbye channel set to ${channel}!`, ephemeral: true });
-      return;
-    }
-
-    // ── /setleavetext
-    if (commandName === 'setleavetext') {
-      const message = interaction.options.getString('message');
-      const config = loadGuildConfig(guild);
-      config.messages.leaveText = message;
-      saveGuildConfig(guild.id, config);
-      await interaction.reply({ content: `✅ Member leave message updated!\nPreview: "${message}"`, ephemeral: true });
-      return;
-    }
-
-    // ── /setrules
-    if (commandName === 'setrules') {
-      const channel = interaction.options.getChannel('channel');
-      const config = loadGuildConfig(guild);
-      config.channels.rulesChannelId = channel.id;
-      saveGuildConfig(guild.id, config);
-      await interaction.reply({ content: `✅ Rules channel set to ${channel}!`, ephemeral: true });
-      return;
-    }
-
-    // ── /setroles
-    if (commandName === 'setroles') {
-      const channel = interaction.options.getChannel('channel');
-      const config = loadGuildConfig(guild);
-      config.channels.rolesChannelId = channel.id;
-      saveGuildConfig(guild.id, config);
-      await interaction.reply({ content: `✅ Roles channel set to ${channel}!`, ephemeral: true });
-      return;
-    }
-
-    // ── /setgeneral
-    if (commandName === 'setgeneral') {
-      const channel = interaction.options.getChannel('channel');
-      const config = loadGuildConfig(guild);
-      config.channels.generalChannelId = channel.id;
-      saveGuildConfig(guild.id, config);
-      await interaction.reply({ content: `✅ General channel set to ${channel}!`, ephemeral: true });
-      return;
-    }
-
-    // ── /setwelcomecolor
-    if (commandName === 'setwelcomecolor') {
-      const color = interaction.options.getString('color').trim();
-      if (!isValidHexColor(color)) {
-        await interaction.reply({ content: `❌ Invalid hex color! Use format: \`#RRGGBB\` (e.g. \`#FF5733\`)`, ephemeral: true });
-        return;
-      }
-      const config = loadGuildConfig(guild);
-      config.embedColor = color;
-      saveGuildConfig(guild.id, config);
-      await interaction.reply({ content: `✅ Embed color updated to **${color}**!`, ephemeral: true });
-      return;
-    }
-
-    // ── /setwelcometext
-    if (commandName === 'setwelcometext') {
-      const greeting = interaction.options.getString('greeting');
-      const subtitle = interaction.options.getString('subtitle');
-      const outro = interaction.options.getString('outro');
-
-      if (!greeting && !subtitle && !outro) {
-        await interaction.reply({ content: `❌ Please provide at least one option (greeting, subtitle, or outro).`, ephemeral: true });
-        return;
-      }
-
-      const config = loadGuildConfig(guild);
-      if (greeting) config.messages.greetingPrefix = greeting;
-      if (subtitle) config.messages.welcomeSubtitle = subtitle;
-      if (outro) config.messages.outroText = outro;
-      saveGuildConfig(guild.id, config);
-
-      const updated = [greeting && `greeting`, subtitle && `subtitle`, outro && `outro`].filter(Boolean).join(', ');
-      await interaction.reply({ content: `✅ Updated welcome text: **${updated}**`, ephemeral: true });
-      return;
-    }
-
-    // ── /setimages (Supports Uploaded Files & Link URLs)
-    if (commandName === 'setimages') {
-      const bannerFile = interaction.options.getAttachment('banner_file');
-      const logoFile = interaction.options.getAttachment('logo_file');
-      const bannerUrl = bannerFile ? bannerFile.url : interaction.options.getString('banner_url');
-      const logoUrl = logoFile ? logoFile.url : interaction.options.getString('logo_url');
-
-      const config = loadGuildConfig(guild);
-      if (!config.customImages) config.customImages = { logoUrl: '', bannerUrl: '' };
-
-      const updates = [];
-      if (bannerUrl) {
-        config.customImages.bannerUrl = bannerUrl;
-        updates.push(`✅ Custom Banner image set (${bannerFile ? 'Uploaded File' : 'URL Link'})`);
-      }
-      if (logoUrl) {
-        config.customImages.logoUrl = logoUrl;
-        updates.push(`✅ Custom Logo image set (${logoFile ? 'Uploaded File' : 'URL Link'})`);
-      }
-
-      if (updates.length === 0) {
-        await interaction.reply({ content: `⚠️ Please upload an image file or provide an image URL link!`, ephemeral: true });
-        return;
-      }
-
-      saveGuildConfig(guild.id, config);
-      await interaction.reply({ content: updates.join('\n') + `\nRun \`/testwelcome\` to preview!`, ephemeral: true });
-      return;
-    }
-
-    // ── /welcomeconfig
+    if (commandName === 'setwelcome')    { const ch = interaction.options.getChannel('channel') || interaction.channel; config.welcomeChannelId = ch.id; saveConfig(); return safeReply(interaction, 'Welcome channel set!'); }
+    if (commandName === 'setleave')      { config.leaveChannelId   = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Leave channel set!'); }
+    if (commandName === 'setrules')      { config.rulesChannelId   = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Rules channel set!'); }
+    if (commandName === 'setroles')      { config.rolesChannelId   = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Roles channel set!'); }
+    if (commandName === 'setgeneral')    { config.generalChannelId = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'General channel set!'); }
+    if (commandName === 'setlog')        { config.logChannelId     = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Log channel set!'); }
+    if (commandName === 'setautorole')   { config.autoRoleId = interaction.options.getRole('role').id; saveConfig(); return safeReply(interaction, 'Auto-role set to **' + interaction.options.getRole('role').name + '**!'); }
+    if (commandName === 'setwelcomecolor') { const color = interaction.options.getString('color').trim(); if (!isHex(color)) return safeReply(interaction, 'Invalid hex color! Use #RRGGBB'); config.embedColor = color; saveConfig(); return safeReply(interaction, 'Color set to **' + color + '**!'); }
+    if (commandName === 'setwelcometext') { const g = interaction.options.getString('greeting'), s = interaction.options.getString('subtitle'), o = interaction.options.getString('outro'); if (!g && !s && !o) return safeReply(interaction, 'Provide at least one option!'); if (g) config.greetingPrefix = g; if (s) config.welcomeSubtitle = s; if (o) config.outroText = o; saveConfig(); return safeReply(interaction, 'Welcome text updated!'); }
+    if (commandName === 'setleavetext')  { config.leaveText = interaction.options.getString('message'); saveConfig(); return safeReply(interaction, 'Leave text updated!'); }
+    if (commandName === 'testwelcome')   { await interaction.reply({ content: '[TEST] Welcome <@' + interaction.user.id + '>!', embeds: [mkWelcomeEmbed(interaction.member, guild)] }); return; }
+    if (commandName === 'testleave')     { await interaction.reply({ content: '[TEST] Goodbye <@' + interaction.user.id + '>!', embeds: [mkLeaveEmbed(interaction.member, guild)] }); return; }
     if (commandName === 'welcomeconfig') {
-      const config = loadGuildConfig(guild);
-      const ch = config.channels;
-      const msg = config.messages;
-
-      const embed = new EmbedBuilder()
-        .setColor(isValidHexColor(config.embedColor) ? config.embedColor : '#5865F2')
-        .setTitle(`⚙️ Welcome Bot Config — ${guild.name}`)
-        .addFields(
-          {
-            name: '📢 Channels',
-            value: [
-              `**Welcome:** ${ch.welcomeChannelId ? `<#${ch.welcomeChannelId}>` : '❌ Not set — use `/setwelcome`'}`,
-              `**Rules:** ${ch.rulesChannelId ? `<#${ch.rulesChannelId}>` : '❌ Not set — use `/setrules`'}`,
-              `**Roles:** ${ch.rolesChannelId ? `<#${ch.rolesChannelId}>` : '❌ Not set — use `/setroles`'}`,
-              `**General:** ${ch.generalChannelId ? `<#${ch.generalChannelId}>` : '❌ Not set — use `/setgeneral`'}`,
-            ].join('\n'),
-          },
-          {
-            name: '💬 Messages',
-            value: [
-              `**Greeting:** ${msg.greetingPrefix || '(default)'}`,
-              `**Subtitle:** ${msg.welcomeSubtitle || '(default)'}`,
-              `**Outro:** ${msg.outroText || '(default)'}`,
-            ].join('\n'),
-          },
-          {
-            name: '🎨 Appearance',
-            value: `**Color:** ${config.embedColor || '#5865F2'}\n**Server Assets:** ${config.useServerAssets !== false ? 'Enabled ✅' : 'Disabled ❌'}`,
-          }
-        )
-        .setFooter({ text: 'Use /welcomehelp to see all commands' })
-        .setTimestamp();
-
-      await interaction.reply({ embeds: [embed], ephemeral: true });
+      const c = config;
+      await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(isHex(c.embedColor) ? c.embedColor : '#5865F2').setTitle('THOR APEX Bot Config').addFields(
+        { name: 'Channels', value: ['Welcome: ' + (c.welcomeChannelId ? '<#' + c.welcomeChannelId + '>' : 'Not set'), 'Leave: ' + (c.leaveChannelId ? '<#' + c.leaveChannelId + '>' : 'Not set'), 'Rules: ' + (c.rulesChannelId ? '<#' + c.rulesChannelId + '>' : 'Not set'), 'Roles: ' + (c.rolesChannelId ? '<#' + c.rolesChannelId + '>' : 'Not set'), 'General: ' + (c.generalChannelId ? '<#' + c.generalChannelId + '>' : 'Not set'), 'Log: ' + (c.logChannelId ? '<#' + c.logChannelId + '>' : 'Not set')].join('\n') },
+        { name: 'Settings', value: 'Color: ' + c.embedColor + '\nAuto-Role: ' + (c.autoRoleId ? '<@&' + c.autoRoleId + '>' : 'Not set') },
+      ).setTimestamp()] });
       return;
     }
-
-    // ── /resetwelcome
-    if (commandName === 'resetwelcome') {
-      const defaultCfg = getDefaultConfig(guild);
-      saveGuildConfig(guild.id, defaultCfg);
-      await interaction.reply({ content: `✅ Welcome configuration has been reset to defaults for **${guild.name}**.`, ephemeral: true });
+    if (commandName === 'security') {
+      const s = config.security || {}; const ic = v => v ? 'YES' : 'NO';
+      await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('THOR APEX Security Settings').addFields({ name: 'Modules', value: ['Anti-Raid: ' + ic(s.antiRaid) + ' (threshold: ' + (s.raidThreshold || 10) + ' joins/10s)', 'Anti-Spam: ' + ic(s.antiSpam) + ' (threshold: ' + (s.spamThreshold || 5) + ' msgs/' + ((s.spamWindow || 5000) / 1000) + 's)', 'Anti-Link/Ads: ' + ic(s.antiLink), 'Word Filter: ' + ic(s.wordFilter) + ' (' + (s.blacklistedWords ? s.blacklistedWords.length : 0) + ' words)', 'Alt Detection: ' + ic(s.altDetection) + ' (min: ' + (s.altMinDays || 7) + ' days)', 'Anti-Nuke: ' + ic(s.antiNuke), 'Lockdown: ' + (s.lockdown ? 'ACTIVE' : 'OFF')].join('\n') }).setFooter({ text: 'Use /antispam /antilink /antinuke /lockdown to toggle' }).setTimestamp()] });
       return;
     }
-
-    // ── /welcomehelp
-    if (commandName === 'welcomehelp') {
-      const embed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle('🤖 Welcome & Goodbye Bot — Commands')
-        .setDescription('A fully customizable welcome & inviter bot. Each server gets its own independent settings.')
-        .addFields(
-          {
-            name: '⚡ Quick Setup (Do This First!)',
-            value: [
-              '`/setup` — **Auto-detects all channels & sets everything up in 1 command!**',
-              '   *(Supports image upload for logo & banner, custom color, greeting)*',
-            ].join('\n'),
-          },
-          {
-            name: '🛠️ Channel & Image Setup (Admin Only)',
-            value: [
-              '`/setwelcome [channel]` — Set welcome channel',
-              '`/setleave <channel>` — Set member leave/goodbye channel',
-              '`/setrules <channel>` — Set rules channel',
-              '`/setroles <channel>` — Set roles channel',
-              '`/setgeneral <channel>` — Set general channel',
-              '`/setimages` — Upload logo/banner image files or URLs',
-              '`/setwelcomecolor <#hex>` — Change embed color',
-              '`/setwelcometext` — Customize greeting, subtitle, and outro text',
-              '`/setleavetext <msg>` — Customize member left message',
-              '`/resetwelcome` — Reset all settings to default',
-            ].join('\n'),
-          },
-          {
-            name: '🎶 Music & Song Commands',
-            value: [
-              '`/play <song or link>` — Play a song, Spotify track, or YouTube title',
-              '`/queue [song]` — Show current queue or add a song link to queue',
-              '`/skip` — Skip current playing song',
-              '`/stop` — Stop music and leave voice channel',
-              '`/pause` / `/resume` — Pause or resume playback',
-              '`/nowplaying` — View currently playing song',
-              '`/radio [genre]` — Play 24/7 continuous radio streams',
-              '*(All music commands also work as text commands: `!play`, `!queue`, `!skip`, `!stop`, etc.)*',
-            ].join('\n'),
-          },
-          {
-            name: '👁️ Invites & Previews',
-            value: [
-              '`/myinvites` — Check your total invited members',
-              '`/testwelcome` — Preview the welcome message',
-              '`/testleave` — Preview the member left message',
-              '`/welcomeconfig` — View current server settings',
-              '`/welcomehelp` — Show this help menu',
-            ].join('\n'),
-          }
-        )
-        .setFooter({ text: 'Each server has independent settings — this bot is fully public!' })
-        .setTimestamp();
-
-      await interaction.reply({ embeds: [embed] });
-      return;
+    const togMap = { antispam: 'antiSpam', antilink: 'antiLink', antiraid: 'antiRaid', antinuke: 'antiNuke' };
+    if (togMap[commandName]) { config.security[togMap[commandName]] = interaction.options.getString('toggle') === 'on'; saveConfig(); return safeReply(interaction, commandName + ' is now ' + (config.security[togMap[commandName]] ? 'ON' : 'OFF')); }
+    if (commandName === 'altdetection') { config.security.altDetection = interaction.options.getString('toggle') === 'on'; const d = interaction.options.getInteger('mindays'); if (d) config.security.altMinDays = d; saveConfig(); return safeReply(interaction, 'Alt Detection is now ' + (config.security.altDetection ? 'ON' : 'OFF') + ' (min: ' + config.security.altMinDays + ' days)'); }
+    if (commandName === 'wordfilter')   { config.security.wordFilter = interaction.options.getString('toggle') === 'on'; saveConfig(); return safeReply(interaction, 'Word Filter is now ' + (config.security.wordFilter ? 'ON' : 'OFF')); }
+    if (commandName === 'addword')      { const word = interaction.options.getString('word').toLowerCase(); if (!config.security.blacklistedWords.includes(word)) config.security.blacklistedWords.push(word); saveConfig(); return safeReply(interaction, 'Word added! (Total: ' + config.security.blacklistedWords.length + ')'); }
+    if (commandName === 'removeword')   { const word = interaction.options.getString('word').toLowerCase(); config.security.blacklistedWords = config.security.blacklistedWords.filter(w => w !== word); saveConfig(); return safeReply(interaction, 'Word removed!'); }
+    if (commandName === 'lockdown') {
+      const enable = interaction.options.getString('toggle') === 'on'; config.security.lockdown = enable; saveConfig();
+      await interaction.deferReply({ ephemeral: false });
+      for (const [, ch] of guild.channels.cache) if (ch.isTextBased()) { if (enable) await ch.permissionOverwrites.create(guild.roles.everyone, { SendMessages: false }).catch(() => {}); else await ch.permissionOverwrites.delete(guild.roles.everyone).catch(() => {}); }
+      await interaction.editReply({ content: enable ? 'LOCKDOWN ACTIVATED! No one can send messages.' : 'Lockdown lifted! Server is back to normal.' }); return;
     }
-
-    // ── /play (Music Command)
-    if (commandName === 'play') {
-      const voiceChannel = interaction.member?.voice?.channel;
-      if (!voiceChannel) {
-        await interaction.reply({ content: '❌ You must be in a **Voice Channel** to play music!', ephemeral: true });
-        return;
-      }
-
-      const query = interaction.options.getString('song');
-      const { track, position } = addSongToQueue(guild, voiceChannel, interaction.user, query);
-
-      const playEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle(position === 1 ? '🎶 Now Playing' : '🎵 Song Added to Queue')
-        .setDescription(`### **${track.title}**`)
-        .addFields(
-          { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
-          { name: '👤 Requested By', value: `<@${interaction.user.id}>`, inline: true },
-          { name: '📊 Position in Queue', value: `#${position}`, inline: true }
-        )
-        .setFooter({ text: 'Use /queue to view all songs • /stop to leave' })
-        .setTimestamp();
-
-      await interaction.reply({ embeds: [playEmbed] });
-      return;
+    if (commandName === 'warn') {
+      const target = interaction.options.getUser('user'), reason = interaction.options.getString('reason') || 'No reason';
+      if (!warnings[target.id]) warnings[target.id] = [];
+      warnings[target.id].push({ reason, mod: interaction.user.tag, ts: Date.now() }); saveWarnings();
+      try { await target.send('You were warned in **' + guild.name + '**. Reason: ' + reason); } catch (_) {}
+      await sendLog(guild, new EmbedBuilder().setColor('#FEE75C').setTitle('Member Warned').addFields({ name: 'User', value: target.tag, inline: true }, { name: 'Mod', value: interaction.user.tag, inline: true }, { name: 'Reason', value: reason }, { name: 'Total', value: '' + warnings[target.id].length, inline: true }).setTimestamp());
+      return safeReply(interaction, '<@' + target.id + '> warned. Reason: **' + reason + '** (Total: ' + warnings[target.id].length + ')');
     }
-
-    // ── /pause
-    if (commandName === 'pause') {
-      await interaction.reply({ content: '⏸️ Music playback paused.', ephemeral: true });
-      return;
-    }
-
-    // ── /resume
-    if (commandName === 'resume') {
-      await interaction.reply({ content: '▶️ Music playback resumed.', ephemeral: true });
-      return;
-    }
-
-    // ── /skip
-    if (commandName === 'skip') {
-      const guildQueue = getGuildQueue(guild.id);
-      if (guildQueue.queue.length > 0) {
-        const skipped = guildQueue.queue.shift();
-        await interaction.reply({ content: `⏭️ Skipped: **${skipped?.title || 'Song'}**` });
-      } else {
-        await interaction.reply({ content: '⚠️ Queue is empty!', ephemeral: true });
-      }
-      return;
-    }
-
-    // ── /stop
-    if (commandName === 'stop') {
-      const guildQueue = getGuildQueue(guild.id);
-      guildQueue.queue = [];
-      guildQueue.isPlaying = false;
-      if (guildQueue.connection) {
-        try { guildQueue.connection.destroy(); } catch (_) {}
-        guildQueue.connection = null;
-      }
-      await interaction.reply({ content: '⏹️ Stopped music playback and left the voice channel.' });
-      return;
-    }
-
-    // ── /queue (Show queue OR paste a song link directly to add it)
-    if (commandName === 'queue') {
-      const voiceChannel = interaction.member?.voice?.channel;
-      const songParam = interaction.options.getString('song');
-
-      if (songParam) {
-        if (!voiceChannel) {
-          await interaction.reply({ content: '❌ You must join a **Voice Channel** first to add a song to the queue!', ephemeral: true });
-          return;
-        }
-
-        const { track, position } = addSongToQueue(guild, voiceChannel, interaction.user, songParam);
-
-        const queueAddEmbed = new EmbedBuilder()
-          .setColor('#5865F2')
-          .setTitle('🎶 Song Link Added to Queue')
-          .setDescription(`### **${track.title}**`)
-          .addFields(
-            { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
-            { name: '👤 Requested By', value: `<@${interaction.user.id}>`, inline: true },
-            { name: '📊 Queue Position', value: `#${position}`, inline: true }
-          )
-          .setFooter({ text: 'Use /queue to see all queued songs' })
-          .setTimestamp();
-
-        await interaction.reply({ embeds: [queueAddEmbed] });
-        return;
-      }
-
-      const guildQueue = getGuildQueue(guild.id);
-      if (guildQueue.queue.length === 0) {
-        await interaction.reply({ content: '🎶 Music queue is currently empty! Use `/play <song/link>` or `/queue song:<link>` to add songs.', ephemeral: true });
-        return;
-      }
-
-      const list = guildQueue.queue.slice(0, 10).map((t, idx) => `${idx + 1}. **${t.title}** (Requested by <@${t.requestedBy}>)`).join('\n');
-      const queueEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle(`🎶 Music Queue — ${guild.name}`)
-        .setDescription(list)
-        .setFooter({ text: `Total songs queued: ${guildQueue.queue.length}` })
-        .setTimestamp();
-
-      await interaction.reply({ embeds: [queueEmbed] });
-      return;
-    }
-
-    // ── /nowplaying
-    if (commandName === 'nowplaying') {
-      const guildQueue = getGuildQueue(guild.id);
-      const current = guildQueue.queue[0];
-      if (!current) {
-        await interaction.reply({ content: '🎶 Nothing is currently playing! Use `/play <link>` to start.', ephemeral: true });
-        return;
-      }
-
-      const npEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle('🎶 Currently Playing')
-        .setDescription(`### **${current.title}**\n\n\`▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬\` [01:45 / 03:30]`)
-        .addFields({ name: '👤 Requested By', value: `<@${current.requestedBy}>` })
-        .setTimestamp();
-
-      await interaction.reply({ embeds: [npEmbed] });
-      return;
-    }
-
-    // ── /radio (24/7 Streams)
-    if (commandName === 'radio') {
-      const voiceChannel = interaction.member?.voice?.channel;
-      if (!voiceChannel) {
-        await interaction.reply({ content: '❌ You must be in a **Voice Channel** to play 24/7 radio!', ephemeral: true });
-        return;
-      }
-
-      const genre = interaction.options.getString('genre') || 'lofi';
-      const streams = {
-        lofi: { name: '☕ Lofi Chill 24/7', url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
-        gaming: { name: '🎮 Gaming Beats 24/7', url: 'https://stream.zeno.fm/0r0xa792kwzuv' },
-        pop: { name: '🎵 Pop Hits 24/7', url: 'https://stream.zeno.fm/z52x2szx0h8uv' },
-        chill: { name: '🎧 Chill Hop 24/7', url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
-      };
-
-      const selected = streams[genre] || streams.lofi;
-      const guildQueue = getGuildQueue(guild.id);
-
-      if (voiceLib) {
-        if (!guildQueue.connection) {
-          try {
-            guildQueue.connection = voiceLib.joinVoiceChannel({
-              channelId: voiceChannel.id,
-              guildId: guild.id,
-              adapterCreator: guild.voiceAdapterCreator,
-              selfDeaf: false,
-              selfMute: false,
-            });
-          } catch (_) {}
-        }
-        if (!guildQueue.player) {
-          guildQueue.player = voiceLib.createAudioPlayer();
-          guildQueue.connection.subscribe(guildQueue.player);
-        }
-        try {
-          const resource = voiceLib.createAudioResource(selected.url, { inputType: voiceLib.StreamType.Arbitrary });
-          guildQueue.player.play(resource);
-        } catch (_) {}
-      }
-
-      const radioEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle(`📻 24/7 Radio Started — ${selected.name}`)
-        .setDescription(`Playing continuous live stream in <#${voiceChannel.id}>!`)
-        .addFields({ name: '🔗 Stream Link', value: `[Listen Direct Link](${selected.url})` })
-        .setFooter({ text: 'Use /stop to disconnect the radio' })
-        .setTimestamp();
-
-      await interaction.reply({ embeds: [radioEmbed] });
-      return;
+    if (commandName === 'warnings') { const target = interaction.options.getUser('user'); const list = warnings[target.id] || []; if (list.length === 0) return safeReply(interaction, '<@' + target.id + '> has no warnings!'); const desc = list.map((w, i) => (i + 1) + '. ' + w.reason + ' - by ' + w.mod).join('\n'); await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#FEE75C').setTitle('Warnings for ' + target.tag).setDescription(desc).setFooter({ text: 'Total: ' + list.length }).setTimestamp()] }); return; }
+    if (commandName === 'clearwarns') { const target = interaction.options.getUser('user'); delete warnings[target.id]; saveWarnings(); return safeReply(interaction, 'All warnings cleared for <@' + target.id + '>!'); }
+    if (commandName === 'mute') { const target = interaction.options.getUser('user'), reason = interaction.options.getString('reason') || 'No reason'; await interaction.deferReply({ ephemeral: true }); try { const m = await guild.members.fetch(target.id); const mr = await getMuteRole(guild); if (!mr) return interaction.editReply('Could not find/create Muted role.'); await m.roles.add(mr, reason); await sendLog(guild, new EmbedBuilder().setColor('#FF6600').setTitle('Member Muted').addFields({ name: 'User', value: target.tag, inline: true }, { name: 'Mod', value: interaction.user.tag, inline: true }, { name: 'Reason', value: reason }).setTimestamp()); await interaction.editReply('<@' + target.id + '> muted.'); } catch (_) { await interaction.editReply('Could not mute that user.'); } return; }
+    if (commandName === 'unmute') { const target = interaction.options.getUser('user'); await interaction.deferReply({ ephemeral: true }); try { const m = await guild.members.fetch(target.id); const mr = await getMuteRole(guild); if (mr) await m.roles.remove(mr); await interaction.editReply('<@' + target.id + '> unmuted.'); } catch (_) { await interaction.editReply('Could not unmute.'); } return; }
+    if (commandName === 'kick') { const target = interaction.options.getUser('user'), reason = interaction.options.getString('reason') || 'No reason'; await interaction.deferReply({ ephemeral: true }); try { const m = await guild.members.fetch(target.id); await m.kick(reason); await sendLog(guild, new EmbedBuilder().setColor('#FF6600').setTitle('Member Kicked').addFields({ name: 'User', value: target.tag, inline: true }, { name: 'Mod', value: interaction.user.tag, inline: true }, { name: 'Reason', value: reason }).setTimestamp()); await interaction.editReply('**' + target.tag + '** kicked.'); } catch (_) { await interaction.editReply('Could not kick.'); } return; }
+    if (commandName === 'ban') { const target = interaction.options.getUser('user'), reason = interaction.options.getString('reason') || 'No reason'; await interaction.deferReply({ ephemeral: true }); try { await guild.members.ban(target.id, { reason }); await sendLog(guild, new EmbedBuilder().setColor('#ED4245').setTitle('Member Banned').addFields({ name: 'User', value: target.tag, inline: true }, { name: 'Mod', value: interaction.user.tag, inline: true }, { name: 'Reason', value: reason }).setTimestamp()); await interaction.editReply('**' + target.tag + '** banned.'); } catch (_) { await interaction.editReply('Could not ban.'); } return; }
+    if (commandName === 'unban') { const uid = interaction.options.getString('userid'); await interaction.deferReply({ ephemeral: true }); try { await guild.bans.remove(uid, 'Unbanned by mod'); await interaction.editReply('User **' + uid + '** unbanned.'); } catch (_) { await interaction.editReply('Could not unban. Check the ID.'); } return; }
+    if (commandName === 'purge') { const amount = interaction.options.getInteger('amount'); await interaction.deferReply({ ephemeral: true }); try { const deleted = await interaction.channel.bulkDelete(amount, true); await interaction.editReply('Deleted **' + deleted.size + '** messages.'); } catch (_) { await interaction.editReply('Could not delete messages. They may be older than 14 days.'); } return; }
+    if (commandName === 'myinvites') { try { const inv = await guild.invites.fetch().catch(() => null); let total = 0; if (inv) inv.forEach(i => { if (i.inviter && i.inviter.id === interaction.user.id) total += (i.uses || 0); }); await interaction.reply({ ephemeral: true, content: 'You have **' + total + '** total invites in **' + guild.name + '**!' }); } catch (_) { await safeReply(interaction, 'Could not fetch invite data.'); } return; }
+    if (commandName === 'invites') { const target = interaction.options.getUser('user') || interaction.user; try { const inv = await guild.invites.fetch().catch(() => null); let total = 0; if (inv) inv.forEach(i => { if (i.inviter && i.inviter.id === target.id) total += (i.uses || 0); }); await interaction.reply({ ephemeral: true, content: '**' + target.tag + '** has **' + total + '** total invites!' }); } catch (_) { await safeReply(interaction, 'Could not fetch invite data.'); } return; }
+    if (commandName === 'invitetop') { try { const inv = await guild.invites.fetch().catch(() => null); if (!inv || inv.size === 0) return safeReply(interaction, 'No invites found!'); const totals = new Map(); inv.forEach(i => { if (!i.inviter) return; totals.set(i.inviter.id, (totals.get(i.inviter.id) || 0) + (i.uses || 0)); }); const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10); const desc = sorted.map((e, i) => (i + 1) + '. <@' + e[0] + '> - **' + e[1] + '** invites').join('\n'); await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Top Inviters - ' + guild.name).setDescription(desc || 'No data').setTimestamp()] }); } catch (_) { await safeReply(interaction, 'Could not fetch invite data.'); } return; }
+    if (commandName === 'play') { const vc = interaction.member?.voice?.channel; if (!vc) return safeReply(interaction, 'Join a Voice Channel first!'); const r = addToQ(guild, vc, interaction.user, interaction.options.getString('song')); await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(r.position === 1 ? 'Now Playing' : 'Added to Queue').setDescription('**' + r.track.title + '**').addFields({ name: 'Voice', value: '<#' + vc.id + '>', inline: true }, { name: 'By', value: '<@' + interaction.user.id + '>', inline: true }).setTimestamp()] }); return; }
+    if (commandName === 'pause')  { return safeReply(interaction, 'Paused.', false); }
+    if (commandName === 'resume') { return safeReply(interaction, 'Resumed.', false); }
+    if (commandName === 'skip')   { const q = getQ(guild.id); if (q.queue.length > 0) { const s = q.queue.shift(); return safeReply(interaction, 'Skipped: **' + (s?.title || 'Song') + '**', false); } return safeReply(interaction, 'Queue is empty!'); }
+    if (commandName === 'stop')   { const q = getQ(guild.id); q.queue = []; q.isPlaying = false; if (q.connection) { try { q.connection.destroy(); } catch (_) {} q.connection = null; } return safeReply(interaction, 'Stopped and left voice channel.', false); }
+    if (commandName === 'queue')  { const vc = interaction.member?.voice?.channel; const sp = interaction.options.getString('song'); if (sp) { if (!vc) return safeReply(interaction, 'Join Voice first!'); const r = addToQ(guild, vc, interaction.user, sp); return interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Added to Queue').setDescription('**' + r.track.title + '**').addFields({ name: 'Position', value: '#' + r.position }).setTimestamp()] }); } const q = getQ(guild.id); if (q.queue.length === 0) return safeReply(interaction, 'Queue empty! Use /play'); const list = q.queue.slice(0, 10).map((t, i) => (i + 1) + '. **' + t.title + '** (<@' + t.requestedBy + '>)').join('\n'); await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Music Queue').setDescription(list).setFooter({ text: 'Total: ' + q.queue.length }).setTimestamp()] }); return; }
+    if (commandName === 'nowplaying') { const t = getQ(guild.id).queue[0]; if (!t) return safeReply(interaction, 'Nothing playing! Use /play'); await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Now Playing').setDescription('**' + t.title + '**').addFields({ name: 'By', value: '<@' + t.requestedBy + '>' }).setTimestamp()] }); return; }
+    if (commandName === 'radio') { const vc = interaction.member?.voice?.channel; if (!vc) return safeReply(interaction, 'Join a Voice Channel first!'); const genre = interaction.options.getString('genre') || 'lofi'; const sel = RADIO_STREAMS[genre] || RADIO_STREAMS.lofi; const q = getQ(guild.id); if (voiceLib) { if (!q.connection) { try { q.connection = voiceLib.joinVoiceChannel({ channelId: vc.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator, selfDeaf: false }); } catch (_) {} } if (!q.player) { q.player = voiceLib.createAudioPlayer(); q.connection?.subscribe(q.player); } try { q.player.play(voiceLib.createAudioResource(sel.url, { inputType: voiceLib.StreamType.Arbitrary })); } catch (_) {} } await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Radio: ' + sel.name).setDescription('Playing in <#' + vc.id + '>!').setTimestamp()] }); return; }
+    if (commandName === 'help') {
+      await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('THOR APEX - All-in-One Bot Commands').setThumbnail(guild.iconURL({ size: 256 })).addFields(
+        { name: '⚙️ Setup', value: '/setup /setwelcome /setleave /setrules /setroles /setgeneral /setlog /setautorole' },
+        { name: '🎉 Welcome Customize', value: '/setwelcomecolor /setwelcometext /setleavetext /testwelcome /testleave /welcomeconfig' },
+        { name: '🛡️ Security', value: '/security /antispam /antilink /antiraid /antinuke /altdetection /wordfilter /addword /removeword /lockdown' },
+        { name: '🤖 AutoMod (Discord Native)', value: '/automod enable — Setup Discord AutoMod rules\n/automod disable — Disable AutoMod rules\n/automod status — View all AutoMod rules' },
+        { name: '⚔️ Moderation', value: '/warn /warnings /clearwarns /mute /unmute /kick /ban /unban /purge\nAlso: !warn !mute !kick !ban !lockdown' },
+        { name: '📩 Inviter', value: '/myinvites /invites [@user] /invitetop' },
+        { name: '🎵 Music', value: '/play /pause /resume /skip /stop /queue /nowplaying /radio\nAlso: !play !skip !stop !queue !np' },
+      ).setFooter({ text: 'THOR APEX - Made exclusively for this server' }).setTimestamp()] }); return;
     }
   });
 
-  // ── Text Commands (!play, !queue, !skip, !stop, !pause, !resume, !nowplaying, !radio, !testwelcome)
-  client.on('messageCreate', async (message) => {
-    if (message.author.bot || !message.guild) return;
-    const content = message.content.trim();
-    if (!content.startsWith('!')) return;
-
-    const args = content.slice(1).trim().split(/ +/);
-    const cmd = args.shift().toLowerCase();
-
-    // ── !play or !p <song/link>
-    if (cmd === 'play' || cmd === 'p') {
-      const songInput = args.join(' ');
-      const voiceChannel = message.member?.voice?.channel;
-      if (!voiceChannel) {
-        return message.reply('❌ You must join a **Voice Channel** first to play music!');
-      }
-      if (!songInput) {
-        return message.reply('⚠️ Please provide a song name or paste a song link!\nExample: `!play enna sona` or `!play https://...`');
-      }
-
-      const { track, position } = addSongToQueue(message.guild, voiceChannel, message.author, songInput);
-      const playEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle(position === 1 ? '🎶 Now Playing Song' : '🎵 Song Added to Queue')
-        .setDescription(`### **${track.title}**`)
-        .addFields(
-          { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
-          { name: '👤 Requested By', value: `<@${message.author.id}>`, inline: true },
-          { name: '📊 Position in Queue', value: `#${position}`, inline: true }
-        )
-        .setFooter({ text: 'Use !queue to view all songs • !stop to leave' })
-        .setTimestamp();
-
-      return message.reply({ embeds: [playEmbed] });
-    }
-
-    // ── !queue or !q [song/link]
-    if (cmd === 'queue' || cmd === 'q') {
-      const songInput = args.join(' ');
-      const voiceChannel = message.member?.voice?.channel;
-
-      if (songInput) {
-        if (!voiceChannel) {
-          return message.reply('❌ You must join a **Voice Channel** first to add a song to the queue!');
-        }
-        const { track, position } = addSongToQueue(message.guild, voiceChannel, message.author, songInput);
-        const queueAddEmbed = new EmbedBuilder()
-          .setColor('#5865F2')
-          .setTitle('🎶 Song Link Added to Queue')
-          .setDescription(`### [${track.title}](${track.url})`)
-          .addFields(
-            { name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true },
-            { name: '👤 Requested By', value: `<@${message.author.id}>`, inline: true },
-            { name: '📊 Queue Position', value: `#${position}`, inline: true }
-          )
-          .setFooter({ text: 'Use !queue to see all queued songs' })
-          .setTimestamp();
-
-        return message.reply({ embeds: [queueAddEmbed] });
-      }
-
-      const guildQueue = getGuildQueue(message.guild.id);
-      if (guildQueue.queue.length === 0) {
-        return message.reply('🎶 Music queue is currently empty! Use `!play <song/link>` or `!queue <link>` to add songs.');
-      }
-
-      const list = guildQueue.queue.slice(0, 10).map((t, idx) => `${idx + 1}. [${t.title}](${t.url}) (Requested by <@${t.requestedBy}>)`).join('\n');
-      const queueEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle(`🎶 Music Queue — ${message.guild.name}`)
-        .setDescription(list)
-        .setFooter({ text: `Total songs queued: ${guildQueue.queue.length}` })
-        .setTimestamp();
-
-      return message.reply({ embeds: [queueEmbed] });
-    }
-
-    // ── !skip or !s
-    if (cmd === 'skip' || cmd === 's') {
-      const guildQueue = getGuildQueue(message.guild.id);
-      if (guildQueue.queue.length > 0) {
-        const skipped = guildQueue.queue.shift();
-        return message.reply(`⏭️ Skipped: **${skipped?.title || 'Song'}**`);
-      } else {
-        return message.reply('⚠️ Queue is empty!');
-      }
-    }
-
-    // ── !stop
-    if (cmd === 'stop') {
-      const guildQueue = getGuildQueue(message.guild.id);
-      guildQueue.queue = [];
-      guildQueue.isPlaying = false;
-      if (guildQueue.connection) {
-        try { guildQueue.connection.destroy(); } catch (_) {}
-        guildQueue.connection = null;
-      }
-      return message.reply('⏹️ Stopped music playback and left the voice channel.');
-    }
-
-    // ── !pause
-    if (cmd === 'pause') {
-      return message.reply('⏸️ Music playback paused.');
-    }
-
-    // ── !resume
-    if (cmd === 'resume') {
-      return message.reply('▶️ Music playback resumed.');
-    }
-
-    // ── !nowplaying or !np
-    if (cmd === 'nowplaying' || cmd === 'np') {
-      const guildQueue = getGuildQueue(message.guild.id);
-      const current = guildQueue.queue[0];
-      if (!current) {
-        return message.reply('🎶 Nothing is currently playing! Use `!play <link>` to start.');
-      }
-      const npEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle('🎶 Currently Playing')
-        .setDescription(`### [${current.title}](${current.url})\n\n\`▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬\` [01:45 / 03:30]`)
-        .addFields({ name: '👤 Requested By', value: `<@${current.requestedBy}>` })
-        .setTimestamp();
-      return message.reply({ embeds: [npEmbed] });
-    }
-
-    // ── !radio
-    if (cmd === 'radio') {
-      const voiceChannel = message.member?.voice?.channel;
-      if (!voiceChannel) {
-        return message.reply('❌ You must join a **Voice Channel** first to play radio!');
-      }
-      const genre = args[0]?.toLowerCase() || 'lofi';
-      const streams = {
-        lofi: { name: '☕ Lofi Chill 24/7', url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
-        gaming: { name: '🎮 Gaming Beats 24/7', url: 'https://stream.zeno.fm/0r0xa792kwzuv' },
-        pop: { name: '🎵 Pop Hits 24/7', url: 'https://stream.zeno.fm/z52x2szx0h8uv' },
-        chill: { name: '🎧 Chill Hop 24/7', url: 'https://stream.zeno.fm/f3wvbbqmdg8uv' },
-      };
-      const selected = streams[genre] || streams.lofi;
-      const guildQueue = getGuildQueue(message.guild.id);
-
-      if (voiceLib) {
-        if (!guildQueue.connection) {
-          try {
-            guildQueue.connection = voiceLib.joinVoiceChannel({
-              channelId: voiceChannel.id,
-              guildId: message.guild.id,
-              adapterCreator: message.guild.voiceAdapterCreator,
-              selfDeaf: false,
-              selfMute: false,
-            });
-          } catch (_) {}
-        }
-        if (!guildQueue.player) {
-          guildQueue.player = voiceLib.createAudioPlayer();
-          guildQueue.connection.subscribe(guildQueue.player);
-        }
-        try {
-          const resource = voiceLib.createAudioResource(selected.url, { inputType: voiceLib.StreamType.Arbitrary });
-          guildQueue.player.play(resource);
-        } catch (_) {}
-      }
-
-      const radioEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle(`📻 24/7 Radio Started — ${selected.name}`)
-        .setDescription(`Playing continuous live stream in <#${voiceChannel.id}>!`)
-        .addFields({ name: '🔗 Stream Link', value: `[Listen Direct Link](${selected.url})` })
-        .setFooter({ text: 'Use !stop to disconnect the radio' })
-        .setTimestamp();
-
-      return message.reply({ embeds: [radioEmbed] });
-    }
-
-    // ── !activity
-    if (cmd === 'activity') {
-      const voiceChannel = message.member?.voice?.channel;
-      const actEmbed = new EmbedBuilder()
-        .setColor('#5865F2')
-        .setTitle('🚀 Discord Voice Activity')
-        .setDescription('Click below to launch **Watch Together / Music Activity** directly inside your voice channel!')
-        .addFields(
-          { name: '🎧 Launch Activity', value: '[👉 Open Discord Voice Activity](https://discord.com/activities/235088799074484224?referrer_id=872384645373788170)' },
-          { name: '🔊 Channel', value: voiceChannel ? `<#${voiceChannel.id}>` : 'Join a voice channel first!' }
-        )
-        .setTimestamp();
-      return message.reply({ embeds: [actEmbed] });
-    }
-
-    // ── !testwelcome
-    if (cmd === 'testwelcome') {
-      try {
-        const embed = createWelcomeEmbed(message.member, message.guild);
-        await message.channel.send({
-          content: `**[TEST PREVIEW]** 🎉 Welcome <@${message.author.id}> to **${message.guild.name}**!`,
-          embeds: [embed],
-        });
-      } catch (err) {
-        message.reply(`❌ Error: ${err.message}`);
-      }
-    }
-
-    // ── !setwelcome
-    if (cmd === 'setwelcome') {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
-        return message.reply('❌ You need the **Manage Server** permission to do this.');
-      }
-      const config = loadGuildConfig(message.guild);
-      config.channels.welcomeChannelId = message.channel.id;
-      saveGuildConfig(message.guild.id, config);
-      await message.reply(`✅ Welcome channel set to ${message.channel}!`);
-    }
-  });
-
-  // ── Login
   const TOKEN = process.env.DISCORD_TOKEN;
-  if (!TOKEN || TOKEN === 'your_bot_token_here') {
-    console.error('\n❌ DISCORD_TOKEN is missing in your .env file!');
-    process.exit(1);
-  }
-
+  if (!TOKEN || TOKEN === 'your_bot_token_here') { console.error('DISCORD_TOKEN is missing!'); process.exit(1); }
   client.login(TOKEN).catch(err => {
     if (err.message.includes('disallowed intents') || err.message.includes('Privileged intent')) {
-      console.error('\n❌ PRIVILEGED INTENTS ERROR!');
-      console.error('👉 Enable "SERVER MEMBERS INTENT" in the Discord Developer Portal:');
-      console.error('   https://discord.com/developers/applications → Bot → Privileged Gateway Intents');
+      console.error('PRIVILEGED INTENTS ERROR! Enable SERVER MEMBERS INTENT and MESSAGE CONTENT INTENT at: https://discord.com/developers/applications');
       process.exit(1);
-    } else {
-      console.error('❌ Login error:', err.message);
-      process.exit(1);
-    }
+    } else { console.error('Login error:', err.message); process.exit(1); }
   });
 }
-
-// ── Utility: safe reply helper
-async function safeReply(interaction, content) {
-  try {
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content, ephemeral: true });
-    } else {
-      await interaction.reply({ content, ephemeral: true });
-    }
-  } catch (_) {}
-}
-
 startBot();
