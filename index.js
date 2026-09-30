@@ -6,77 +6,24 @@ const {
 require('dotenv').config();
 const fs2   = require('fs');
 const path2 = require('path');
-const http  = require('http');
+const https = require('https');
 
-try { const ff = require('ffmpeg-static'); if (ff) process.env.FFMPEG_PATH = ff; } catch (_) {}
-
-process.on('unhandledRejection', r => console.error('Unhandled Rejection:', r));
-process.on('uncaughtException',  e => console.error('Uncaught Exception:', e));
-
-const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ status: 'ok', bot: 'THOR APEX All-in-One Bot', uptime: Math.floor(process.uptime()) }));
-}).listen(PORT, '0.0.0.0', () => console.log('Health server on port ' + PORT));
-
-const BOT_OWNER_ID = process.env.OWNER_ID || '';
-const DATA_DIR = path2.join(__dirname, 'data');
-if (!fs2.existsSync(DATA_DIR)) fs2.mkdirSync(DATA_DIR, { recursive: true });
-
-function loadData(f) {
-  const p = path2.join(DATA_DIR, f);
-  if (fs2.existsSync(p)) { try { return JSON.parse(fs2.readFileSync(p, 'utf8')); } catch (_) {} }
-  return {};
-}
-function saveData(f, d) { try { fs2.writeFileSync(path2.join(DATA_DIR, f), JSON.stringify(d, null, 2)); } catch (e) { console.error('Save error:', e.message); } }
-
-let config     = loadData('config.json');
-let warnings   = loadData('warnings.json');
-let inviteData = loadData('invites.json');
-const saveConfig     = () => saveData('config.json',   config);
-const saveWarnings   = () => saveData('warnings.json', warnings);
-const saveInviteData = () => saveData('invites.json',  inviteData);
-
-const DEFSEC = {
-  antiRaid: false, antiSpam: true, antiLink: true, antiAds: true,
-  wordFilter: true, altDetection: true, altMinDays: 7, antiNuke: true,
-  lockdown: false,
-  blacklistedWords: ['nigga','nigger','fuck','shit','bitch','asshole','retard'],
-  allowedLinks: [], raidThreshold: 10, spamThreshold: 3, spamWindow: 4000, nukeThreshold: 1,
-  emojiLimit: 5,
-  automodPunishment: 'kick',
-  tagNotify: true,
-  antiCaps: true,
-  antiInvites: true,
-  antiMassMention: true,
-  antiEmojiSpam: true,
-  antiNsfwLink: true,
-  whitelistedUsers: [],
-  whitelistedRoles: [],
-};
-
-if (!config.embedColor) {
-  config = {
-    welcomeChannelId: '', leaveChannelId: '', rulesChannelId: '', rolesChannelId: '',
-    generalChannelId: '', logChannelId: '', voiceLogChannelId: '', roleLogChannelId: '', memberLogChannelId: '', muteRoleId: '', autoRoleId: '',
-    embedColor: '#FF0000', welcomeTitle: 'THOR APEX !',
-    greetingPrefix: 'HEY BUDDY!', welcomeSubtitle: 'Welcome To THOR APEX !',
-    outroText: 'Thanks For Joining. Hope You Have A Great Time Here!',
-    leaveText: 'Goodbye **{username}**! We now have **{count}** members.',
-    security: DEFSEC, ...config,
-  };
-  if (!config.security) config.security = { ...DEFSEC };
-  if (config.security.tagNotify === undefined) config.security.tagNotify = true;
-  saveConfig();
-}
-
-// ── Voice / Music
-let voiceLib = null; try { voiceLib = require('@discordjs/voice'); } catch (e) { console.log('Voice:', e.message); }
-let playdl   = null; try { playdl   = require('play-dl');          } catch (e) { console.log('play-dl:', e.message); }
-let isPlayDlReady = false;
-async function ensurePlayDlReady() {
-  if (!playdl || isPlayDlReady) return;
-  try { const c = await playdl.getFreeClientID(); if (c) { await playdl.setToken({ soundcloud: { client_id: c } }); isPlayDlReady = true; } } catch (_) {}
+function getSpotifyTrackInfo(spotifyUrl) {
+  return new Promise((resolve) => {
+    try {
+      const oembedUrl = 'https://open.spotify.com/oembed?url=' + encodeURIComponent(spotifyUrl);
+      https.get(oembedUrl, (res) => {
+        let raw = '';
+        res.on('data', chunk => raw += chunk);
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(raw);
+            resolve(data.title || null);
+          } catch (_) { resolve(null); }
+        });
+      }).on('error', () => resolve(null));
+    } catch (_) { resolve(null); }
+  });
 }
 
 const musicQueues = new Map();
@@ -97,20 +44,72 @@ async function playTrack(gid) {
           q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false;
         }
       });
-      q.player.on('error', () => { q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false; });
-    } catch (_) { return; }
-  } else if (q.connection) { try { q.connection.subscribe(q.player); } catch (_) {} }
+      q.player.on('error', err => {
+        console.error('Audio player error:', err.message);
+        q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false;
+      });
+    } catch (e) {
+      console.error('Audio player creation error:', e.message);
+      return;
+    }
+  } else if (q.connection) {
+    try { q.connection.subscribe(q.player); } catch (_) {}
+  }
   const track = q.queue[0]; if (!track) { q.isPlaying = false; return; }
   try {
-    let so = null;
+    let streamObj = null;
+    let searchQuery = track.query || track.title;
+
     if (playdl) {
-      const sr = await playdl.search(track.title || track.query, { source: { soundcloud: 'tracks' }, limit: 1 });
-      if (sr && sr[0] && sr[0].url) { const r = await playdl.stream(sr[0].url); if (r && r.stream) so = r; }
+      try {
+        // If Spotify link, fetch title and search YouTube
+        if (searchQuery.includes('spotify.com')) {
+          const spTitle = await getSpotifyTrackInfo(searchQuery);
+          if (spTitle) searchQuery = spTitle;
+        }
+
+        // Direct YouTube URL stream
+        if (searchQuery.includes('youtube.com/watch') || searchQuery.includes('youtu.be/')) {
+          const res = await playdl.stream(searchQuery).catch(() => null);
+          if (res && res.stream) streamObj = res;
+        }
+
+        // Search YouTube for query / Spotify title
+        if (!streamObj) {
+          const searched = await playdl.search(searchQuery, { limit: 1 }).catch(() => null);
+          if (searched && searched[0] && searched[0].url) {
+            const res = await playdl.stream(searched[0].url).catch(() => null);
+            if (res && res.stream) {
+              streamObj = res;
+              track.title = searched[0].title || searched[0].name || track.title;
+            }
+          }
+        }
+      } catch (err) {
+        console.error('play-dl stream error:', err.message);
+      }
     }
-    if (!so) { q.queue.shift(); if (q.queue.length > 0) playTrack(gid); return; }
-    const res = voiceLib.createAudioResource(so.stream, { inputType: so.type });
-    q.isPlaying = true; q.player.play(res);
-  } catch (_) { q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false; }
+
+    if (streamObj && streamObj.stream) {
+      const res = voiceLib.createAudioResource(streamObj.stream, { inputType: streamObj.type || voiceLib.StreamType.Arbitrary });
+      q.isPlaying = true;
+      q.player.play(res);
+    } else if (track.url && track.url.startsWith('http') && !track.url.includes('spotify.com')) {
+      const res = voiceLib.createAudioResource(track.url, { inputType: voiceLib.StreamType.Arbitrary });
+      q.isPlaying = true;
+      q.player.play(res);
+    } else {
+      console.log('Skipping unplayable track:', track.title);
+      q.queue.shift();
+      if (q.queue.length > 0) playTrack(gid);
+      else q.isPlaying = false;
+    }
+  } catch (err) {
+    console.error('playTrack error:', err.message);
+    q.queue.shift();
+    if (q.queue.length > 0) playTrack(gid);
+    else q.isPlaying = false;
+  }
 }
 function addToQ(guild, vc, user, query) {
   const q = getQ(guild.id); let title = query, isUrl = false;
@@ -118,7 +117,27 @@ function addToQ(guild, vc, user, query) {
   const track = { title, query, url: isUrl ? query : '', requestedBy: user.id };
   q.queue.push(track);
   if (voiceLib && vc) {
-    if (!q.connection) { try { q.connection = voiceLib.joinVoiceChannel({ channelId: vc.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator, selfDeaf: false }); } catch (_) {} }
+    if (!q.connection) {
+      try {
+        q.connection = voiceLib.joinVoiceChannel({
+          channelId: vc.id,
+          guildId: guild.id,
+          adapterCreator: guild.voiceAdapterCreator,
+          selfDeaf: false,
+          selfMute: false,
+        });
+      } catch (err) { console.error('Voice join error:', err.message); }
+    } else if (q.connection.joinConfig?.channelId !== vc.id) {
+      try {
+        q.connection = voiceLib.joinVoiceChannel({
+          channelId: vc.id,
+          guildId: guild.id,
+          adapterCreator: guild.voiceAdapterCreator,
+          selfDeaf: false,
+          selfMute: false,
+        });
+      } catch (err) { console.error('Voice switch error:', err.message); }
+    }
     if (!q.isPlaying) playTrack(guild.id);
   }
   return { track, position: q.queue.length };
