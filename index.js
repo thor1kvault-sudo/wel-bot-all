@@ -42,7 +42,7 @@ const DEFSEC = {
   wordFilter: true, altDetection: true, altMinDays: 7, antiNuke: true,
   lockdown: false,
   blacklistedWords: ['nigga','nigger','fuck','shit','bitch','asshole','retard'],
-  allowedLinks: [], raidThreshold: 10, spamThreshold: 3, spamWindow: 4000, nukeThreshold: 5,
+  allowedLinks: [], raidThreshold: 10, spamThreshold: 3, spamWindow: 4000, nukeThreshold: 1,
   emojiLimit: 5,
   automodPunishment: 'kick',
   tagNotify: true,
@@ -58,7 +58,7 @@ const DEFSEC = {
 if (!config.embedColor) {
   config = {
     welcomeChannelId: '', leaveChannelId: '', rulesChannelId: '', rolesChannelId: '',
-    generalChannelId: '', logChannelId: '', muteRoleId: '', autoRoleId: '',
+    generalChannelId: '', logChannelId: '', voiceLogChannelId: '', roleLogChannelId: '', memberLogChannelId: '', muteRoleId: '', autoRoleId: '',
     embedColor: '#FF0000', welcomeTitle: 'THOR APEX !',
     greetingPrefix: 'HEY BUDDY!', welcomeSubtitle: 'Welcome To THOR APEX !',
     outroText: 'Thanks For Joining. Hope You Have A Great Time Here!',
@@ -165,7 +165,7 @@ const AUTOMOD_EVENTS = [
   { id: 'antiNsfwLink', label: 'Anti NSFW link' },
 ];
 
-function buildAutoModPanel(guild) {
+function buildAutoModPanel(guild, statusMsg) {
   const sec = config.security || {};
 
   const lines = AUTOMOD_EVENTS.map(ev => {
@@ -173,23 +173,31 @@ function buildAutoModPanel(guild) {
     return (active ? '🟩' : '🟥') + ' : **' + ev.label + '**';
   });
 
+  if (statusMsg) {
+    lines.unshift(statusMsg + '\n');
+  }
+
   const logo = guild?.iconURL({ size: 1024, forceStatic: false });
   const embed = new EmbedBuilder()
-    .setColor('#FFFFFF')
+    .setColor('#57F287')
     .setTitle(guild.name + "⚡'s Automod Setup")
-    .setDescription(lines.join('\n'));
+    .setDescription(lines.join('\n'))
+    .setTimestamp();
 
   if (logo) embed.setThumbnail(logo);
 
   const selectMenu = new StringSelectMenuBuilder()
     .setCustomId('am_sel_toggle')
     .setPlaceholder('Select events to enable')
+    .setMinValues(1)
+    .setMaxValues(AUTOMOD_EVENTS.length)
     .addOptions(
       AUTOMOD_EVENTS.map(ev => ({
         label: ev.label,
         value: ev.id,
-        description: sec[ev.id] !== false ? 'Enabled (Click to disable)' : 'Disabled (Click to enable)',
-        emoji: sec[ev.id] !== false ? '✅' : '❌'
+        description: sec[ev.id] !== false ? 'Enabled' : 'Disabled',
+        emoji: sec[ev.id] !== false ? '✅' : '❌',
+        default: sec[ev.id] !== false
       }))
     );
 
@@ -366,16 +374,62 @@ function isRaiding() {
 }
 const nukeMap = new Map();
 function isNuking(uid) {
-  const now = Date.now(), thr = config.security?.nukeThreshold || 5;
+  const now = Date.now(), thr = config.security?.nukeThreshold || 1;
   if (!nukeMap.has(uid)) nukeMap.set(uid, []);
-  const t = nukeMap.get(uid).filter(x => now - x < 10000); t.push(now); nukeMap.set(uid, t);
+  const t = nukeMap.get(uid).filter(x => now - x < 15000); t.push(now); nukeMap.set(uid, t);
   return t.length >= thr;
+}
+
+async function handleNukeAction(guild, executor, permType, actionName) {
+  if (!config.security?.antiNuke) return;
+  if (!executor || (executor.bot && executor.id === guild.client.user.id)) return;
+  if (executor.id === BOT_OWNER_ID || executor.id === guild.ownerId) return;
+
+  const member = guild.members.cache.get(executor.id) || await guild.members.fetch(executor.id).catch(() => null);
+
+  if (isWhitelisted(member, permType)) return;
+
+  console.log(`🚨 ANTI-NUKE EMERGENCY ACTION: ${executor.tag} performed ${actionName}`);
+
+  try {
+    if (member) {
+      const rolesToRemove = member.roles.cache.filter(r => r.id !== guild.roles.everyone.id);
+      await member.roles.remove(rolesToRemove, 'Anti-Nuke: ' + actionName).catch(() => {});
+    }
+
+    await guild.bans.create(executor.id, { reason: 'Anti-Nuke: ' + actionName }).catch(() => {});
+
+    await sendLog(guild, new EmbedBuilder()
+      .setColor('#FF0000')
+      .setTitle('🚨 ANTI-NUKE EMERGENCY ACTION TAKEN!')
+      .setDescription(`**Executor:** **${executor.tag}** (\`${executor.id}\`)\n**Action Attempted:** ${actionName}\n**Action Taken:** **INSTANT BAN & ROLES STRIPPED**`)
+      .setFooter({ text: 'THOR APEX Ultimate Anti-Nuke System' })
+      .setTimestamp()
+    );
+  } catch (err) {
+    console.error('Anti-Nuke enforcement error:', err.message);
+  }
 }
 
 function isHex(s) { return /^#[0-9A-Fa-f]{6}$/.test(s); }
 async function sendLog(guild, embed) {
   if (!config.logChannelId) return;
-  try { const ch = guild.channels.cache.get(config.logChannelId); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+  try { const ch = guild.channels.cache.get(config.logChannelId) || await guild.channels.fetch(config.logChannelId).catch(() => null); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+}
+async function sendVoiceLog(guild, embed) {
+  const chId = config.voiceLogChannelId || config.logChannelId;
+  if (!chId) return;
+  try { const ch = guild.channels.cache.get(chId) || await guild.channels.fetch(chId).catch(() => null); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+}
+async function sendRoleLog(guild, embed) {
+  const chId = config.roleLogChannelId || config.logChannelId;
+  if (!chId) return;
+  try { const ch = guild.channels.cache.get(chId) || await guild.channels.fetch(chId).catch(() => null); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+}
+async function sendMemberLog(guild, embed) {
+  const chId = config.memberLogChannelId || config.logChannelId;
+  if (!chId) return;
+  try { const ch = guild.channels.cache.get(chId) || await guild.channels.fetch(chId).catch(() => null); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
 }
 async function safeReply(i, content, eph = true) {
   try { if (i.replied || i.deferred) await i.followUp({ content, ephemeral: eph }); else await i.reply({ content, ephemeral: eph }); } catch (_) {}
@@ -456,7 +510,10 @@ function buildCmds() {
     new SlashCommandBuilder().setName('setrules').setDescription('Set rules channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
     new SlashCommandBuilder().setName('setroles').setDescription('Set roles channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
     new SlashCommandBuilder().setName('setgeneral').setDescription('Set general channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
-    new SlashCommandBuilder().setName('setlog').setDescription('Set mod log channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setlog').setDescription('Set mod & security log channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setvoicelog').setDescription('Set voice activity log channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setrolelog').setDescription('Set role updates log channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
+    new SlashCommandBuilder().setName('setmemberlog').setDescription('Set member join/leave log channel').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)),
     new SlashCommandBuilder().setName('setwelcomecolor').setDescription('Set embed color').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('color').setDescription('Hex e.g. #FF5733').setRequired(true)),
     new SlashCommandBuilder().setName('setwelcometext').setDescription('Customize welcome text').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('greeting').setDescription('Greeting prefix').setRequired(false)).addStringOption(o => o.setName('subtitle').setDescription('Welcome subtitle').setRequired(false)).addStringOption(o => o.setName('outro').setDescription('Closing line').setRequired(false)),
     new SlashCommandBuilder().setName('setleavetext').setDescription('Customize leave text').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('message').setDescription('Use {username} {user} {count}').setRequired(true)),
@@ -590,6 +647,9 @@ async function startBot() {
 
       // Auto-Role
       if (config.autoRoleId) { try { const role = guild.roles.cache.get(config.autoRoleId); if (role) await member.roles.add(role, 'Auto-Role'); } catch (_) {} }
+
+      // Log Member Join
+      await sendMemberLog(guild, new EmbedBuilder().setColor('#57F287').setTitle('📥 Member Joined Server').setDescription('**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**Total Members:** ' + guild.memberCount).setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp());
     } catch (err) { console.error('guildMemberAdd error:', err); }
   });
 
@@ -600,9 +660,101 @@ async function startBot() {
       let lCh = null;
       if (config.leaveChannelId) lCh = member.guild.channels.cache.get(config.leaveChannelId);
       if (!lCh) lCh = member.guild.channels.cache.find(c => c.isTextBased() && /leave|goodbye|farewell/i.test(c.name));
-      if (!lCh) return;
-      await lCh.send({ embeds: [mkLeaveEmbed(member, member.guild)] });
+      if (lCh) await lCh.send({ embeds: [mkLeaveEmbed(member, member.guild)] });
+
+      // Log Member Leave
+      await sendMemberLog(member.guild, new EmbedBuilder().setColor('#ED4245').setTitle('📤 Member Left Server').setDescription('**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**Total Members:** ' + member.guild.memberCount).setThumbnail(member.user.displayAvatarURL({ size: 256 })).setTimestamp());
     } catch (err) { console.error('guildMemberRemove error:', err); }
+  });
+
+  // ── Voice State Activity Logs (Join, Leave, Move/Drag, Mute, Deafen)
+  client.on('voiceStateUpdate', async (oldState, newState) => {
+    try {
+      const member = newState.member || oldState.member;
+      if (!member || member.user.bot) return;
+      const guild = newState.guild || oldState.guild;
+
+      // Joined Voice
+      if (!oldState.channelId && newState.channelId) {
+        await sendVoiceLog(guild, new EmbedBuilder().setColor('#57F287').setTitle('🔊 Member Joined Voice Channel').setDescription('**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**Channel:** <#' + newState.channelId + '>').setTimestamp());
+        return;
+      }
+      // Left Voice
+      if (oldState.channelId && !newState.channelId) {
+        await sendVoiceLog(guild, new EmbedBuilder().setColor('#ED4245').setTitle('🔇 Member Left Voice Channel').setDescription('**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**Channel:** <#' + oldState.channelId + '>').setTimestamp());
+        return;
+      }
+      // Switched / Dragged Voice Channel
+      if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
+        let dragger = null;
+        try {
+          const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberMove, limit: 1 }).catch(() => null);
+          const entry = logs?.entries.first();
+          if (entry && Date.now() - entry.createdTimestamp < 4000) dragger = entry.executor;
+        } catch (_) {}
+        const desc = '**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**From:** <#' + oldState.channelId + '>\n**To:** <#' + newState.channelId + '>' + (dragger ? '\n**Moved By:** ' + dragger.tag + ' (<@' + dragger.id + '>)' : '');
+        await sendVoiceLog(guild, new EmbedBuilder().setColor('#FEE75C').setTitle('🔁 Voice Channel Switch / Member Dragged').setDescription(desc).setTimestamp());
+        return;
+      }
+      // Mute / Unmute
+      if (oldState.serverMute !== newState.serverMute || oldState.selfMute !== newState.selfMute) {
+        const isMuted = newState.serverMute || newState.selfMute;
+        const isServer = oldState.serverMute !== newState.serverMute;
+        await sendVoiceLog(guild, new EmbedBuilder().setColor(isMuted ? '#ED4245' : '#57F287').setTitle(isMuted ? '🎙️ Member Muted in Voice' : '🎙️ Member Unmuted in Voice').setDescription('**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**Channel:** <#' + newState.channelId + '>\n**Type:** ' + (isServer ? 'Server Mute' : 'Self Mute')).setTimestamp());
+        return;
+      }
+      // Deafen / Undeafen
+      if (oldState.serverDeaf !== newState.serverDeaf || oldState.selfDeaf !== newState.selfDeaf) {
+        const isDeaf = newState.serverDeaf || newState.selfDeaf;
+        const isServer = oldState.serverDeaf !== newState.serverDeaf;
+        await sendVoiceLog(guild, new EmbedBuilder().setColor(isDeaf ? '#ED4245' : '#57F287').setTitle(isDeaf ? '🎧 Member Deafened in Voice' : '🎧 Member Undeafened in Voice').setDescription('**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**Channel:** <#' + newState.channelId + '>\n**Type:** ' + (isServer ? 'Server Deafen' : 'Self Deafen')).setTimestamp());
+        return;
+      }
+    } catch (_) {}
+  });
+
+  // ── Role Given / Removed & Nickname Change Logs
+  client.on('guildMemberUpdate', async (oldMember, newMember) => {
+    try {
+      const guild = newMember.guild;
+      const oldRoles = oldMember.roles.cache;
+      const newRoles = newMember.roles.cache;
+
+      // Role Added
+      const addedRoles = newRoles.filter(r => !oldRoles.has(r.id));
+      if (addedRoles.size > 0) {
+        let executor = null;
+        try {
+          const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberRoleUpdate, limit: 1 }).catch(() => null);
+          const entry = logs?.entries.first();
+          if (entry && Date.now() - entry.createdTimestamp < 4000) executor = entry.executor;
+        } catch (_) {}
+
+        for (const [, role] of addedRoles) {
+          await sendRoleLog(guild, new EmbedBuilder().setColor('#57F287').setTitle('➕ Role Given to Member').setDescription('**User:** ' + newMember.user.tag + ' (<@' + newMember.id + '>)\n**Role Given:** <@&' + role.id + '> (`' + role.name + '`)' + (executor ? '\n**Given By:** ' + executor.tag + ' (<@' + executor.id + '>)' : '')).setTimestamp());
+        }
+      }
+
+      // Role Removed
+      const removedRoles = oldRoles.filter(r => !newRoles.has(r.id));
+      if (removedRoles.size > 0) {
+        let executor = null;
+        try {
+          const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberRoleUpdate, limit: 1 }).catch(() => null);
+          const entry = logs?.entries.first();
+          if (entry && Date.now() - entry.createdTimestamp < 4000) executor = entry.executor;
+        } catch (_) {}
+
+        for (const [, role] of removedRoles) {
+          await sendRoleLog(guild, new EmbedBuilder().setColor('#ED4245').setTitle('➖ Role Removed from Member').setDescription('**User:** ' + newMember.user.tag + ' (<@' + newMember.id + '>)\n**Role Removed:** <@&' + role.id + '> (`' + role.name + '`)' + (executor ? '\n**Removed By:** ' + executor.tag + ' (<@' + executor.id + '>)' : '')).setTimestamp());
+        }
+      }
+
+      // Nickname Change
+      if (oldMember.nickname !== newMember.nickname) {
+        await sendMemberLog(guild, new EmbedBuilder().setColor('#FEE75C').setTitle('📝 Nickname Changed').setDescription('**User:** ' + newMember.user.tag + ' (<@' + newMember.id + '>)\n**Old:** ' + (oldMember.nickname || '*None*') + '\n**New:** ' + (newMember.nickname || '*None*')).setTimestamp());
+      }
+    } catch (_) {}
   });
 
   // ── Messages
@@ -755,38 +907,102 @@ async function startBot() {
     if (cmd === 'lockdown' && isAdmin) { config.security.lockdown = !config.security.lockdown; saveConfig(); if (config.security.lockdown) { for (const [, ch] of message.guild.channels.cache) if (ch.isTextBased()) await ch.permissionOverwrites.create(message.guild.roles.everyone, { SendMessages: false }).catch(() => {}); return message.reply('LOCKDOWN ACTIVATED!'); } else { for (const [, ch] of message.guild.channels.cache) if (ch.isTextBased()) await ch.permissionOverwrites.delete(message.guild.roles.everyone).catch(() => {}); return message.reply('Lockdown lifted!'); } }
   });
 
-  // ── Anti-Nuke Events
+  // ── Ultimate Anti-Nuke Event Handlers
   client.on('channelDelete', async (channel) => {
-    if (!config.security?.antiNuke) return;
+    if (!channel.guild) return;
     try {
-      const logs = await channel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelDelete, limit: 1 });
-      const entry = logs.entries.first(); if (!entry) return;
-      const executor = entry.executor; if (executor.id === client.user.id || executor.id === BOT_OWNER_ID) return;
-      if (isNuking(executor.id)) {
-        const m = channel.guild.members.cache.get(executor.id);
-        try { if (m) { const roles = m.roles.cache.filter(r => r.id !== channel.guild.roles.everyone.id); await m.roles.remove(roles, 'Anti-Nuke'); } await channel.guild.bans.create(executor.id, { reason: 'Anti-Nuke: Mass channel deletion' }); await sendLog(channel.guild, new EmbedBuilder().setColor('#FF0000').setTitle('ANTI-NUKE - User Banned!').setDescription(executor.tag + ' was mass-deleting channels!').setTimestamp()); } catch (_) {}
-      }
+      const logs = await channel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelDelete, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first(); if (!entry) return;
+      if (Date.now() - entry.createdTimestamp > 8000) return;
+      await handleNukeAction(channel.guild, entry.executor, 'antiChannelDelete', 'Channel Deleted (' + channel.name + ')');
     } catch (_) {}
   });
+
+  client.on('channelCreate', async (channel) => {
+    if (!channel.guild) return;
+    try {
+      const logs = await channel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelCreate, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first(); if (!entry) return;
+      if (Date.now() - entry.createdTimestamp > 8000) return;
+      await handleNukeAction(channel.guild, entry.executor, 'antiChannelCreate', 'Channel Created (' + channel.name + ')');
+    } catch (_) {}
+  });
+
+  client.on('channelUpdate', async (oldChannel, newChannel) => {
+    if (!newChannel.guild) return;
+    try {
+      const logs = await newChannel.guild.fetchAuditLogs({ type: AuditLogEvent.ChannelUpdate, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first(); if (!entry) return;
+      if (Date.now() - entry.createdTimestamp > 8000) return;
+      await handleNukeAction(newChannel.guild, entry.executor, 'antiChannelUpdate', 'Channel Modified (' + newChannel.name + ')');
+    } catch (_) {}
+  });
+
   client.on('roleDelete', async (role) => {
-    if (!config.security?.antiNuke) return;
+    if (!role.guild) return;
     try {
-      const logs = await role.guild.fetchAuditLogs({ type: AuditLogEvent.RoleDelete, limit: 1 });
-      const entry = logs.entries.first(); if (!entry) return;
-      const executor = entry.executor; if (executor.id === client.user.id || executor.id === BOT_OWNER_ID) return;
-      if (isNuking(executor.id)) {
-        const m = role.guild.members.cache.get(executor.id);
-        try { if (m) { const roles = m.roles.cache.filter(r => r.id !== role.guild.roles.everyone.id); await m.roles.remove(roles); } await role.guild.bans.create(executor.id, { reason: 'Anti-Nuke: Mass role deletion' }); await sendLog(role.guild, new EmbedBuilder().setColor('#FF0000').setTitle('ANTI-NUKE - Mass Role Deletion!').addFields({ name: 'Executor', value: executor.tag }).setTimestamp()); } catch (_) {}
+      const logs = await role.guild.fetchAuditLogs({ type: AuditLogEvent.RoleDelete, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first(); if (!entry) return;
+      if (Date.now() - entry.createdTimestamp > 8000) return;
+      await handleNukeAction(role.guild, entry.executor, 'antiRoleDelete', 'Role Deleted (' + role.name + ')');
+    } catch (_) {}
+  });
+
+  client.on('roleCreate', async (role) => {
+    if (!role.guild) return;
+    try {
+      const logs = await role.guild.fetchAuditLogs({ type: AuditLogEvent.RoleCreate, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first(); if (!entry) return;
+      if (Date.now() - entry.createdTimestamp > 8000) return;
+      await handleNukeAction(role.guild, entry.executor, 'antiRoleCreate', 'Role Created (' + role.name + ')');
+    } catch (_) {}
+  });
+
+  client.on('roleUpdate', async (oldRole, newRole) => {
+    if (!newRole.guild) return;
+    try {
+      const dangerous = [
+        PermissionsBitField.Flags.Administrator, PermissionsBitField.Flags.ManageGuild,
+        PermissionsBitField.Flags.ManageRoles, PermissionsBitField.Flags.ManageChannels,
+        PermissionsBitField.Flags.BanMembers, PermissionsBitField.Flags.KickMembers,
+      ];
+      const gained = dangerous.some(f => !oldRole.permissions.has(f) && newRole.permissions.has(f));
+      if (gained) {
+        const logs = await newRole.guild.fetchAuditLogs({ type: AuditLogEvent.RoleUpdate, limit: 1 }).catch(() => null);
+        const entry = logs?.entries.first(); if (!entry) return;
+        if (Date.now() - entry.createdTimestamp > 8000) return;
+        await handleNukeAction(newRole.guild, entry.executor, 'antiRoleUpdate', 'Dangerous Permissions Granted to Role (' + newRole.name + ')');
       }
     } catch (_) {}
   });
+
   client.on('guildBanAdd', async (ban) => {
-    if (!config.security?.antiNuke) return;
     try {
-      const logs = await ban.guild.fetchAuditLogs({ type: AuditLogEvent.MemberBanAdd, limit: 1 });
-      const entry = logs.entries.first(); if (!entry) return;
-      const executor = entry.executor; if (executor.id === client.user.id || executor.id === BOT_OWNER_ID) return;
-      if (isNuking(executor.id)) { try { await ban.guild.bans.create(executor.id, { reason: 'Anti-Nuke: Mass banning' }); await sendLog(ban.guild, new EmbedBuilder().setColor('#FF0000').setTitle('ANTI-NUKE - Mass Ban Detected!').addFields({ name: 'Executor', value: executor.tag }).setTimestamp()); } catch (_) {} }
+      const logs = await ban.guild.fetchAuditLogs({ type: AuditLogEvent.MemberBanAdd, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first(); if (!entry) return;
+      if (Date.now() - entry.createdTimestamp > 8000) return;
+      await handleNukeAction(ban.guild, entry.executor, 'antiBan', 'Member Banned (' + ban.user.tag + ')');
+    } catch (_) {}
+  });
+
+  client.on('webhookUpdate', async (channel) => {
+    if (!channel.guild) return;
+    try {
+      const logs = await channel.guild.fetchAuditLogs({ type: AuditLogEvent.WebhookCreate, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first();
+      if (entry && Date.now() - entry.createdTimestamp < 8000) {
+        await handleNukeAction(channel.guild, entry.executor, 'antiWebhookCreate', 'Webhook Created in #' + channel.name);
+      }
+    } catch (_) {}
+  });
+
+  client.on('guildUpdate', async (oldGuild, newGuild) => {
+    try {
+      const logs = await newGuild.fetchAuditLogs({ type: AuditLogEvent.GuildUpdate, limit: 1 }).catch(() => null);
+      const entry = logs?.entries.first();
+      if (entry && Date.now() - entry.createdTimestamp < 8000) {
+        await handleNukeAction(newGuild, entry.executor, 'antiGuildUpdate', 'Server Settings Modified');
+      }
     } catch (_) {}
   });
 
@@ -895,11 +1111,13 @@ async function startBot() {
     if (interaction.isStringSelectMenu()) {
       const id = interaction.customId;
       if (id === 'am_sel_toggle') {
-        const evId = interaction.values[0];
+        const selected = interaction.values;
         if (!config.security) config.security = {};
-        config.security[evId] = config.security[evId] === false ? true : false;
+        AUTOMOD_EVENTS.forEach(ev => {
+          config.security[ev.id] = selected.includes(ev.id);
+        });
         saveConfig();
-        await interaction.update(buildAutoModPanel(interaction.guild));
+        await interaction.update(buildAutoModPanel(interaction.guild, '✅ **Selected AutoMod events updated!**'));
         return;
       }
       if (id.startsWith('wl_sel_')) {
@@ -919,9 +1137,13 @@ async function startBot() {
       if (id === 'am_enable_all') {
         if (!config.security) config.security = {};
         AUTOMOD_EVENTS.forEach(ev => config.security[ev.id] = true);
+        config.security.antiSpam = true;
+        config.security.antiLink = true;
+        config.security.wordFilter = true;
+        config.security.antiNuke = true;
         saveConfig();
         await setupAutoMod(interaction.guild, config.logChannelId);
-        await interaction.update(buildAutoModPanel(interaction.guild));
+        await interaction.update(buildAutoModPanel(interaction.guild, '✅ **ALL 7 AutoMod events & Native Discord rules are now ENABLED!**'));
         return;
       }
       if (id === 'am_cancel') {
@@ -1075,7 +1297,10 @@ async function startBot() {
     if (commandName === 'setrules')      { config.rulesChannelId   = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Rules channel set!'); }
     if (commandName === 'setroles')      { config.rolesChannelId   = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Roles channel set!'); }
     if (commandName === 'setgeneral')    { config.generalChannelId = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'General channel set!'); }
-    if (commandName === 'setlog')        { config.logChannelId     = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Log channel set!'); }
+    if (commandName === 'setlog')        { config.logChannelId     = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Mod Log channel set!'); }
+    if (commandName === 'setvoicelog')   { config.voiceLogChannelId  = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Voice Log channel set to <#' + config.voiceLogChannelId + '>!'); }
+    if (commandName === 'setrolelog')    { config.roleLogChannelId   = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Role Log channel set to <#' + config.roleLogChannelId + '>!'); }
+    if (commandName === 'setmemberlog')  { config.memberLogChannelId = interaction.options.getChannel('channel').id; saveConfig(); return safeReply(interaction, 'Member Log channel set to <#' + config.memberLogChannelId + '>!'); }
     if (commandName === 'setautorole')   { config.autoRoleId = interaction.options.getRole('role').id; saveConfig(); return safeReply(interaction, 'Auto-role set to **' + interaction.options.getRole('role').name + '**!'); }
     if (commandName === 'setwelcomecolor') { const color = interaction.options.getString('color').trim(); if (!isHex(color)) return safeReply(interaction, 'Invalid hex color! Use #RRGGBB'); config.embedColor = color; saveConfig(); return safeReply(interaction, 'Color set to **' + color + '**!'); }
     if (commandName === 'setwelcometext') { const g = interaction.options.getString('greeting'), s = interaction.options.getString('subtitle'), o = interaction.options.getString('outro'); if (!g && !s && !o) return safeReply(interaction, 'Provide at least one option!'); if (g) config.greetingPrefix = g; if (s) config.welcomeSubtitle = s; if (o) config.outroText = o; saveConfig(); return safeReply(interaction, 'Welcome text updated!'); }
