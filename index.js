@@ -700,14 +700,50 @@ async function startBot() {
       if (oldState.serverMute !== newState.serverMute || oldState.selfMute !== newState.selfMute) {
         const isMuted = newState.serverMute || newState.selfMute;
         const isServer = oldState.serverMute !== newState.serverMute;
-        await sendVoiceLog(guild, new EmbedBuilder().setColor(isMuted ? '#ED4245' : '#57F287').setTitle(isMuted ? '🎙️ Member Muted in Voice' : '🎙️ Member Unmuted in Voice').setDescription('**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**Channel:** <#' + newState.channelId + '>\n**Type:** ' + (isServer ? 'Server Mute' : 'Self Mute')).setTimestamp());
+        let executor = null;
+        if (isServer) {
+          try {
+            const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberUpdate, limit: 1 }).catch(() => null);
+            const entry = logs?.entries.first();
+            if (entry && Date.now() - entry.createdTimestamp < 5000) executor = entry.executor;
+          } catch (_) {}
+        }
+        const actionType = isServer ? 'Server Mute' : 'Self Mute';
+        const titleText = isMuted ? '🎙️ Member Muted in Voice' : '🎙️ Member Unmuted in Voice';
+        let desc = '**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n' +
+                   '**Channel:** ' + (newState.channelId ? '<#' + newState.channelId + '>' : 'Voice Channel') + '\n' +
+                   '**Type:** ' + actionType;
+        if (isServer) {
+          desc += '\n**Action By:** ' + (executor ? executor.tag + ' (<@' + executor.id + '>)' : 'Moderator / Staff');
+        } else {
+          desc += '\n**Action By:** Self (' + member.user.tag + ')';
+        }
+        await sendVoiceLog(guild, new EmbedBuilder().setColor(isMuted ? '#ED4245' : '#57F287').setTitle(titleText).setDescription(desc).setTimestamp());
         return;
       }
       // Deafen / Undeafen
       if (oldState.serverDeaf !== newState.serverDeaf || oldState.selfDeaf !== newState.selfDeaf) {
         const isDeaf = newState.serverDeaf || newState.selfDeaf;
         const isServer = oldState.serverDeaf !== newState.serverDeaf;
-        await sendVoiceLog(guild, new EmbedBuilder().setColor(isDeaf ? '#ED4245' : '#57F287').setTitle(isDeaf ? '🎧 Member Deafened in Voice' : '🎧 Member Undeafened in Voice').setDescription('**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n**Channel:** <#' + newState.channelId + '>\n**Type:** ' + (isServer ? 'Server Deafen' : 'Self Deafen')).setTimestamp());
+        let executor = null;
+        if (isServer) {
+          try {
+            const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberUpdate, limit: 1 }).catch(() => null);
+            const entry = logs?.entries.first();
+            if (entry && Date.now() - entry.createdTimestamp < 5000) executor = entry.executor;
+          } catch (_) {}
+        }
+        const actionType = isServer ? 'Server Deafen' : 'Self Deafen';
+        const titleText = isDeaf ? '🎧 Member Deafened in Voice' : '🎧 Member Undeafened in Voice';
+        let desc = '**User:** ' + member.user.tag + ' (<@' + member.id + '>)\n' +
+                   '**Channel:** ' + (newState.channelId ? '<#' + newState.channelId + '>' : 'Voice Channel') + '\n' +
+                   '**Type:** ' + actionType;
+        if (isServer) {
+          desc += '\n**Action By:** ' + (executor ? executor.tag + ' (<@' + executor.id + '>)' : 'Moderator / Staff');
+        } else {
+          desc += '\n**Action By:** Self (' + member.user.tag + ')';
+        }
+        await sendVoiceLog(guild, new EmbedBuilder().setColor(isDeaf ? '#ED4245' : '#57F287').setTitle(titleText).setDescription(desc).setTimestamp());
         return;
       }
     } catch (_) {}
