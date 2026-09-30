@@ -1,6 +1,7 @@
 const {
   Client, GatewayIntentBits, Partials, EmbedBuilder,
   PermissionsBitField, REST, Routes, SlashCommandBuilder, AuditLogEvent,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
 } = require('discord.js');
 require('dotenv').config();
 const fs2   = require('fs');
@@ -147,8 +148,33 @@ async function findInviter(guild) {
   return null;
 }
 
-// ── Security Helpers
-function isWhitelisted(member) {
+// ── Whitelist & Security Helpers
+const PERM_LIST = [
+  { id: 'antiBan', label: 'Anti Ban' },
+  { id: 'antiUnban', label: 'Anti Unban' },
+  { id: 'antiKick', label: 'Anti Kick' },
+  { id: 'antiMemberPrune', label: 'Anti Member Prune' },
+  { id: 'antiBotAdd', label: 'Anti Bot Add' },
+  { id: 'antiChannelCreate', label: 'Anti Channel Create' },
+  { id: 'antiChannelDelete', label: 'Anti Channel Delete' },
+  { id: 'antiChannelUpdate', label: 'Anti Channel Update' },
+  { id: 'antiRoleCreate', label: 'Anti Role Create' },
+  { id: 'antiRoleDelete', label: 'Anti Role Delete' },
+  { id: 'antiRoleUpdate', label: 'Anti Role Update' },
+  { id: 'antiMemberUpdate', label: 'Anti Member Update' },
+  { id: 'antiEmojiCreate', label: 'Anti Emoji/Sticker Create' },
+  { id: 'antiEmojiDelete', label: 'Anti Emoji/Sticker Delete' },
+  { id: 'antiEmojiUpdate', label: 'Anti Emoji/Sticker Update' },
+  { id: 'antiEveryonePing', label: 'Anti Everyone/Here Ping' },
+  { id: 'antiRolePing', label: 'Anti Role Ping' },
+  { id: 'antiIntegration', label: 'Anti Integration' },
+  { id: 'antiGuildUpdate', label: 'Anti Guild Update' },
+  { id: 'antiWebhookCreate', label: 'Anti Webhook Create' },
+  { id: 'antiWebhookDelete', label: 'Anti Webhook Delete' },
+  { id: 'antiWebhookUpdate', label: 'Anti Webhook Update' },
+];
+
+function isWhitelisted(member, permType) {
   if (!member) return false;
   if (member.id === BOT_OWNER_ID || member.id === member.guild?.ownerId) return true;
   if (member.permissions?.has(PermissionsBitField.Flags.Administrator)) return true;
@@ -157,7 +183,65 @@ function isWhitelisted(member) {
   const wRoles = s.whitelistedRoles || [];
   if (wUsers.includes(member.id)) return true;
   if (member.roles?.cache?.some(r => wRoles.includes(r.id))) return true;
+
+  if (permType && s.whitelistData) {
+    const userPerms = s.whitelistData[member.id];
+    if (userPerms && userPerms[permType]) return true;
+    if (member.roles?.cache) {
+      for (const [rId] of member.roles.cache) {
+        if (s.whitelistData[rId] && s.whitelistData[rId][permType]) return true;
+      }
+    }
+  }
+
   return false;
+}
+
+function buildWhitelistPanel(guild, targetId) {
+  if (!config.security) config.security = {};
+  if (!config.security.whitelistData) config.security.whitelistData = {};
+  const targetData = config.security.whitelistData[targetId] || {};
+
+  const lines = PERM_LIST.map(p => {
+    const active = !!targetData[p.id];
+    return (active ? '🟩' : '🟥') + ' : **' + p.label + '**';
+  });
+
+  const logo = guild?.iconURL({ size: 1024, forceStatic: false });
+  const embed = new EmbedBuilder()
+    .setColor('#1E1F22')
+    .setDescription(lines.join('\n') + '\n\n**Target:** <@' + targetId + '>')
+    .setFooter({ text: 'Powered by THOR APEX Development' });
+
+  if (logo) embed.setThumbnail(logo);
+
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId('wl_sel_' + targetId)
+    .setPlaceholder('❯ Choose Permissions to Grant')
+    .addOptions(
+      PERM_LIST.slice(0, 25).map(p => ({
+        label: p.label,
+        value: p.id,
+        description: targetData[p.id] ? 'Granted (Click to revoke)' : 'Revoked (Click to grant)',
+        emoji: targetData[p.id] ? '✅' : '❌'
+      }))
+    );
+
+  const row1 = new ActionRowBuilder().addComponents(selectMenu);
+
+  const grantBtn = new ButtonBuilder()
+    .setCustomId('wl_grant_all_' + targetId)
+    .setLabel('Grant All Permissions')
+    .setStyle(ButtonStyle.Success);
+
+  const removeBtn = new ButtonBuilder()
+    .setCustomId('wl_remove_all_' + targetId)
+    .setLabel('Remove Permissions')
+    .setStyle(ButtonStyle.Danger);
+
+  const row2 = new ActionRowBuilder().addComponents(grantBtn, removeBtn);
+
+  return { embeds: [embed], components: [row1, row2] };
 }
 
 function countEmojis(str) {
@@ -283,10 +367,10 @@ function mkWelcomeEmbed(member, guild, inviterData) {
     .setDescription(lines.join('\n'));
 
   if (logo) {
-    embed.setAuthor({ name: config.welcomeTitle || 'THOR APEX !', iconURL: logo });
+    embed.setAuthor({ name: 'THOR APEX !', iconURL: logo });
     embed.setThumbnail(logo);
   } else {
-    embed.setAuthor({ name: config.welcomeTitle || 'THOR APEX !' });
+    embed.setAuthor({ name: 'THOR APEX !' });
   }
 
   if (banner) embed.setImage(banner);
@@ -351,7 +435,7 @@ function buildCmds() {
     new SlashCommandBuilder().setName('nowplaying').setDescription('Show currently playing song'),
     new SlashCommandBuilder().setName('radio').setDescription('Play 24/7 radio stream').addStringOption(o => o.setName('genre').setDescription('Genre').setRequired(false).addChoices({ name: 'Lofi Chill', value: 'lofi' }, { name: 'Gaming Beats', value: 'gaming' }, { name: 'Pop Hits', value: 'pop' }, { name: 'Chill Hop', value: 'chill' })),
     new SlashCommandBuilder().setName('automod').setDescription('Manage AutoMod rules, punishments and limits').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('What to do').setRequired(true).addChoices({ name: 'enable', value: 'enable' }, { name: 'disable', value: 'disable' }, { name: 'config / status', value: 'status' }, { name: 'set punishment action', value: 'punishment' }, { name: 'set spam message limit', value: 'spamlimit' }, { name: 'set max emoji limit', value: 'emojilimit' })).addStringOption(o => o.setName('punishment').setDescription('Action: kick, ban, mute, warn, delete').setRequired(false).addChoices({ name: 'kick', value: 'kick' }, { name: 'ban', value: 'ban' }, { name: 'mute', value: 'mute' }, { name: 'warn', value: 'warn' }, { name: 'delete message only', value: 'delete' })).addIntegerOption(o => o.setName('limit').setDescription('Limit number (e.g. 3 messages, 5 emojis)').setRequired(false)),
-    new SlashCommandBuilder().setName('whitelist').setDescription('Manage whitelisted users and roles for AutoMod & Security').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'add user', value: 'add_user' }, { name: 'remove user', value: 'remove_user' }, { name: 'add role', value: 'add_role' }, { name: 'remove role', value: 'remove_role' }, { name: 'list whitelisted', value: 'list' })).addUserOption(o => o.setName('user').setDescription('User').setRequired(false)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(false)),
+    new SlashCommandBuilder().setName('whitelist').setDescription('Interactive Whitelist management for Anti-Nuke & Security').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'manage (interactive panel)', value: 'manage' }, { name: 'add user', value: 'add_user' }, { name: 'remove user', value: 'remove_user' }, { name: 'add role', value: 'add_role' }, { name: 'remove role', value: 'remove_role' }, { name: 'list whitelisted', value: 'list' })).addUserOption(o => o.setName('user').setDescription('User').setRequired(false)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(false)),
     new SlashCommandBuilder().setName('tagnotify').setDescription('Toggle DM notifications when someone is tagged in server').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
     new SlashCommandBuilder().setName('help').setDescription('Show all bot commands'),
   ].map(c => c.toJSON());
@@ -442,7 +526,7 @@ async function startBot() {
       if (config.welcomeChannelId) wCh = guild.channels.cache.get(config.welcomeChannelId) || await guild.channels.fetch(config.welcomeChannelId).catch(() => null);
       if (!wCh) wCh = guild.channels.cache.find(c => c.isTextBased() && /welcome|join|arrivals/i.test(c.name));
       if (!wCh) wCh = guild.systemChannel;
-      if (wCh) { await wCh.send({ embeds: [mkWelcomeEmbed(member, guild, inviterData)] }); console.log('Welcome sent for ' + member.user.tag); }
+      if (wCh) { await wCh.send({ content: 'Welcome <@' + member.id + '> to **THOR APEX ⚡**! 🎉', embeds: [mkWelcomeEmbed(member, guild, inviterData)] }); console.log('Welcome sent for ' + member.user.tag); }
 
       // Auto-Role
       if (config.autoRoleId) { try { const role = guild.roles.cache.get(config.autoRoleId); if (role) await member.roles.add(role, 'Auto-Role'); } catch (_) {} }
@@ -544,7 +628,7 @@ async function startBot() {
     if (cmd === 'queue' || cmd === 'q') { const inp = args.join(' '); const vc = message.member?.voice?.channel; if (inp) { if (!vc) return message.reply('Join Voice first!'); const r = addToQ(message.guild, vc, message.author, inp); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Added to Queue').setDescription('**' + r.track.title + '**').setTimestamp()] }); } const q = getQ(message.guild.id); if (q.queue.length === 0) return message.reply('Queue empty! Use !play'); const list = q.queue.slice(0, 10).map((t, i) => (i + 1) + '. **' + t.title + '**').join('\n'); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Music Queue').setDescription(list).setFooter({ text: 'Total: ' + q.queue.length }).setTimestamp()] }); }
     if (cmd === 'np' || cmd === 'nowplaying') { const q = getQ(message.guild.id); const t = q.queue[0]; if (!t) return message.reply('Nothing playing!'); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Now Playing').setDescription('**' + t.title + '**').setTimestamp()] }); }
     if (cmd === 'radio') { const vc = message.member?.voice?.channel; if (!vc) return message.reply('Join Voice first!'); const genre = args[0]?.toLowerCase() || 'lofi'; const sel = RADIO_STREAMS[genre] || RADIO_STREAMS.lofi; const q = getQ(message.guild.id); if (voiceLib) { if (!q.connection) { try { q.connection = voiceLib.joinVoiceChannel({ channelId: vc.id, guildId: message.guild.id, adapterCreator: message.guild.voiceAdapterCreator, selfDeaf: false }); } catch (_) {} } if (!q.player) { q.player = voiceLib.createAudioPlayer(); q.connection?.subscribe(q.player); } try { q.player.play(voiceLib.createAudioResource(sel.url, { inputType: voiceLib.StreamType.Arbitrary })); } catch (_) {} } return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Radio: ' + sel.name).setDescription('Playing in <#' + vc.id + '>!').setTimestamp()] }); }
-    if (cmd === 'testwelcome') return message.reply({ embeds: [mkWelcomeEmbed(message.member, message.guild)] });
+    if (cmd === 'testwelcome') return message.reply({ content: '[TEST] Welcome <@' + message.author.id + '> to **THOR APEX ⚡**! 🎉', embeds: [mkWelcomeEmbed(message.member, message.guild)] });
     if (cmd === 'warn' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); const reason = args.slice(1).join(' ') || 'No reason'; if (!uid) return message.reply('Usage: !warn @user [reason]'); if (!warnings[uid]) warnings[uid] = []; warnings[uid].push({ reason, mod: message.author.tag, ts: Date.now() }); saveWarnings(); return message.reply('<@' + uid + '> warned. Reason: **' + reason + '** (Total: ' + warnings[uid].length + ')'); }
     if (cmd === 'mute' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); const reason = args.slice(1).join(' ') || 'No reason'; if (!uid) return message.reply('Usage: !mute @user'); try { const t = await message.guild.members.fetch(uid); const mr = await getMuteRole(message.guild); if (mr) { await t.roles.add(mr, reason); return message.reply('<@' + uid + '> muted.'); } } catch (_) { return message.reply('Could not mute.'); } }
     if (cmd === 'unmute' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); if (!uid) return message.reply('Usage: !unmute @user'); try { const t = await message.guild.members.fetch(uid); const mr = await getMuteRole(message.guild); if (mr) { await t.roles.remove(mr); return message.reply('<@' + uid + '> unmuted.'); } } catch (_) { return message.reply('Could not unmute.'); } }
@@ -690,6 +774,44 @@ async function startBot() {
 
   // ── Slash Command Handler
   client.on('interactionCreate', async (interaction) => {
+    if (interaction.isStringSelectMenu()) {
+      const id = interaction.customId;
+      if (id.startsWith('wl_sel_')) {
+        const targetId = id.replace('wl_sel_', '');
+        const selectedPerm = interaction.values[0];
+        if (!config.security.whitelistData) config.security.whitelistData = {};
+        if (!config.security.whitelistData[targetId]) config.security.whitelistData[targetId] = {};
+        config.security.whitelistData[targetId][selectedPerm] = !config.security.whitelistData[targetId][selectedPerm];
+        saveConfig();
+        await interaction.update(buildWhitelistPanel(interaction.guild, targetId));
+        return;
+      }
+    }
+
+    if (interaction.isButton()) {
+      const id = interaction.customId;
+      if (id.startsWith('wl_grant_all_')) {
+        const targetId = id.replace('wl_grant_all_', '');
+        if (!config.security.whitelistData) config.security.whitelistData = {};
+        const obj = {}; PERM_LIST.forEach(p => obj[p.id] = true);
+        config.security.whitelistData[targetId] = obj;
+        if (!config.security.whitelistedUsers) config.security.whitelistedUsers = [];
+        if (!config.security.whitelistedUsers.includes(targetId)) config.security.whitelistedUsers.push(targetId);
+        saveConfig();
+        await interaction.update(buildWhitelistPanel(interaction.guild, targetId));
+        return;
+      }
+      if (id.startsWith('wl_remove_all_')) {
+        const targetId = id.replace('wl_remove_all_', '');
+        if (config.security.whitelistData) delete config.security.whitelistData[targetId];
+        config.security.whitelistedUsers = (config.security.whitelistedUsers || []).filter(u => u !== targetId);
+        config.security.whitelistedRoles = (config.security.whitelistedRoles || []).filter(r => r !== targetId);
+        saveConfig();
+        await interaction.update(buildWhitelistPanel(interaction.guild, targetId));
+        return;
+      }
+    }
+
     if (!interaction.isChatInputCommand()) return;
     const { commandName, guild } = interaction;
 
@@ -780,6 +902,11 @@ async function startBot() {
       if (!sec.whitelistedUsers) sec.whitelistedUsers = [];
       if (!sec.whitelistedRoles) sec.whitelistedRoles = [];
 
+      if (action === 'manage') {
+        const target = targetUser || targetRole || interaction.user;
+        await interaction.reply(buildWhitelistPanel(guild, target.id));
+        return;
+      }
       if (action === 'add_user') {
         if (!targetUser) return safeReply(interaction, 'Please select a user to whitelist!');
         if (!sec.whitelistedUsers.includes(targetUser.id)) sec.whitelistedUsers.push(targetUser.id);
@@ -828,7 +955,7 @@ async function startBot() {
     if (commandName === 'setwelcomecolor') { const color = interaction.options.getString('color').trim(); if (!isHex(color)) return safeReply(interaction, 'Invalid hex color! Use #RRGGBB'); config.embedColor = color; saveConfig(); return safeReply(interaction, 'Color set to **' + color + '**!'); }
     if (commandName === 'setwelcometext') { const g = interaction.options.getString('greeting'), s = interaction.options.getString('subtitle'), o = interaction.options.getString('outro'); if (!g && !s && !o) return safeReply(interaction, 'Provide at least one option!'); if (g) config.greetingPrefix = g; if (s) config.welcomeSubtitle = s; if (o) config.outroText = o; saveConfig(); return safeReply(interaction, 'Welcome text updated!'); }
     if (commandName === 'setleavetext')  { config.leaveText = interaction.options.getString('message'); saveConfig(); return safeReply(interaction, 'Leave text updated!'); }
-    if (commandName === 'testwelcome')   { await interaction.reply({ embeds: [mkWelcomeEmbed(interaction.member, guild)] }); return; }
+    if (commandName === 'testwelcome')   { await interaction.reply({ content: '[TEST] Welcome <@' + interaction.user.id + '> to **THOR APEX ⚡**! 🎉', embeds: [mkWelcomeEmbed(interaction.member, guild)] }); return; }
     if (commandName === 'testleave')     { await interaction.reply({ content: '[TEST] Goodbye <@' + interaction.user.id + '>!', embeds: [mkLeaveEmbed(interaction.member, guild)] }); return; }
     if (commandName === 'welcomeconfig') {
       const c = config;
