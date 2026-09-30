@@ -724,12 +724,13 @@ async function startBot() {
     const rest  = new REST({ version: '10' }).setToken(token);
     const cmds  = buildCmds();
     try {
+      // Clear old guild-level commands to eliminate duplicate commands in Discord
       for (const guild of c.guilds.cache.values()) {
-        await rest.put(Routes.applicationGuildCommands(c.user.id, guild.id), { body: cmds });
-        console.log('Commands registered: ' + guild.name);
+        await rest.put(Routes.applicationGuildCommands(c.user.id, guild.id), { body: [] }).catch(() => {});
       }
+      // Register global commands cleanly (only 1 copy per command in Discord)
       await rest.put(Routes.applicationCommands(c.user.id), { body: cmds });
-      console.log('Global commands updated!');
+      console.log('Global slash commands updated cleanly (no duplicates)!');
     } catch (err) { console.error('Command registration error:', err.message); }
   }
 
@@ -737,7 +738,10 @@ async function startBot() {
     console.log('Joined: ' + guild.name);
     await cacheInvites(guild);
     const token = process.env.DISCORD_TOKEN;
-    if (token) { const rest = new REST({ version: '10' }).setToken(token); await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: buildCmds() }).catch(() => {}); }
+    if (token) {
+      const rest = new REST({ version: '10' }).setToken(token);
+      await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: [] }).catch(() => {});
+    }
   });
 
   // ── Member Joined
