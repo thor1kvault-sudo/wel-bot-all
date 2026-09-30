@@ -41,16 +41,21 @@ const DEFSEC = {
   wordFilter: true, altDetection: true, altMinDays: 7, antiNuke: true,
   lockdown: false,
   blacklistedWords: ['nigga','nigger','fuck','shit','bitch','asshole','retard'],
-  allowedLinks: [], raidThreshold: 10, spamThreshold: 5, spamWindow: 5000, nukeThreshold: 5,
+  allowedLinks: [], raidThreshold: 10, spamThreshold: 3, spamWindow: 4000, nukeThreshold: 5,
+  emojiLimit: 5,
+  automodPunishment: 'kick',
+  tagNotify: true,
+  whitelistedUsers: [],
+  whitelistedRoles: [],
 };
 
 if (!config.embedColor) {
   config = {
     welcomeChannelId: '', leaveChannelId: '', rulesChannelId: '', rolesChannelId: '',
     generalChannelId: '', logChannelId: '', muteRoleId: '', autoRoleId: '',
-    embedColor: '#5865F2', welcomeTitle: 'WELCOME TO THOR APEX!',
-    greetingPrefix: 'HEY BUDDY!', welcomeSubtitle: 'Welcome to THOR APEX!',
-    outroText: 'Hope you enjoy your stay in THOR APEX!',
+    embedColor: '#FF0000', welcomeTitle: 'THOR APEX !',
+    greetingPrefix: 'HEY BUDDY!', welcomeSubtitle: 'Welcome To THOR APEX !',
+    outroText: 'Thanks For Joining. Hope You Have A Great Time Here!',
     leaveText: 'Goodbye **{username}**! We now have **{count}** members.',
     security: DEFSEC, ...config,
   };
@@ -143,9 +148,68 @@ async function findInviter(guild) {
 }
 
 // ── Security Helpers
+function isWhitelisted(member) {
+  if (!member) return false;
+  if (member.id === BOT_OWNER_ID || member.id === member.guild?.ownerId) return true;
+  if (member.permissions?.has(PermissionsBitField.Flags.Administrator)) return true;
+  const s = config.security || {};
+  const wUsers = s.whitelistedUsers || [];
+  const wRoles = s.whitelistedRoles || [];
+  if (wUsers.includes(member.id)) return true;
+  if (member.roles?.cache?.some(r => wRoles.includes(r.id))) return true;
+  return false;
+}
+
+function countEmojis(str) {
+  if (!str) return 0;
+  const custom = (str.match(/<a?:[a-zA-Z0-9_]+:[0-9]+>/g) || []).length;
+  const unicode = (str.match(/(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/g) || []).length;
+  return custom + unicode;
+}
+
+async function executePunishment(member, action, reason, channel) {
+  const guild = member.guild;
+  const user  = member.user || member;
+  const pun   = (action || config.security?.automodPunishment || 'kick').toLowerCase();
+
+  try {
+    if (pun === 'kick') {
+      try { await user.send('You were kicked from **' + guild.name + '** by AutoMod. Reason: ' + reason); } catch (_) {}
+      await member.kick('AutoMod: ' + reason);
+      if (channel) channel.send({ content: '🚫 **' + user.tag + '** was **KICKED** by AutoMod (' + reason + ').' }).catch(() => {});
+    } else if (pun === 'ban') {
+      try { await user.send('You were banned from **' + guild.name + '** by AutoMod. Reason: ' + reason); } catch (_) {}
+      await guild.members.ban(user.id, { reason: 'AutoMod: ' + reason });
+      if (channel) channel.send({ content: '⛔ **' + user.tag + '** was **BANNED** by AutoMod (' + reason + ').' }).catch(() => {});
+    } else if (pun === 'mute') {
+      const mr = await getMuteRole(guild);
+      if (mr) await member.roles.add(mr, 'AutoMod: ' + reason);
+      if (channel) channel.send({ content: '🔇 <@' + user.id + '> was **MUTED** by AutoMod (' + reason + ').' }).catch(() => {});
+    } else if (pun === 'warn') {
+      if (!warnings[user.id]) warnings[user.id] = [];
+      warnings[user.id].push({ reason: 'AutoMod: ' + reason, mod: 'AutoMod System', ts: Date.now() });
+      saveWarnings();
+      if (channel) channel.send({ content: '⚠️ <@' + user.id + '> was **WARNED** by AutoMod (' + reason + ').' }).catch(() => {});
+    } else {
+      if (channel) channel.send({ content: '⚠️ <@' + user.id + '> Warning: ' + reason }).catch(() => {});
+    }
+  } catch (err) { console.error('Punishment execution error:', err.message); }
+
+  await sendLog(guild, new EmbedBuilder()
+    .setColor('#FF0000')
+    .setTitle('🤖 AutoMod Punishment Triggered')
+    .addFields(
+      { name: 'User', value: user.tag + ' (`' + user.id + '`)', inline: true },
+      { name: 'Action Taken', value: pun.toUpperCase(), inline: true },
+      { name: 'Reason', value: reason }
+    )
+    .setTimestamp()
+  );
+}
+
 const spamMap = new Map();
 function isSpamming(uid) {
-  const now = Date.now(), thr = config.security?.spamThreshold || 5, win = config.security?.spamWindow || 5000;
+  const now = Date.now(), thr = config.security?.spamThreshold || 3, win = config.security?.spamWindow || 4000;
   if (!spamMap.has(uid)) spamMap.set(uid, []);
   const t = spamMap.get(uid).filter(x => now - x < win); t.push(now); spamMap.set(uid, t);
   return t.length >= thr;
@@ -188,33 +252,45 @@ function mkWelcomeEmbed(member, guild, inviterData) {
   const chs = guild?.channels?.cache;
   const rCh   = (config.rulesChannelId && chs?.get(config.rulesChannelId)) || chs?.find(c => /rule/i.test(c.name));
   const funCh  = chs?.find(c => /fun/i.test(c.name));
-  const editCh = chs?.find(c => /edit/i.test(c.name));
+  const editCh = chs?.find(c => /edit|pc/i.test(c.name));
   const gameCh = chs?.find(c => /gaming|game/i.test(c.name));
   const genCh  = (config.generalChannelId && chs?.get(config.generalChannelId)) || chs?.find(c => /general|chat/i.test(c.name));
-  const rolCh  = (config.rolesChannelId && chs?.get(config.rolesChannelId)) || chs?.find(c => /role/i.test(c.name));
   const tag = (ch, fb) => ch ? ('<#' + (typeof ch === 'string' ? ch : ch.id) + '>') : ('`#' + fb + '`');
   const uid = member?.user?.id || member?.id || '0';
+
   const lines = [
-    '### ' + (config.greetingPrefix || 'HEY BUDDY!') + ' <@' + uid + '>\n',
-    '**' + (config.welcomeSubtitle || 'Welcome to THOR APEX!') + '**\n',
+    '### HEY BUDDY! <@' + uid + '>',
+    '**Welcome To THOR APEX !**',
+    '**Get started with below: ' + tag(rCh, 'Rules') + '**\n',
+    '**Follow The Server Guidelines: ' + tag(rCh, 'Rules') + '**\n',
   ];
-  if (inviterData?.inviterId) lines.push('**Invited by:** <@' + inviterData.inviterId + '> (Total Invites: **' + inviterData.uses + '**)\n');
-  else lines.push('**Invited by:** Direct Link / Unknown\n');
-  lines.push('**Get Started:** ' + tag(rCh, 'rules') + '\n', '**Rules:** ' + tag(rCh, 'rules') + '\n');
-  if (funCh)  lines.push('**Fun Zone:** ' + tag(funCh, 'fun') + '\n');
-  if (editCh) lines.push('**Editing:** ' + tag(editCh, 'editing') + '\n');
-  if (gameCh) lines.push('**Gaming:** ' + tag(gameCh, 'gaming') + '\n');
-  lines.push('**Chill Here:** ' + tag(genCh, 'general') + '\n');
-  if (rolCh)  lines.push('**Get Roles:** ' + tag(rolCh, 'roles') + '\n');
-  lines.push('\n### ' + (config.outroText || 'Thanks For Joining!'));
-  const logo   = guild.iconURL({ size: 1024, forceStatic: false });
-  const banner = guild.bannerURL({ size: 1024 });
-  const avatar = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
-  const embed  = new EmbedBuilder().setColor(isHex(config.embedColor) ? config.embedColor : '#5865F2').setDescription(lines.join('\n')).setTimestamp();
-  if (logo) embed.setAuthor({ name: config.welcomeTitle || 'WELCOME TO THOR APEX!', iconURL: logo }); else embed.setAuthor({ name: config.welcomeTitle || 'WELCOME TO THOR APEX!' });
-  if (avatar) embed.setThumbnail(avatar); else if (logo) embed.setThumbnail(logo);
+  if (funCh)  lines.push('**Fun With Us: ' + tag(funCh, 'FUN TIME') + '**\n');
+  if (editCh) lines.push('**Editing Zone: ' + tag(editCh, 'PC EDITING') + '**\n');
+  if (gameCh) lines.push('**Gaming Zone: ' + tag(gameCh, 'GAMING-TEXT') + '**\n');
+  lines.push('**Join And Chill With Us!: ' + tag(genCh, 'General') + '**\n');
+
+  if (inviterData?.inviterId) {
+    lines.push('**Invited by:** <@' + inviterData.inviterId + '> (Total Invites: **' + inviterData.uses + '**)\n');
+  }
+
+  lines.push('\n**Thanks For Joining. Hope You Have A Great Time Here!**');
+
+  const logo   = guild?.iconURL({ size: 1024, forceStatic: false });
+  const banner = guild?.bannerURL({ size: 1024 });
+
+  const embed = new EmbedBuilder()
+    .setColor('#FF0000')
+    .setDescription(lines.join('\n'));
+
+  if (logo) {
+    embed.setAuthor({ name: config.welcomeTitle || 'THOR APEX !', iconURL: logo });
+    embed.setThumbnail(logo);
+  } else {
+    embed.setAuthor({ name: config.welcomeTitle || 'THOR APEX !' });
+  }
+
   if (banner) embed.setImage(banner);
-  embed.setFooter({ text: 'THOR APEX Member #' + guild.memberCount, iconURL: logo || undefined });
+
   return embed;
 }
 function mkLeaveEmbed(member, guild) {
@@ -274,7 +350,9 @@ function buildCmds() {
     new SlashCommandBuilder().setName('queue').setDescription('View or add to music queue').addStringOption(o => o.setName('song').setDescription('Song to add').setRequired(false)),
     new SlashCommandBuilder().setName('nowplaying').setDescription('Show currently playing song'),
     new SlashCommandBuilder().setName('radio').setDescription('Play 24/7 radio stream').addStringOption(o => o.setName('genre').setDescription('Genre').setRequired(false).addChoices({ name: 'Lofi Chill', value: 'lofi' }, { name: 'Gaming Beats', value: 'gaming' }, { name: 'Pop Hits', value: 'pop' }, { name: 'Chill Hop', value: 'chill' })),
-    new SlashCommandBuilder().setName('automod').setDescription('Manage Discord native AutoMod rules').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('What to do').setRequired(true).addChoices({ name: 'enable', value: 'enable' }, { name: 'disable', value: 'disable' }, { name: 'status', value: 'status' })),
+    new SlashCommandBuilder().setName('automod').setDescription('Manage AutoMod rules, punishments and limits').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('What to do').setRequired(true).addChoices({ name: 'enable', value: 'enable' }, { name: 'disable', value: 'disable' }, { name: 'config / status', value: 'status' }, { name: 'set punishment action', value: 'punishment' }, { name: 'set spam message limit', value: 'spamlimit' }, { name: 'set max emoji limit', value: 'emojilimit' })).addStringOption(o => o.setName('punishment').setDescription('Action: kick, ban, mute, warn, delete').setRequired(false).addChoices({ name: 'kick', value: 'kick' }, { name: 'ban', value: 'ban' }, { name: 'mute', value: 'mute' }, { name: 'warn', value: 'warn' }, { name: 'delete message only', value: 'delete' })).addIntegerOption(o => o.setName('limit').setDescription('Limit number (e.g. 3 messages, 5 emojis)').setRequired(false)),
+    new SlashCommandBuilder().setName('whitelist').setDescription('Manage whitelisted users and roles for AutoMod & Security').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'add user', value: 'add_user' }, { name: 'remove user', value: 'remove_user' }, { name: 'add role', value: 'add_role' }, { name: 'remove role', value: 'remove_role' }, { name: 'list whitelisted', value: 'list' })).addUserOption(o => o.setName('user').setDescription('User').setRequired(false)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(false)),
+    new SlashCommandBuilder().setName('tagnotify').setDescription('Toggle DM notifications when someone is tagged in server').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
     new SlashCommandBuilder().setName('help').setDescription('Show all bot commands'),
   ].map(c => c.toJSON());
 }
@@ -364,7 +442,7 @@ async function startBot() {
       if (config.welcomeChannelId) wCh = guild.channels.cache.get(config.welcomeChannelId) || await guild.channels.fetch(config.welcomeChannelId).catch(() => null);
       if (!wCh) wCh = guild.channels.cache.find(c => c.isTextBased() && /welcome|join|arrivals/i.test(c.name));
       if (!wCh) wCh = guild.systemChannel;
-      if (wCh) { await wCh.send({ content: 'Welcome <@' + member.id + '> to **' + guild.name + '**!', embeds: [mkWelcomeEmbed(member, guild, inviterData)] }); console.log('Welcome sent for ' + member.user.tag); }
+      if (wCh) { await wCh.send({ embeds: [mkWelcomeEmbed(member, guild, inviterData)] }); console.log('Welcome sent for ' + member.user.tag); }
 
       // Auto-Role
       if (config.autoRoleId) { try { const role = guild.roles.cache.get(config.autoRoleId); if (role) await member.roles.add(role, 'Auto-Role'); } catch (_) {} }
@@ -386,27 +464,25 @@ async function startBot() {
   // ── Messages
   client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
-    const member  = message.member;
-    const isAdmin = member?.permissions?.has(PermissionsBitField.Flags.Administrator);
-    const isMod   = member?.permissions?.has(PermissionsBitField.Flags.ModerateMembers);
+    const member = message.member;
     const sec = config.security || {};
 
-    if (!isAdmin && !isMod) {
-      // Anti-Spam
+    if (!isWhitelisted(member)) {
+      // 1. Anti-Spam Check (> 3 messages)
       if (sec.antiSpam && isSpamming(message.author.id)) {
         await message.delete().catch(() => {});
-        const mr = await getMuteRole(message.guild);
-        if (mr && member) {
-          try {
-            await member.roles.add(mr, 'Auto-muted: Spamming');
-            await message.channel.send({ content: '<@' + message.author.id + '> muted for spamming!' });
-            setTimeout(async () => { try { await member.roles.remove(mr); } catch (_) {} }, 5 * 60 * 1000);
-          } catch (_) {}
-        }
-        await sendLog(message.guild, new EmbedBuilder().setColor('#FF6600').setTitle('Anti-Spam - User Muted').addFields({ name: 'User', value: message.author.tag }, { name: 'Channel', value: '<#' + message.channel.id + '>' }).setTimestamp());
+        await executePunishment(member, sec.automodPunishment || 'kick', 'Spamming (> ' + (sec.spamThreshold || 3) + ' messages)', message.channel);
         return;
       }
-      // Anti-Link
+      // 2. Emoji Spam Check (> 5 emojis)
+      const eCount = countEmojis(message.content);
+      const eLimit = sec.emojiLimit || 5;
+      if (sec.wordFilter && eCount > eLimit) {
+        await message.delete().catch(() => {});
+        await executePunishment(member, sec.automodPunishment || 'kick', 'Emoji Spamming (' + eCount + ' emojis)', message.channel);
+        return;
+      }
+      // 3. Anti-Link Check
       if (sec.antiLink) {
         const hasInv = /discord\.gg\/|discord\.com\/invite\//i.test(message.content);
         const hasExt = sec.antiAds && /https?:\/\/(?!discord\.com)/i.test(message.content);
@@ -420,7 +496,7 @@ async function startBot() {
           }
         }
       }
-      // Word Filter
+      // 4. Word Filter
       if (sec.wordFilter) {
         const lower = message.content.toLowerCase();
         const bad = (sec.blacklistedWords || []).find(w => lower.includes(w.toLowerCase()));
@@ -430,6 +506,28 @@ async function startBot() {
           await sendLog(message.guild, new EmbedBuilder().setColor('#FF6600').setTitle('Word Filter - Message Deleted').addFields({ name: 'User', value: message.author.tag }).setTimestamp());
           return;
         }
+      }
+    }
+
+    // ── Tag / Mention Notification DM
+    if ((sec.tagNotify !== false) && message.mentions.users.size > 0) {
+      for (const [taggedUserId, taggedUser] of message.mentions.users) {
+        if (taggedUser.bot || taggedUserId === message.author.id) continue;
+        try {
+          const embed = new EmbedBuilder()
+            .setColor('#5865F2')
+            .setTitle('🔔 You were tagged in ' + message.guild.name + '!')
+            .setDescription(
+              '**Sender:** **' + message.author.tag + '** (<@' + message.author.id + '>)\n' +
+              '**Server:** **' + message.guild.name + '**\n' +
+              '**Channel:** <#' + message.channel.id + '>\n\n' +
+              '**Message Content:**\n> ' + (message.content.length > 500 ? message.content.slice(0, 500) + '...' : message.content)
+            )
+            .addFields({ name: 'Jump to Message', value: '[Click Here to View Message](' + message.url + ')' })
+            .setTimestamp();
+
+          await taggedUser.send({ embeds: [embed] }).catch(() => {});
+        } catch (_) {}
       }
     }
 
@@ -446,7 +544,7 @@ async function startBot() {
     if (cmd === 'queue' || cmd === 'q') { const inp = args.join(' '); const vc = message.member?.voice?.channel; if (inp) { if (!vc) return message.reply('Join Voice first!'); const r = addToQ(message.guild, vc, message.author, inp); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Added to Queue').setDescription('**' + r.track.title + '**').setTimestamp()] }); } const q = getQ(message.guild.id); if (q.queue.length === 0) return message.reply('Queue empty! Use !play'); const list = q.queue.slice(0, 10).map((t, i) => (i + 1) + '. **' + t.title + '**').join('\n'); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Music Queue').setDescription(list).setFooter({ text: 'Total: ' + q.queue.length }).setTimestamp()] }); }
     if (cmd === 'np' || cmd === 'nowplaying') { const q = getQ(message.guild.id); const t = q.queue[0]; if (!t) return message.reply('Nothing playing!'); return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Now Playing').setDescription('**' + t.title + '**').setTimestamp()] }); }
     if (cmd === 'radio') { const vc = message.member?.voice?.channel; if (!vc) return message.reply('Join Voice first!'); const genre = args[0]?.toLowerCase() || 'lofi'; const sel = RADIO_STREAMS[genre] || RADIO_STREAMS.lofi; const q = getQ(message.guild.id); if (voiceLib) { if (!q.connection) { try { q.connection = voiceLib.joinVoiceChannel({ channelId: vc.id, guildId: message.guild.id, adapterCreator: message.guild.voiceAdapterCreator, selfDeaf: false }); } catch (_) {} } if (!q.player) { q.player = voiceLib.createAudioPlayer(); q.connection?.subscribe(q.player); } try { q.player.play(voiceLib.createAudioResource(sel.url, { inputType: voiceLib.StreamType.Arbitrary })); } catch (_) {} } return message.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Radio: ' + sel.name).setDescription('Playing in <#' + vc.id + '>!').setTimestamp()] }); }
-    if (cmd === 'testwelcome') return message.reply({ content: '[TEST] Welcome <@' + message.author.id + '>!', embeds: [mkWelcomeEmbed(message.member, message.guild)] });
+    if (cmd === 'testwelcome') return message.reply({ embeds: [mkWelcomeEmbed(message.member, message.guild)] });
     if (cmd === 'warn' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); const reason = args.slice(1).join(' ') || 'No reason'; if (!uid) return message.reply('Usage: !warn @user [reason]'); if (!warnings[uid]) warnings[uid] = []; warnings[uid].push({ reason, mod: message.author.tag, ts: Date.now() }); saveWarnings(); return message.reply('<@' + uid + '> warned. Reason: **' + reason + '** (Total: ' + warnings[uid].length + ')'); }
     if (cmd === 'mute' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); const reason = args.slice(1).join(' ') || 'No reason'; if (!uid) return message.reply('Usage: !mute @user'); try { const t = await message.guild.members.fetch(uid); const mr = await getMuteRole(message.guild); if (mr) { await t.roles.add(mr, reason); return message.reply('<@' + uid + '> muted.'); } } catch (_) { return message.reply('Could not mute.'); } }
     if (cmd === 'unmute' && isMod) { const uid = args[0]?.replace(/[<@!>]/g, ''); if (!uid) return message.reply('Usage: !unmute @user'); try { const t = await message.guild.members.fetch(uid); const mr = await getMuteRole(message.guild); if (mr) { await t.roles.remove(mr); return message.reply('<@' + uid + '> unmuted.'); } } catch (_) { return message.reply('Could not unmute.'); } }
@@ -621,23 +719,103 @@ async function startBot() {
 
     if (commandName === 'automod') {
       const action = interaction.options.getString('action');
+      const punOpt = interaction.options.getString('punishment');
+      const limitOpt = interaction.options.getInteger('limit');
+      const sec = config.security || {};
       await interaction.deferReply({ ephemeral: true });
+
+      if (action === 'punishment') {
+        if (!punOpt) return interaction.editReply({ content: 'Please select a punishment action (`kick`, `ban`, `mute`, `warn`, or `delete`)!' });
+        sec.automodPunishment = punOpt.toLowerCase();
+        saveConfig();
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('⚙️ AutoMod Punishment Updated').setDescription('AutoMod punishment is now set to **' + punOpt.toUpperCase() + '**!').setTimestamp()] });
+        return;
+      }
+      if (action === 'spamlimit') {
+        if (!limitOpt || limitOpt < 1) return interaction.editReply({ content: 'Please enter a valid limit number (e.g. 3)!' });
+        sec.spamThreshold = limitOpt;
+        saveConfig();
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('⚙️ AutoMod Spam Limit Updated').setDescription('AutoMod will now punish anyone sending more than **' + limitOpt + '** messages in 4 seconds.').setTimestamp()] });
+        return;
+      }
+      if (action === 'emojilimit') {
+        if (!limitOpt || limitOpt < 1) return interaction.editReply({ content: 'Please enter a valid emoji limit (e.g. 5)!' });
+        sec.emojiLimit = limitOpt;
+        saveConfig();
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('⚙️ AutoMod Emoji Limit Updated').setDescription('AutoMod will now punish messages with more than **' + limitOpt + '** emojis.').setTimestamp()] });
+        return;
+      }
       if (action === 'enable') {
         const amResults = await setupAutoMod(guild, config.logChannelId);
-        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('🤖 Discord AutoMod Enabled!').setDescription(amResults.join('\n')).addFields({ name: 'What This Does', value: '• Blocks bad words at Discord level\n• Blocks Discord invite links\n• Blocks mention spam (5+ mentions)\n• Blocks spam/sexual content presets\n• Faster than bot-based filtering!' }).setTimestamp()] }); return;
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('🤖 AutoMod Enabled!').setDescription(amResults.join('\n')).addFields({ name: 'AutoMod Settings', value: '• Punishment: **' + (sec.automodPunishment || 'kick').toUpperCase() + '**\n• Spam Threshold: > **' + (sec.spamThreshold || 3) + '** msgs\n• Emoji Limit: > **' + (sec.emojiLimit || 5) + '** emojis' }).setTimestamp()] }); return;
       }
       if (action === 'disable') {
         const amResults = await disableAutoMod(guild);
-        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('🤖 Discord AutoMod Disabled').setDescription(amResults.join('\n')).setTimestamp()] }); return;
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('🤖 AutoMod Disabled').setDescription(amResults.join('\n')).setTimestamp()] }); return;
       }
-      if (action === 'status') {
+      if (action === 'status' || action === 'config') {
         try {
           const rules = await guild.autoModerationRules.fetch().catch(() => null);
-          if (!rules || rules.size === 0) { await interaction.editReply({ content: 'No AutoMod rules found. Run `/automod enable` to set them up!' }); return; }
-          const desc = [...rules.values()].map(r => (r.enabled ? '🟢' : '🔴') + ' **' + r.name + '** (ID: ' + r.id + ')').join('\n');
-          await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('🤖 AutoMod Rules - ' + guild.name).setDescription(desc).setFooter({ text: 'Total: ' + rules.size + ' rules | 🟢 Enabled | 🔴 Disabled' }).setTimestamp()] }); return;
-        } catch (e) { await interaction.editReply({ content: 'Could not fetch AutoMod rules: ' + e.message }); return; }
+          const ruleDesc = rules && rules.size > 0 ? [...rules.values()].map(r => (r.enabled ? '🟢' : '🔴') + ' **' + r.name + '**').join('\n') : 'No Discord Native rules set up yet (run `/automod enable`)';
+          const uList = (sec.whitelistedUsers || []).length > 0 ? sec.whitelistedUsers.map(id => '<@' + id + '>').join(', ') : 'None';
+          const rList = (sec.whitelistedRoles || []).length > 0 ? sec.whitelistedRoles.map(id => '<@&' + id + '>').join(', ') : 'None';
+
+          await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('🤖 AutoMod Configuration & Status').addFields(
+            { name: '⚖️ AutoMod Punishment', value: '**' + (sec.automodPunishment || 'kick').toUpperCase() + '** (Options: kick, ban, mute, warn, delete)', inline: true },
+            { name: '📩 Spam Message Limit', value: '> **' + (sec.spamThreshold || 3) + '** messages / 4s', inline: true },
+            { name: '😀 Emoji Spam Limit', value: '> **' + (sec.emojiLimit || 5) + '** emojis per msg', inline: true },
+            { name: '🛡️ Whitelisted Users', value: uList, inline: true },
+            { name: '🛡️ Whitelisted Roles', value: rList, inline: true },
+            { name: '🤖 Native Discord AutoMod Rules', value: ruleDesc }
+          ).setFooter({ text: 'Use /automod punishment | /automod spamlimit | /whitelist' }).setTimestamp()] }); return;
+        } catch (e) { await interaction.editReply({ content: 'Error fetching AutoMod status: ' + e.message }); return; }
       }
+    }
+
+    if (commandName === 'whitelist') {
+      const action = interaction.options.getString('action');
+      const targetUser = interaction.options.getUser('user');
+      const targetRole = interaction.options.getRole('role');
+      const sec = config.security || {};
+      if (!sec.whitelistedUsers) sec.whitelistedUsers = [];
+      if (!sec.whitelistedRoles) sec.whitelistedRoles = [];
+
+      if (action === 'add_user') {
+        if (!targetUser) return safeReply(interaction, 'Please select a user to whitelist!');
+        if (!sec.whitelistedUsers.includes(targetUser.id)) sec.whitelistedUsers.push(targetUser.id);
+        saveConfig();
+        return safeReply(interaction, '✅ **' + targetUser.tag + '** is now **whitelisted**! They will bypass AutoMod and Anti-Spam.');
+      }
+      if (action === 'remove_user') {
+        if (!targetUser) return safeReply(interaction, 'Please select a user to remove!');
+        sec.whitelistedUsers = sec.whitelistedUsers.filter(id => id !== targetUser.id);
+        saveConfig();
+        return safeReply(interaction, '❌ **' + targetUser.tag + '** removed from whitelist.');
+      }
+      if (action === 'add_role') {
+        if (!targetRole) return safeReply(interaction, 'Please select a role to whitelist!');
+        if (!sec.whitelistedRoles.includes(targetRole.id)) sec.whitelistedRoles.push(targetRole.id);
+        saveConfig();
+        return safeReply(interaction, '✅ Role **' + targetRole.name + '** is now **whitelisted**! Members with this role bypass AutoMod.');
+      }
+      if (action === 'remove_role') {
+        if (!targetRole) return safeReply(interaction, 'Please select a role to remove!');
+        sec.whitelistedRoles = sec.whitelistedRoles.filter(id => id !== targetRole.id);
+        saveConfig();
+        return safeReply(interaction, '❌ Role **' + targetRole.name + '** removed from whitelist.');
+      }
+      if (action === 'list') {
+        const uList = sec.whitelistedUsers.length > 0 ? sec.whitelistedUsers.map(id => '<@' + id + '>').join(', ') : 'None';
+        const rList = sec.whitelistedRoles.length > 0 ? sec.whitelistedRoles.map(id => '<@&' + id + '>').join(', ') : 'None';
+        await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('🛡️ AutoMod Whitelist - ' + guild.name).addFields({ name: 'Whitelisted Users', value: uList }, { name: 'Whitelisted Roles', value: rList }).setTimestamp()] });
+        return;
+      }
+    }
+
+    if (commandName === 'tagnotify') {
+      config.security.tagNotify = interaction.options.getString('toggle') === 'on';
+      saveConfig();
+      return safeReply(interaction, '🔔 Tag DM Notifications are now **' + (config.security.tagNotify ? 'ON' : 'OFF') + '**!');
     }
 
     if (commandName === 'setwelcome')    { const ch = interaction.options.getChannel('channel') || interaction.channel; config.welcomeChannelId = ch.id; saveConfig(); return safeReply(interaction, 'Welcome channel set!'); }
@@ -650,7 +828,7 @@ async function startBot() {
     if (commandName === 'setwelcomecolor') { const color = interaction.options.getString('color').trim(); if (!isHex(color)) return safeReply(interaction, 'Invalid hex color! Use #RRGGBB'); config.embedColor = color; saveConfig(); return safeReply(interaction, 'Color set to **' + color + '**!'); }
     if (commandName === 'setwelcometext') { const g = interaction.options.getString('greeting'), s = interaction.options.getString('subtitle'), o = interaction.options.getString('outro'); if (!g && !s && !o) return safeReply(interaction, 'Provide at least one option!'); if (g) config.greetingPrefix = g; if (s) config.welcomeSubtitle = s; if (o) config.outroText = o; saveConfig(); return safeReply(interaction, 'Welcome text updated!'); }
     if (commandName === 'setleavetext')  { config.leaveText = interaction.options.getString('message'); saveConfig(); return safeReply(interaction, 'Leave text updated!'); }
-    if (commandName === 'testwelcome')   { await interaction.reply({ content: '[TEST] Welcome <@' + interaction.user.id + '>!', embeds: [mkWelcomeEmbed(interaction.member, guild)] }); return; }
+    if (commandName === 'testwelcome')   { await interaction.reply({ embeds: [mkWelcomeEmbed(interaction.member, guild)] }); return; }
     if (commandName === 'testleave')     { await interaction.reply({ content: '[TEST] Goodbye <@' + interaction.user.id + '>!', embeds: [mkLeaveEmbed(interaction.member, guild)] }); return; }
     if (commandName === 'welcomeconfig') {
       const c = config;
