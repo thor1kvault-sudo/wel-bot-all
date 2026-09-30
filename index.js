@@ -412,24 +412,53 @@ async function handleNukeAction(guild, executor, permType, actionName) {
 }
 
 function isHex(s) { return /^#[0-9A-Fa-f]{6}$/.test(s); }
+async function getLogChannel(guild, primaryId, fallbackRegexes) {
+  if (!guild) return null;
+  if (primaryId) {
+    let ch = guild.channels.cache.get(primaryId);
+    if (!ch) ch = await guild.channels.fetch(primaryId).catch(() => null);
+    if (ch && ch.isTextBased()) return ch;
+  }
+  if (config.logChannelId && config.logChannelId !== primaryId) {
+    let ch = guild.channels.cache.get(config.logChannelId);
+    if (!ch) ch = await guild.channels.fetch(config.logChannelId).catch(() => null);
+    if (ch && ch.isTextBased()) return ch;
+  }
+  if (fallbackRegexes && fallbackRegexes.length > 0) {
+    for (const regex of fallbackRegexes) {
+      const found = guild.channels.cache.find(c => c.isTextBased() && regex.test(c.name));
+      if (found) return found;
+    }
+  }
+  return guild.channels.cache.find(c => c.isTextBased() && /log|audit/i.test(c.name)) || null;
+}
 async function sendLog(guild, embed) {
-  if (!config.logChannelId) return;
-  try { const ch = guild.channels.cache.get(config.logChannelId) || await guild.channels.fetch(config.logChannelId).catch(() => null); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+  try {
+    const ch = await getLogChannel(guild, config.logChannelId, [/mod-log|modlog|audit-log|security-log|logs|log/i]);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendLog error:', err.message));
+    else console.log('sendLog: No log channel configured or found in ' + (guild?.name || 'guild'));
+  } catch (err) { console.error('sendLog error:', err.message); }
 }
 async function sendVoiceLog(guild, embed) {
-  const chId = config.voiceLogChannelId || config.logChannelId;
-  if (!chId) return;
-  try { const ch = guild.channels.cache.get(chId) || await guild.channels.fetch(chId).catch(() => null); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+  try {
+    const ch = await getLogChannel(guild, config.voiceLogChannelId, [/voice-log|voicelog|voice-logs|v-log/i]);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendVoiceLog error:', err.message));
+    else console.log('sendVoiceLog: No voice log channel configured or found in ' + (guild?.name || 'guild'));
+  } catch (err) { console.error('sendVoiceLog error:', err.message); }
 }
 async function sendRoleLog(guild, embed) {
-  const chId = config.roleLogChannelId || config.logChannelId;
-  if (!chId) return;
-  try { const ch = guild.channels.cache.get(chId) || await guild.channels.fetch(chId).catch(() => null); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+  try {
+    const ch = await getLogChannel(guild, config.roleLogChannelId, [/role-log|rolelog|role-logs|r-log/i]);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendRoleLog error:', err.message));
+    else console.log('sendRoleLog: No role log channel configured or found in ' + (guild?.name || 'guild'));
+  } catch (err) { console.error('sendRoleLog error:', err.message); }
 }
 async function sendMemberLog(guild, embed) {
-  const chId = config.memberLogChannelId || config.logChannelId;
-  if (!chId) return;
-  try { const ch = guild.channels.cache.get(chId) || await guild.channels.fetch(chId).catch(() => null); if (ch?.isTextBased()) await ch.send({ embeds: [embed] }); } catch (_) {}
+  try {
+    const ch = await getLogChannel(guild, config.memberLogChannelId, [/member-log|memberlog|user-log|join-log|leave-log|m-log/i]);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendMemberLog error:', err.message));
+    else console.log('sendMemberLog: No member log channel configured or found in ' + (guild?.name || 'guild'));
+  } catch (err) { console.error('sendMemberLog error:', err.message); }
 }
 async function safeReply(i, content, eph = true) {
   try { if (i.replied || i.deferred) await i.followUp({ content, ephemeral: eph }); else await i.reply({ content, ephemeral: eph }); } catch (_) {}
