@@ -752,7 +752,7 @@ function buildCmds() {
     new SlashCommandBuilder().setName('radio').setDescription('Play 24/7 radio stream').addStringOption(o => o.setName('genre').setDescription('Genre').setRequired(false).addChoices({ name: 'Lofi Chill', value: 'lofi' }, { name: 'Gaming Beats', value: 'gaming' }, { name: 'Pop Hits', value: 'pop' }, { name: 'Chill Hop', value: 'chill' })),
     new SlashCommandBuilder().setName('automod').setDescription('Toggle or view AutoMod setup').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'enable', value: 'enable' }, { name: 'disable', value: 'disable' }, { name: 'status', value: 'status' }, { name: 'punishment', value: 'punishment' })),
     new SlashCommandBuilder().setName('automodpunishment').setDescription('Manage AutoMod punishment actions for each event').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
-    new SlashCommandBuilder().setName('whitelist').setDescription('Interactive Whitelist management for Anti-Nuke & Security').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'manage (interactive panel)', value: 'manage' }, { name: 'add user', value: 'add_user' }, { name: 'remove user', value: 'remove_user' }, { name: 'add role', value: 'add_role' }, { name: 'remove role', value: 'remove_role' }, { name: 'list whitelisted', value: 'list' })).addUserOption(o => o.setName('user').setDescription('User').setRequired(false)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(false)),
+    new SlashCommandBuilder().setName('whitelist').setDescription('Interactive Whitelist management for Anti-Nuke & Security').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'remove (user or role)', value: 'remove' }, { name: 'add (user or role)', value: 'add' }, { name: 'manage (interactive panel)', value: 'manage' }, { name: 'remove user', value: 'remove_user' }, { name: 'add user', value: 'add_user' }, { name: 'remove role', value: 'remove_role' }, { name: 'add role', value: 'add_role' }, { name: 'list whitelisted', value: 'list' }, { name: 'clear all', value: 'clear' })).addUserOption(o => o.setName('user').setDescription('User').setRequired(false)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(false)),
     new SlashCommandBuilder().setName('tagnotify').setDescription('Toggle DM notifications when someone is tagged in server').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
     new SlashCommandBuilder().setName('antieveryone').setDescription('Toggle anti-everyone/here ping protection').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
     new SlashCommandBuilder().setName('help').setDescription('Show all bot commands'),
@@ -1567,29 +1567,42 @@ async function startBot() {
         await interaction.reply(buildWhitelistPanel(guild, target.id));
         return;
       }
-      if (action === 'add_user') {
-        if (!targetUser) return safeReply(interaction, 'Please select a user to whitelist!');
-        if (!sec.whitelistedUsers.includes(targetUser.id)) sec.whitelistedUsers.push(targetUser.id);
+      if (action === 'remove' || action === 'remove_user' || action === 'remove_role') {
+        if (!targetUser && !targetRole) return safeReply(interaction, 'Please select a `user` or `role` to remove from whitelist!');
+        let msg = '';
+        if (targetUser) {
+          sec.whitelistedUsers = sec.whitelistedUsers.filter(id => id !== targetUser.id);
+          if (sec.whitelistData) delete sec.whitelistData[targetUser.id];
+          msg += '❌ **' + targetUser.tag + '** removed from whitelist.\n';
+        }
+        if (targetRole) {
+          sec.whitelistedRoles = sec.whitelistedRoles.filter(id => id !== targetRole.id);
+          if (sec.whitelistData) delete sec.whitelistData[targetRole.id];
+          msg += '❌ Role **' + targetRole.name + '** removed from whitelist.\n';
+        }
         saveConfig();
-        return safeReply(interaction, '✅ **' + targetUser.tag + '** is now **whitelisted**! They will bypass AutoMod and Anti-Spam.');
+        return safeReply(interaction, msg.trim());
       }
-      if (action === 'remove_user') {
-        if (!targetUser) return safeReply(interaction, 'Please select a user to remove!');
-        sec.whitelistedUsers = sec.whitelistedUsers.filter(id => id !== targetUser.id);
+      if (action === 'add' || action === 'add_user' || action === 'add_role') {
+        if (!targetUser && !targetRole) return safeReply(interaction, 'Please select a `user` or `role` to add to whitelist!');
+        let msg = '';
+        if (targetUser) {
+          if (!sec.whitelistedUsers.includes(targetUser.id)) sec.whitelistedUsers.push(targetUser.id);
+          msg += '✅ **' + targetUser.tag + '** is now **whitelisted**! They will bypass AutoMod and Anti-Spam.\n';
+        }
+        if (targetRole) {
+          if (!sec.whitelistedRoles.includes(targetRole.id)) sec.whitelistedRoles.push(targetRole.id);
+          msg += '✅ Role **' + targetRole.name + '** is now **whitelisted**! Members with this role bypass AutoMod.\n';
+        }
         saveConfig();
-        return safeReply(interaction, '❌ **' + targetUser.tag + '** removed from whitelist.');
+        return safeReply(interaction, msg.trim());
       }
-      if (action === 'add_role') {
-        if (!targetRole) return safeReply(interaction, 'Please select a role to whitelist!');
-        if (!sec.whitelistedRoles.includes(targetRole.id)) sec.whitelistedRoles.push(targetRole.id);
+      if (action === 'clear') {
+        sec.whitelistedUsers = [];
+        sec.whitelistedRoles = [];
+        sec.whitelistData = {};
         saveConfig();
-        return safeReply(interaction, '✅ Role **' + targetRole.name + '** is now **whitelisted**! Members with this role bypass AutoMod.');
-      }
-      if (action === 'remove_role') {
-        if (!targetRole) return safeReply(interaction, 'Please select a role to remove!');
-        sec.whitelistedRoles = sec.whitelistedRoles.filter(id => id !== targetRole.id);
-        saveConfig();
-        return safeReply(interaction, '❌ Role **' + targetRole.name + '** removed from whitelist.');
+        return safeReply(interaction, '🗑️ Whitelist has been completely **cleared**.');
       }
       if (action === 'list') {
         const uList = sec.whitelistedUsers.length > 0 ? sec.whitelistedUsers.map(id => '<@' + id + '>').join(', ') : 'None';
