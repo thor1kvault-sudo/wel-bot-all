@@ -479,55 +479,45 @@ function mkWelcomeEmbed(member, guild, inviterData) {
   const userId = member?.user?.id ?? member?.id ?? '000000000000000000';
   const channels = guild?.channels?.cache;
 
-  const rulesCh   = (config.rulesChannelId && channels?.get(config.rulesChannelId)) || channels?.find(c => /rule/i.test(c.name)) || 'Rules';
-  const funCh     = channels?.find(c => /fun/i.test(c.name)) || 'FUN TIME';
-  const editCh    = channels?.find(c => /editing|edit/i.test(c.name)) || 'PC EDITING';
-  const gamingCh  = channels?.find(c => /gaming|game/i.test(c.name)) || 'GAMING-TEXT';
-  const generalCh = (config.generalChannelId && channels?.get(config.generalChannelId)) || channels?.find(c => /general|chat/i.test(c.name)) || 'General';
+  const rCh   = (config.rulesChannelId && channels?.get(config.rulesChannelId)) || channels?.find(c => /rule/i.test(c.name));
+  const funCh  = channels?.find(c => /fun/i.test(c.name));
+  const editCh = channels?.find(c => /edit|pc/i.test(c.name));
+  const gameCh = channels?.find(c => /gaming|game/i.test(c.name));
+  const genCh  = (config.generalChannelId && channels?.get(config.generalChannelId)) || channels?.find(c => /general|chat/i.test(c.name));
 
-  const rulesTag   = typeof rulesCh === 'string' ? `\`#${rulesCh}\`` : `<#${rulesCh.id}>`;
-  const funTag     = typeof funCh === 'string' ? `\`#${funCh}\`` : `<#${funCh.id}>`;
-  const editTag    = typeof editCh === 'string' ? `\`#${editCh}\`` : `<#${editCh.id}>`;
-  const gamingTag  = typeof gamingCh === 'string' ? `\`#${gamingCh}\`` : `<#${gamingCh.id}>`;
-  const generalTag = typeof generalCh === 'string' ? `\`#${generalCh}\`` : `<#${generalCh.id}>`;
+  const tag = (ch, fallback) => ch ? `<#${typeof ch === 'string' ? ch : ch.id}>` : `\`# ${fallback}\``;
 
   const lines = [
-    `### HEY BUDDY! <@${userId}>\n`,
-    `**Welcome To THOR APEX !**\n`,
-    `**Get started with below:** ⚡ THOR APEX ⚡ ➔ ${rulesTag}\n`,
-    `**Follow The Server Guidelines:** ⚡ THOR APEX ⚡ ➔ ${rulesTag}\n`,
-    `**Fun With Us:** ⚡ THOR APEX ⚡ ➔ ${funTag}\n`,
-    `**Editing Zone:** ⚡ THOR APEX ⚡ ➔ ${editTag}\n`,
-    `**Gaming Zone:** ⚡ THOR APEX ⚡ ➔ ${gamingTag}\n`,
-    `**Join And Chill With Us!:** ⚡ THOR APEX ⚡ ➔ ${generalTag}\n`,
+    `**HEY BUDDY!** <@${userId}>\n`,
+    `**Welcome To THOR APEX !**`,
+    `**Get started with below:** ${tag(rCh, '🌷 • Rules')}\n`,
+    `\n**Follow The Server Guidelines:** ${tag(rCh, '🌷 • Rules')}\n`,
+    `**Fun With Us:** ${tag(funCh, '🐣 | FUN TIME')}\n`,
+    `**Editing Zone:** ${tag(editCh, '🎯 | PC EDITING')}\n`,
+    `**Gaming Zone:** ${tag(gameCh, 'GAMING-TEXT')}\n`,
+    `**Join And Chill With Us!:** ${tag(genCh, '🌷 • General')}\n`,
   ];
 
   if (inviterData && inviterData.inviterId) {
-    lines.push(`**📩 Invited by:** <@${inviterData.inviterId}> (Total Invites: **${inviterData.uses}**)\n`);
+    lines.push(`**📩 Invited by:** <@${inviterData.inviterId}> (Total Invites: **${inviterData.uses}**)`);
   }
 
-  lines.push(`\n### Thanks For Joining. Hope You Have A Great Time Here!`);
+  lines.push(`\n\n**Thanks For Joining. Hope You Have A\nGreat Time Here!**`);
 
   const embed = new EmbedBuilder()
     .setColor('#FF0000')
-    .setDescription(lines.join('\n'))
-    .setTimestamp();
+    .setDescription(lines.join('\n'));
 
   const logoUrl = guild?.iconURL({ size: 1024, forceStatic: false });
-  const authorOptions = { name: 'THOR APEX !' };
-  if (logoUrl) authorOptions.iconURL = logoUrl;
-  embed.setAuthor(authorOptions);
-
-  const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
-  if (avatarUrl) embed.setThumbnail(avatarUrl);
-  else if (logoUrl) embed.setThumbnail(logoUrl);
+  if (logoUrl) {
+    embed.setAuthor({ name: 'THOR APEX !', iconURL: logoUrl });
+    embed.setThumbnail(logoUrl);
+  } else {
+    embed.setAuthor({ name: 'THOR APEX !' });
+  }
 
   const bannerUrl = guild?.bannerURL({ size: 1024 });
   if (bannerUrl) embed.setImage(bannerUrl);
-
-  const footerOptions = { text: 'THOR APEX !' };
-  if (logoUrl) footerOptions.iconURL = logoUrl;
-  embed.setFooter(footerOptions);
 
   return embed;
 }
