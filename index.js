@@ -5,8 +5,19 @@ const {
 } = require('discord.js');
 require('dotenv').config();
 const fs2   = require('fs');
-const path2 = require('path');
+const http  = require('http');
 const https = require('https');
+
+try { const ff = require('ffmpeg-static'); if (ff) process.env.FFMPEG_PATH = ff; } catch (_) {}
+
+process.on('unhandledRejection', r => console.error('Unhandled Rejection:', r));
+process.on('uncaughtException',  e => console.error('Uncaught Exception:', e));
+
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ status: 'ok', bot: 'THOR APEX All-in-One Bot', uptime: Math.floor(process.uptime()) }));
+}).listen(PORT, '0.0.0.0', () => console.log('Health check server running on port ' + PORT));
 
 function getSpotifyTrackInfo(spotifyUrl) {
   return new Promise((resolve) => {
