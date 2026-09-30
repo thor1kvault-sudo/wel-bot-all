@@ -476,47 +476,58 @@ async function getMuteRole(guild) {
 
 // ── Embed Builders
 function mkWelcomeEmbed(member, guild, inviterData) {
-  const chs = guild?.channels?.cache;
-  const rCh   = (config.rulesChannelId && chs?.get(config.rulesChannelId)) || chs?.find(c => /rule/i.test(c.name));
-  const funCh  = chs?.find(c => /fun/i.test(c.name));
-  const editCh = chs?.find(c => /edit|pc/i.test(c.name));
-  const gameCh = chs?.find(c => /gaming|game/i.test(c.name));
-  const genCh  = (config.generalChannelId && chs?.get(config.generalChannelId)) || chs?.find(c => /general|chat/i.test(c.name));
-  const tag = (ch, fb) => ch ? ('<#' + (typeof ch === 'string' ? ch : ch.id) + '>') : ('`#' + fb + '`');
-  const uid = member?.user?.id || member?.id || '0';
+  const userId = member?.user?.id ?? member?.id ?? '000000000000000000';
+  const channels = guild?.channels?.cache;
+
+  const rulesCh   = (config.rulesChannelId && channels?.get(config.rulesChannelId)) || channels?.find(c => /rule/i.test(c.name)) || 'Rules';
+  const funCh     = channels?.find(c => /fun/i.test(c.name)) || 'FUN TIME';
+  const editCh    = channels?.find(c => /editing|edit/i.test(c.name)) || 'PC EDITING';
+  const gamingCh  = channels?.find(c => /gaming|game/i.test(c.name)) || 'GAMING-TEXT';
+  const generalCh = (config.generalChannelId && channels?.get(config.generalChannelId)) || channels?.find(c => /general|chat/i.test(c.name)) || 'General';
+
+  const rulesTag   = typeof rulesCh === 'string' ? `\`#${rulesCh}\`` : `<#${rulesCh.id}>`;
+  const funTag     = typeof funCh === 'string' ? `\`#${funCh}\`` : `<#${funCh.id}>`;
+  const editTag    = typeof editCh === 'string' ? `\`#${editCh}\`` : `<#${editCh.id}>`;
+  const gamingTag  = typeof gamingCh === 'string' ? `\`#${gamingCh}\`` : `<#${gamingCh.id}>`;
+  const generalTag = typeof generalCh === 'string' ? `\`#${generalCh}\`` : `<#${generalCh.id}>`;
 
   const lines = [
-    '### HEY BUDDY! <@' + uid + '>',
-    '**Welcome To THOR APEX !**',
-    '**Get started with below: ' + tag(rCh, 'Rules') + '**\n',
-    '**Follow The Server Guidelines: ' + tag(rCh, 'Rules') + '**\n',
+    `### HEY BUDDY! <@${userId}>\n`,
+    `**Welcome To THOR APEX !**\n`,
+    `**Get started with below:** ⚡ THOR APEX ⚡ ➔ ${rulesTag}\n`,
+    `**Follow The Server Guidelines:** ⚡ THOR APEX ⚡ ➔ ${rulesTag}\n`,
+    `**Fun With Us:** ⚡ THOR APEX ⚡ ➔ ${funTag}\n`,
+    `**Editing Zone:** ⚡ THOR APEX ⚡ ➔ ${editTag}\n`,
+    `**Gaming Zone:** ⚡ THOR APEX ⚡ ➔ ${gamingTag}\n`,
+    `**Join And Chill With Us!:** ⚡ THOR APEX ⚡ ➔ ${generalTag}\n`,
   ];
-  if (funCh)  lines.push('**Fun With Us: ' + tag(funCh, 'FUN TIME') + '**\n');
-  if (editCh) lines.push('**Editing Zone: ' + tag(editCh, 'PC EDITING') + '**\n');
-  if (gameCh) lines.push('**Gaming Zone: ' + tag(gameCh, 'GAMING-TEXT') + '**\n');
-  lines.push('**Join And Chill With Us!: ' + tag(genCh, 'General') + '**\n');
 
-  if (inviterData?.inviterId) {
-    lines.push('**Invited by:** <@' + inviterData.inviterId + '> (Total Invites: **' + inviterData.uses + '**)\n');
+  if (inviterData && inviterData.inviterId) {
+    lines.push(`**📩 Invited by:** <@${inviterData.inviterId}> (Total Invites: **${inviterData.uses}**)\n`);
   }
 
-  lines.push('\n**Thanks For Joining. Hope You Have A Great Time Here!**');
-
-  const logo   = guild?.iconURL({ size: 1024, forceStatic: false });
-  const banner = guild?.bannerURL({ size: 1024 });
+  lines.push(`\n### Thanks For Joining. Hope You Have A Great Time Here!`);
 
   const embed = new EmbedBuilder()
     .setColor('#FF0000')
-    .setDescription(lines.join('\n'));
+    .setDescription(lines.join('\n'))
+    .setTimestamp();
 
-  if (logo) {
-    embed.setAuthor({ name: 'THOR APEX !', iconURL: logo });
-    embed.setThumbnail(logo);
-  } else {
-    embed.setAuthor({ name: 'THOR APEX !' });
-  }
+  const logoUrl = guild?.iconURL({ size: 1024, forceStatic: false });
+  const authorOptions = { name: 'THOR APEX !' };
+  if (logoUrl) authorOptions.iconURL = logoUrl;
+  embed.setAuthor(authorOptions);
 
-  if (banner) embed.setImage(banner);
+  const avatarUrl = member?.user?.displayAvatarURL({ size: 256, forceStatic: false });
+  if (avatarUrl) embed.setThumbnail(avatarUrl);
+  else if (logoUrl) embed.setThumbnail(logoUrl);
+
+  const bannerUrl = guild?.bannerURL({ size: 1024 });
+  if (bannerUrl) embed.setImage(bannerUrl);
+
+  const footerOptions = { text: 'THOR APEX !' };
+  if (logoUrl) footerOptions.iconURL = logoUrl;
+  embed.setFooter(footerOptions);
 
   return embed;
 }
