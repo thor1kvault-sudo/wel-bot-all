@@ -46,6 +46,11 @@ const DEFSEC = {
   emojiLimit: 5,
   automodPunishment: 'kick',
   tagNotify: true,
+  antiCaps: true,
+  antiInvites: true,
+  antiMassMention: true,
+  antiEmojiSpam: true,
+  antiNsfwLink: true,
   whitelistedUsers: [],
   whitelistedRoles: [],
 };
@@ -61,6 +66,7 @@ if (!config.embedColor) {
     security: DEFSEC, ...config,
   };
   if (!config.security) config.security = { ...DEFSEC };
+  if (config.security.tagNotify === undefined) config.security.tagNotify = true;
   saveConfig();
 }
 
@@ -149,6 +155,60 @@ async function findInviter(guild) {
 }
 
 // ── Whitelist & Security Helpers
+const AUTOMOD_EVENTS = [
+  { id: 'antiSpam', label: 'Anti spam' },
+  { id: 'antiCaps', label: 'Anti caps' },
+  { id: 'antiLink', label: 'Anti link' },
+  { id: 'antiInvites', label: 'Anti invites' },
+  { id: 'antiMassMention', label: 'Anti mass mention' },
+  { id: 'antiEmojiSpam', label: 'Anti emoji spam' },
+  { id: 'antiNsfwLink', label: 'Anti NSFW link' },
+];
+
+function buildAutoModPanel(guild) {
+  const sec = config.security || {};
+
+  const lines = AUTOMOD_EVENTS.map(ev => {
+    const active = sec[ev.id] !== false;
+    return (active ? '🟩' : '🟥') + ' : **' + ev.label + '**';
+  });
+
+  const logo = guild?.iconURL({ size: 1024, forceStatic: false });
+  const embed = new EmbedBuilder()
+    .setColor('#FFFFFF')
+    .setTitle(guild.name + "⚡'s Automod Setup")
+    .setDescription(lines.join('\n'));
+
+  if (logo) embed.setThumbnail(logo);
+
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId('am_sel_toggle')
+    .setPlaceholder('Select events to enable')
+    .addOptions(
+      AUTOMOD_EVENTS.map(ev => ({
+        label: ev.label,
+        value: ev.id,
+        description: sec[ev.id] !== false ? 'Enabled (Click to disable)' : 'Disabled (Click to enable)',
+        emoji: sec[ev.id] !== false ? '✅' : '❌'
+      }))
+    );
+
+  const row1 = new ActionRowBuilder().addComponents(selectMenu);
+
+  const enableAllBtn = new ButtonBuilder()
+    .setCustomId('am_enable_all')
+    .setLabel('Enable for All Events')
+    .setStyle(ButtonStyle.Primary);
+
+  const cancelBtn = new ButtonBuilder()
+    .setCustomId('am_cancel')
+    .setLabel('Cancel')
+    .setStyle(ButtonStyle.Danger);
+
+  const row2 = new ActionRowBuilder().addComponents(enableAllBtn, cancelBtn);
+
+  return { embeds: [embed], components: [row1, row2] };
+}
 const PERM_LIST = [
   { id: 'antiBan', label: 'Anti Ban' },
   { id: 'antiUnban', label: 'Anti Unban' },
@@ -553,51 +613,105 @@ async function startBot() {
 
     if (!isWhitelisted(member)) {
       // 1. Anti-Spam Check (> 3 messages)
-      if (sec.antiSpam && isSpamming(message.author.id)) {
+      if (sec.antiSpam !== false && isSpamming(message.author.id)) {
         await message.delete().catch(() => {});
-        await executePunishment(member, sec.automodPunishment || 'kick', 'Spamming (> ' + (sec.spamThreshold || 3) + ' messages)', message.channel);
+        await executePunishment(member, sec.automodPunishment || 'kick', 'Spamming (> ' + (sec.spamThreshold || 3) + ' msgs)', message.channel);
         return;
       }
-      // 2. Emoji Spam Check (> 5 emojis)
-      const eCount = countEmojis(message.content);
-      const eLimit = sec.emojiLimit || 5;
-      if (sec.wordFilter && eCount > eLimit) {
-        await message.delete().catch(() => {});
-        await executePunishment(member, sec.automodPunishment || 'kick', 'Emoji Spamming (' + eCount + ' emojis)', message.channel);
-        return;
-      }
-      // 3. Anti-Link Check
-      if (sec.antiLink) {
-        const hasInv = /discord\.gg\/|discord\.com\/invite\//i.test(message.content);
-        const hasExt = sec.antiAds && /https?:\/\/(?!discord\.com)/i.test(message.content);
-        if (hasInv || hasExt) {
-          const ok = (sec.allowedLinks || []).some(d => message.content.includes(d));
-          if (!ok) {
+      // 2. Anti-Caps Check (> 70% uppercase)
+      if (sec.antiCaps !== false) {
+        const letters = message.content.replace(/[^a-zA-Z]/g, '');
+        if (letters.length > 10) {
+          const caps = letters.replace(/[^A-Z]/g, '').length;
+          if (caps / letters.length > 0.7) {
             await message.delete().catch(() => {});
-            try { await message.channel.send({ content: '<@' + message.author.id + '> Links/ads are not allowed here!' }); } catch (_) {}
-            await sendLog(message.guild, new EmbedBuilder().setColor('#FF6600').setTitle('Anti-Link - Link Blocked').addFields({ name: 'User', value: message.author.tag }, { name: 'Type', value: hasInv ? 'Discord Invite' : 'External Link' }).setTimestamp());
+            await executePunishment(member, sec.automodPunishment || 'kick', 'Excessive CAPS lock', message.channel);
             return;
           }
         }
       }
-      // 4. Word Filter
-      if (sec.wordFilter) {
+      // 3. Anti-Invites Check
+      if (sec.antiInvites !== false) {
+        if (/discord\.gg\/|discord\.com\/invite\/|dsc\.gg\//i.test(message.content)) {
+          await message.delete().catch(() => {});
+          await executePunishment(member, sec.automodPunishment || 'kick', 'Discord Invite Link', message.channel);
+          return;
+        }
+      }
+      // 4. Anti-Link Check
+      if (sec.antiLink !== false) {
+        if (/https?:\/\/(?!discord\.com)/i.test(message.content)) {
+          const ok = (sec.allowedLinks || []).some(d => message.content.includes(d));
+          if (!ok) {
+            await message.delete().catch(() => {});
+            await executePunishment(member, sec.automodPunishment || 'kick', 'External Link / Advertisement', message.channel);
+            return;
+          }
+        }
+      }
+      // 5. Anti-NSFW Link Check
+      if (sec.antiNsfwLink !== false) {
+        if (/https?:\/\/[^\s]*(porn|xxx|hentai|sex|nsfw|adult|xvideos|pornhub)/i.test(message.content)) {
+          await message.delete().catch(() => {});
+          await executePunishment(member, sec.automodPunishment || 'kick', 'NSFW Link Detected', message.channel);
+          return;
+        }
+      }
+      // 6. Anti-Mass Mention Check
+      if (sec.antiMassMention !== false) {
+        const totalMentions = message.mentions.users.size + message.mentions.roles.size;
+        if (totalMentions >= 5) {
+          await message.delete().catch(() => {});
+          await executePunishment(member, sec.automodPunishment || 'kick', 'Mass Mention (' + totalMentions + ' mentions)', message.channel);
+          return;
+        }
+      }
+      // 7. Anti-Emoji Spam Check
+      if (sec.antiEmojiSpam !== false) {
+        const eCount = countEmojis(message.content);
+        if (eCount > (sec.emojiLimit || 5)) {
+          await message.delete().catch(() => {});
+          await executePunishment(member, sec.automodPunishment || 'kick', 'Emoji Spam (' + eCount + ' emojis)', message.channel);
+          return;
+        }
+      }
+      // 8. Word Filter
+      if (sec.wordFilter !== false) {
         const lower = message.content.toLowerCase();
         const bad = (sec.blacklistedWords || []).find(w => lower.includes(w.toLowerCase()));
         if (bad) {
           await message.delete().catch(() => {});
-          try { await message.channel.send({ content: '<@' + message.author.id + '> Watch your language!' }); } catch (_) {}
-          await sendLog(message.guild, new EmbedBuilder().setColor('#FF6600').setTitle('Word Filter - Message Deleted').addFields({ name: 'User', value: message.author.tag }).setTimestamp());
+          await executePunishment(member, sec.automodPunishment || 'kick', 'Word Filter Violation', message.channel);
           return;
         }
       }
     }
 
     // ── Tag / Mention Notification DM
-    if ((sec.tagNotify !== false) && message.mentions.users.size > 0) {
-      for (const [taggedUserId, taggedUser] of message.mentions.users) {
-        if (taggedUser.bot || taggedUserId === message.author.id) continue;
+    if (sec.tagNotify !== false) {
+      const mentionedUserIds = new Set();
+
+      if (message.mentions?.users?.size > 0) {
+        message.mentions.users.forEach(u => {
+          if (!u.bot && u.id !== message.author.id) mentionedUserIds.add(u.id);
+        });
+      }
+
+      const regexMentions = message.content.match(/<@!?([0-9]+)>/g);
+      if (regexMentions) {
+        for (const m of regexMentions) {
+          const id = m.replace(/[^0-9]/g, '');
+          if (id && id !== message.author.id && id !== client.user.id) {
+            mentionedUserIds.add(id);
+          }
+        }
+      }
+
+      for (const targetId of mentionedUserIds) {
         try {
+          const targetUser = await client.users.fetch(targetId).catch(() => null);
+          if (!targetUser || targetUser.bot) continue;
+
           const embed = new EmbedBuilder()
             .setColor('#5865F2')
             .setTitle('🔔 You were tagged in ' + message.guild.name + '!')
@@ -610,8 +724,12 @@ async function startBot() {
             .addFields({ name: 'Jump to Message', value: '[Click Here to View Message](' + message.url + ')' })
             .setTimestamp();
 
-          await taggedUser.send({ embeds: [embed] }).catch(() => {});
-        } catch (_) {}
+          await targetUser.send({ embeds: [embed] }).catch(err => {
+            console.log('Could not send Mention DM to ' + targetUser.tag + ': ' + err.message);
+          });
+        } catch (e) {
+          console.error('Mention DM error:', e.message);
+        }
       }
     }
 
@@ -776,6 +894,14 @@ async function startBot() {
   client.on('interactionCreate', async (interaction) => {
     if (interaction.isStringSelectMenu()) {
       const id = interaction.customId;
+      if (id === 'am_sel_toggle') {
+        const evId = interaction.values[0];
+        if (!config.security) config.security = {};
+        config.security[evId] = config.security[evId] === false ? true : false;
+        saveConfig();
+        await interaction.update(buildAutoModPanel(interaction.guild));
+        return;
+      }
       if (id.startsWith('wl_sel_')) {
         const targetId = id.replace('wl_sel_', '');
         const selectedPerm = interaction.values[0];
@@ -790,6 +916,18 @@ async function startBot() {
 
     if (interaction.isButton()) {
       const id = interaction.customId;
+      if (id === 'am_enable_all') {
+        if (!config.security) config.security = {};
+        AUTOMOD_EVENTS.forEach(ev => config.security[ev.id] = true);
+        saveConfig();
+        await setupAutoMod(interaction.guild, config.logChannelId);
+        await interaction.update(buildAutoModPanel(interaction.guild));
+        return;
+      }
+      if (id === 'am_cancel') {
+        await interaction.update({ content: '❌ AutoMod Setup Cancelled.', embeds: [], components: [] });
+        return;
+      }
       if (id.startsWith('wl_grant_all_')) {
         const targetId = id.replace('wl_grant_all_', '');
         if (!config.security.whitelistData) config.security.whitelistData = {};
@@ -868,29 +1006,16 @@ async function startBot() {
         return;
       }
       if (action === 'enable') {
-        const amResults = await setupAutoMod(guild, config.logChannelId);
-        await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('🤖 AutoMod Enabled!').setDescription(amResults.join('\n')).addFields({ name: 'AutoMod Settings', value: '• Punishment: **' + (sec.automodPunishment || 'kick').toUpperCase() + '**\n• Spam Threshold: > **' + (sec.spamThreshold || 3) + '** msgs\n• Emoji Limit: > **' + (sec.emojiLimit || 5) + '** emojis' }).setTimestamp()] }); return;
+        await interaction.editReply(buildAutoModPanel(guild));
+        return;
       }
       if (action === 'disable') {
         const amResults = await disableAutoMod(guild);
         await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('🤖 AutoMod Disabled').setDescription(amResults.join('\n')).setTimestamp()] }); return;
       }
       if (action === 'status' || action === 'config') {
-        try {
-          const rules = await guild.autoModerationRules.fetch().catch(() => null);
-          const ruleDesc = rules && rules.size > 0 ? [...rules.values()].map(r => (r.enabled ? '🟢' : '🔴') + ' **' + r.name + '**').join('\n') : 'No Discord Native rules set up yet (run `/automod enable`)';
-          const uList = (sec.whitelistedUsers || []).length > 0 ? sec.whitelistedUsers.map(id => '<@' + id + '>').join(', ') : 'None';
-          const rList = (sec.whitelistedRoles || []).length > 0 ? sec.whitelistedRoles.map(id => '<@&' + id + '>').join(', ') : 'None';
-
-          await interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('🤖 AutoMod Configuration & Status').addFields(
-            { name: '⚖️ AutoMod Punishment', value: '**' + (sec.automodPunishment || 'kick').toUpperCase() + '** (Options: kick, ban, mute, warn, delete)', inline: true },
-            { name: '📩 Spam Message Limit', value: '> **' + (sec.spamThreshold || 3) + '** messages / 4s', inline: true },
-            { name: '😀 Emoji Spam Limit', value: '> **' + (sec.emojiLimit || 5) + '** emojis per msg', inline: true },
-            { name: '🛡️ Whitelisted Users', value: uList, inline: true },
-            { name: '🛡️ Whitelisted Roles', value: rList, inline: true },
-            { name: '🤖 Native Discord AutoMod Rules', value: ruleDesc }
-          ).setFooter({ text: 'Use /automod punishment | /automod spamlimit | /whitelist' }).setTimestamp()] }); return;
-        } catch (e) { await interaction.editReply({ content: 'Error fetching AutoMod status: ' + e.message }); return; }
+        await interaction.editReply(buildAutoModPanel(guild));
+        return;
       }
     }
 
