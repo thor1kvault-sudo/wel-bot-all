@@ -39,7 +39,7 @@ const saveWarnings   = () => saveData('warnings.json', warnings);
 const saveInviteData = () => saveData('invites.json',  inviteData);
 
 const DEFSEC = {
-  antiRaid: false, antiSpam: true, antiLink: true, antiAds: true,
+  antiRaid: false, antiSpam: true, antiEveryonePing: true, antiLink: true, antiAds: true,
   wordFilter: true, altDetection: true, altMinDays: 7, antiNuke: true,
   lockdown: false,
   blacklistedWords: ['nigga','nigger','fuck','shit','bitch','asshole','retard'],
@@ -248,6 +248,7 @@ async function findInviter(guild) {
 // ── Whitelist & Security Helpers
 const AUTOMOD_EVENTS = [
   { id: 'antiSpam', label: 'Anti spam' },
+  { id: 'antiEveryonePing', label: 'Anti @everyone/@here ping' },
   { id: 'antiCaps', label: 'Anti caps' },
   { id: 'antiLink', label: 'Anti link' },
   { id: 'antiInvites', label: 'Anti invites' },
@@ -753,6 +754,7 @@ function buildCmds() {
     new SlashCommandBuilder().setName('automodpunishment').setDescription('Manage AutoMod punishment actions for each event').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
     new SlashCommandBuilder().setName('whitelist').setDescription('Interactive Whitelist management for Anti-Nuke & Security').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'manage (interactive panel)', value: 'manage' }, { name: 'add user', value: 'add_user' }, { name: 'remove user', value: 'remove_user' }, { name: 'add role', value: 'add_role' }, { name: 'remove role', value: 'remove_role' }, { name: 'list whitelisted', value: 'list' })).addUserOption(o => o.setName('user').setDescription('User').setRequired(false)).addRoleOption(o => o.setName('role').setDescription('Role').setRequired(false)),
     new SlashCommandBuilder().setName('tagnotify').setDescription('Toggle DM notifications when someone is tagged in server').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
+    new SlashCommandBuilder().setName('antieveryone').setDescription('Toggle anti-everyone/here ping protection').setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild).addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
     new SlashCommandBuilder().setName('help').setDescription('Show all bot commands'),
   ].map(c => c.toJSON());
 }
@@ -1011,6 +1013,14 @@ async function startBot() {
         await message.delete().catch(() => {});
         await executePunishment(member, null, 'Spamming (> ' + (sec.spamThreshold || 3) + ' msgs)', message.channel, 'antiSpam');
         return;
+      }
+      // 1b. Anti-Everyone / Anti-Here Ping Check
+      if (sec.antiEveryonePing !== false) {
+        if (message.content.includes('@everyone') || message.content.includes('@here') || message.mentions.everyone) {
+          await message.delete().catch(() => {});
+          await executePunishment(member, null, 'Unauthorized @everyone / @here Ping', message.channel, 'antiEveryonePing');
+          return;
+        }
       }
       // 2. Anti-Caps Check (> 70% uppercase)
       if (sec.antiCaps !== false) {
@@ -1593,6 +1603,13 @@ async function startBot() {
       config.security.tagNotify = interaction.options.getString('toggle') === 'on';
       saveConfig();
       return safeReply(interaction, '🔔 Tag DM Notifications are now **' + (config.security.tagNotify ? 'ON' : 'OFF') + '**!');
+    }
+
+    if (commandName === 'antieveryone') {
+      if (!config.security) config.security = {};
+      config.security.antiEveryonePing = interaction.options.getString('toggle') === 'on';
+      saveConfig();
+      return safeReply(interaction, '📢 Anti-@everyone/@here Ping Protection is now **' + (config.security.antiEveryonePing ? 'ON' : 'OFF') + '**!');
     }
 
     if (commandName === 'setwelcome')    { const ch = interaction.options.getChannel('channel') || interaction.channel; config.welcomeChannelId = ch.id; saveConfig(); return safeReply(interaction, 'Welcome channel set!'); }
