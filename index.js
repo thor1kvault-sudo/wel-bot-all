@@ -665,32 +665,61 @@ async function addMusicToQueue(guild, vc, user, textChannel, query) {
     const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
     if (me) {
       const perms = vc.permissionsFor(me);
-      if (perms && (!perms.has(PermissionsBitField.Flags.Connect) || !perms.has(PermissionsBitField.Flags.Speak))) {
+      const hasConnect = perms ? perms.has(PermissionsBitField.Flags.Connect) : false;
+      const hasSpeak = perms ? perms.has(PermissionsBitField.Flags.Speak) : false;
+      console.log(redactSecrets(`🔒 VOICE PERMISSION CHECK: Guild=${guild.id}, Channel="${vc.name}" (${vc.id}) | Connect=${hasConnect} | Speak=${hasSpeak}`));
+      if (!hasConnect || !hasSpeak) {
+        console.warn(redactSecrets(`⚠️ PERMISSION DENIED: Bot lacks ${!hasConnect ? '[Connect] ' : ''}${!hasSpeak ? '[Speak] ' : ''}in channel "${vc.name}"`));
         return { success: false, message: 'I need **Connect** and **Speak** permissions in your Voice Channel!' };
       }
     }
 
+    const joinOptions = {
+      channelId: vc.id,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: true,
+      selfMute: false,
+    };
+
     if (!q.connection) {
       try {
-        q.connection = voiceLib.joinVoiceChannel({
-          channelId: vc.id,
-          guildId: guild.id,
-          adapterCreator: guild.voiceAdapterCreator,
-          selfDeaf: true,
-          selfMute: false,
-        });
-      } catch (err) { console.error(redactSecrets('Voice join error: ' + err.message)); }
+        console.log(redactSecrets(`🔊 EXECUTING joinVoiceChannel: Guild=${guild.id}, Channel=${vc.id}, Config=[selfDeaf=true, selfMute=false]`));
+        q.connection = voiceLib.joinVoiceChannel(joinOptions);
+      } catch (err) { console.error(redactSecrets('❌ Voice join error: ' + err.message)); }
     } else if (q.connection.joinConfig?.channelId !== vc.id) {
       try {
-        q.connection = voiceLib.joinVoiceChannel({
-          channelId: vc.id,
-          guildId: guild.id,
-          adapterCreator: guild.voiceAdapterCreator,
-          selfDeaf: true,
-          selfMute: false,
-        });
-      } catch (err) { console.error(redactSecrets('Voice switch error: ' + err.message)); }
+        console.log(redactSecrets(`🔊 EXECUTING joinVoiceChannel (Switching channel): Guild=${guild.id}, Channel=${vc.id}, Config=[selfDeaf=true, selfMute=false]`));
+        q.connection = voiceLib.joinVoiceChannel(joinOptions);
+      } catch (err) { console.error(redactSecrets('❌ Voice switch error: ' + err.message)); }
     }
+
+    // Audit Bot's Actual Discord Voice State
+    setTimeout(async () => {
+      try {
+        const freshMe = guild.members.me || await guild.members.fetchMe().catch(() => null);
+        const vs = freshMe?.voice;
+        if (vs) {
+          console.log(redactSecrets(`🎙️ BOT DISCORD VOICE STATE AUDIT [Guild ${guild.id}]:` +
+            `\n   • Channel: ${vs.channelId}` +
+            `\n   • selfDeaf: ${vs.selfDeaf} (Configured by bot)` +
+            `\n   • serverDeaf: ${vs.serverDeaf} (Set by Discord Admin / Moderation Bot)` +
+            `\n   • selfMute: ${vs.selfMute}` +
+            `\n   • serverMute: ${vs.serverMute} (Set by Discord Admin / Moderation Bot)` +
+            `\n   • overall Muted: ${vs.mute} | overall Deafened: ${vs.deaf}`
+          ));
+
+          if (vs.serverDeaf) {
+            console.warn(redactSecrets(`🚨 CRITICAL VOICE ALERT: Bot is SERVER-DEAFENED in Guild "${guild.name}"! Server-deafen is enforced by Discord Server Administrators or Moderation Bots. Node.js bot code CANNOT bypass server-deafen.`));
+          }
+          if (vs.serverMute) {
+            console.warn(redactSecrets(`🚨 CRITICAL VOICE ALERT: Bot is SERVER-MUTED in Guild "${guild.name}"! Server-mute prevents any audio output from reaching members.`));
+          }
+        }
+      } catch (e) {
+        console.error(redactSecrets('Error auditing bot voice state: ' + e.message));
+      }
+    }, 1500);
   }
 
   const result = await searchBestTrack(query, user);
@@ -1649,11 +1678,42 @@ async function startBot() {
     } catch (err) { console.error('guildMemberRemove error:', err); }
   });
 
-  // ── Voice State Activity Logs (Join, Leave, Move/Drag, Mute, Deafen)
   client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
       const member = newState.member || oldState.member;
-      if (!member || member.user.bot) return;
+      if (!member) return;
+      
+      // Monitor Bot's own Voice State Changes (Detecting Server-Deafen / Server-Mute by Admins or Bots)
+      if (member.id === client.user.id) {
+        const guild = newState.guild || oldState.guild;
+        console.log(redactSecrets(`🎙️ BOT VOICE STATE CHANGED [Guild ${guild.id}]:` +
+          `\n   • selfDeaf: ${oldState.selfDeaf} ➔ ${newState.selfDeaf}` +
+          `\n   • serverDeaf: ${oldState.serverDeaf} ➔ ${newState.serverDeaf}` +
+          `\n   • selfMute: ${oldState.selfMute} ➔ ${newState.selfMute}` +
+          `\n   • serverMute: ${oldState.serverMute} ➔ ${newState.serverMute}`
+        ));
+        if (oldState.serverDeaf !== newState.serverDeaf && newState.serverDeaf) {
+          let executor = null;
+          try {
+            const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberUpdate, limit: 1 }).catch(() => null);
+            const entry = logs?.entries.first();
+            if (entry && Date.now() - entry.createdTimestamp < 5000) executor = entry.executor;
+          } catch (_) {}
+          console.warn(redactSecrets(`🚨 SERVER-DEAFEN DETECTED: Bot was SERVER-DEAFENED in Guild "${guild.name}" by ${executor ? executor.tag + ' (' + executor.id + ')' : 'Server Admin / External Automation'}!`));
+        }
+        if (oldState.serverMute !== newState.serverMute && newState.serverMute) {
+          let executor = null;
+          try {
+            const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberUpdate, limit: 1 }).catch(() => null);
+            const entry = logs?.entries.first();
+            if (entry && Date.now() - entry.createdTimestamp < 5000) executor = entry.executor;
+          } catch (_) {}
+          console.warn(redactSecrets(`🚨 SERVER-MUTE DETECTED: Bot was SERVER-MUTED in Guild "${guild.name}" by ${executor ? executor.tag + ' (' + executor.id + ')' : 'Server Admin / External Automation'}!`));
+        }
+        return;
+      }
+
+      if (member.user.bot) return;
       const guild = newState.guild || oldState.guild;
 
       // Joined Voice
