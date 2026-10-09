@@ -565,11 +565,15 @@ async function playNextTrack(gid) {
     }
 
     if (!streamObj && playdl) {
-      console.log(redactSecrets('MUSIC: Provider fallback activated for track: ' + track.title));
-      const fallbackSearch = await playdl.search(track.title + ' ' + (track.artist || ''), { limit: 3 }).catch(() => null);
-      if (fallbackSearch && fallbackSearch[0]) {
-        const res = await playdl.stream(fallbackSearch[0].url).catch(() => null);
-        if (res && res.stream) streamObj = res;
+      console.log(redactSecrets('🎵 MUSIC: Provider fallback (SoundCloud) activated for track: ' + track.title));
+      const fallbackQuery = (track.title + ' ' + (track.artist || '')).trim();
+      const scSearch = await playdl.search(fallbackQuery, { limit: 1, source: { soundcloud: 'tracks' } }).catch(() => null);
+      if (scSearch && scSearch[0]) {
+        const res = await playdl.stream(scSearch[0].url).catch(() => null);
+        if (res && res.stream) {
+          streamObj = res;
+          console.log(redactSecrets('✅ MUSIC: Successfully resolved playable audio stream via SoundCloud for ' + track.title));
+        }
       }
     }
 
