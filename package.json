@@ -1,13 +1,22 @@
 {
-  "name": "discord-welcome-bot",
-  "version": "1.0.0",
-  "description": "Custom Welcome Bot for THOR APEX Discord Server",
+  "name": "multi-server-welcome-bot",
+  "version": "2.0.0",
+  "description": "A fully public multi-server Discord welcome bot. Each server gets its own independent configuration via slash commands.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
+    "@discordjs/voice": "^0.18.0",
     "discord.js": "^14.18.0",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "ffmpeg-static": "^5.2.0",
+    "libsodium-wrappers": "^0.7.15",
+    "opusscript": "^0.1.1",
+    "play-dl": "^1.9.7",
+    "tweetnacl": "^1.0.3"
   }
 }
