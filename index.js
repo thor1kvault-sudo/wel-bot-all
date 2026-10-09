@@ -2,6 +2,7 @@ const {
   Client, GatewayIntentBits, Partials, EmbedBuilder,
   PermissionsBitField, REST, Routes, SlashCommandBuilder, AuditLogEvent,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
+  ChannelType,
 } = require('discord.js');
 require('dotenv').config();
 const fs2   = require('fs');
@@ -10,6 +11,23 @@ const https = require('https');
 const path2 = require('path');
 
 try { const ff = require('ffmpeg-static'); if (ff) process.env.FFMPEG_PATH = ff; } catch (_) {}
+
+
+function redactSecrets(str) {
+  if (typeof str !== 'string') return str;
+  let cleaned = str;
+  const secrets = [
+    process.env.DISCORD_TOKEN,
+    process.env.SPOTIFY_CLIENT_SECRET,
+    process.env.SPOTIFY_CLIENT_ID,
+    process.env.OWNER_ID,
+  ].filter(Boolean);
+  for (const s of secrets) {
+    if (s && s.length > 3) cleaned = cleaned.replaceAll(s, '[REDACTED]');
+  }
+  cleaned = cleaned.replace(/(?:sk_live_|MTA|NDE|OTA|MTB|NzE)[a-zA-Z0-9_\-\.|]{20,}/g, '[REDACTED]');
+  return cleaned;
+}
 
 process.on('unhandledRejection', r => console.error('Unhandled Rejection:', r));
 process.on('uncaughtException',  e => console.error('Uncaught Exception:', e));
@@ -71,123 +89,553 @@ if (!config.embedColor) {
   saveConfig();
 }
 
-// ── Voice / Music
+// ── Voice / Music System (Multi-Guild Isolated Sessions, Spotify Resolver, Intelligent Search)
 let voiceLib = null; try { voiceLib = require('@discordjs/voice'); } catch (e) { console.log('Voice:', e.message); }
 let playdl   = null; try { playdl   = require('play-dl');          } catch (e) { console.log('play-dl:', e.message); }
 let isPlayDlReady = false;
+
 async function ensurePlayDlReady() {
   if (!playdl || isPlayDlReady) return;
-  try { const c = await playdl.getFreeClientID(); if (c) { await playdl.setToken({ soundcloud: { client_id: c } }); isPlayDlReady = true; } } catch (_) {}
+  try {
+    const c = await playdl.getFreeClientID();
+    if (c) { await playdl.setToken({ soundcloud: { client_id: c } }); }
+    isPlayDlReady = true;
+  } catch (_) {}
 }
 
-function getSpotifyTrackInfo(spotifyUrl) {
+let spotifyAccessToken = null;
+let spotifyTokenExpiry = 0;
+
+async function getSpotifyToken() {
+  const cid = process.env.SPOTIFY_CLIENT_ID;
+  const csec = process.env.SPOTIFY_CLIENT_SECRET;
+  if (!cid || !csec) return null;
+  if (spotifyAccessToken && Date.now() < spotifyTokenExpiry) return spotifyAccessToken;
+
+  try {
+    const creds = Buffer.from(cid + ':' + csec).toString('base64');
+    const res = await new Promise((resolve) => {
+      const req = https.request('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Basic ' + creds,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        }
+      }, (r) => {
+        let body = '';
+        r.on('data', c => body += c);
+        r.on('end', () => resolve(body));
+      });
+      req.on('error', () => resolve(''));
+      req.write('grant_type=client_credentials');
+      req.end();
+    });
+
+    const parsed = JSON.parse(res);
+    if (parsed.access_token) {
+      spotifyAccessToken = parsed.access_token;
+      spotifyTokenExpiry = Date.now() + ((parsed.expires_in || 3600) - 60) * 1000;
+      return spotifyAccessToken;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function fetchHttpsJson(url, headers = {}) {
   return new Promise((resolve) => {
-    try {
-      const oembedUrl = 'https://open.spotify.com/oembed?url=' + encodeURIComponent(spotifyUrl);
-      https.get(oembedUrl, (res) => {
-        let raw = '';
-        res.on('data', chunk => raw += chunk);
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(raw);
-            resolve(data.title || null);
-          } catch (_) { resolve(null); }
-        });
-      }).on('error', () => resolve(null));
-    } catch (_) { resolve(null); }
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', ...headers } }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch (_) { resolve(null); }
+      });
+    }).on('error', () => resolve(null));
   });
 }
 
+function fetchHttpsHtml(url) {
+  return new Promise((resolve) => {
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+    }).on('error', () => resolve(''));
+  });
+}
+
+async function resolveSpotifyMetadata(spotifyUrl) {
+  const token = await getSpotifyToken();
+
+  if (token) {
+    try {
+      if (spotifyUrl.includes('/track/')) {
+        const trackId = spotifyUrl.split('/track/')[1]?.split('?')[0];
+        if (trackId) {
+          const data = await fetchHttpsJson('https://api.spotify.com/v1/tracks/' + trackId, { 'Authorization': 'Bearer ' + token });
+          if (data && data.name) {
+            return [{
+              title: data.name,
+              artist: data.artists?.map(a => a.name).join(', ') || '',
+              album: data.album?.name || '',
+              durationSec: Math.round((data.duration_ms || 0) / 1000),
+              thumbnail: data.album?.images?.[0]?.url || '',
+              query: (data.name + ' ' + (data.artists?.[0]?.name || '')).trim()
+            }];
+          }
+        }
+      } else if (spotifyUrl.includes('/album/')) {
+        const albumId = spotifyUrl.split('/album/')[1]?.split('?')[0];
+        if (albumId) {
+          const data = await fetchHttpsJson('https://api.spotify.com/v1/albums/' + albumId, { 'Authorization': 'Bearer ' + token });
+          if (data && data.tracks?.items) {
+            return data.tracks.items.map(t => ({
+              title: t.name,
+              artist: t.artists?.map(a => a.name).join(', ') || '',
+              album: data.name || '',
+              durationSec: Math.round((t.duration_ms || 0) / 1000),
+              thumbnail: data.images?.[0]?.url || '',
+              query: (t.name + ' ' + (t.artists?.[0]?.name || '')).trim()
+            }));
+          }
+        }
+      } else if (spotifyUrl.includes('/playlist/')) {
+        const playlistId = spotifyUrl.split('/playlist/')[1]?.split('?')[0];
+        if (playlistId) {
+          const data = await fetchHttpsJson('https://api.spotify.com/v1/playlists/' + playlistId, { 'Authorization': 'Bearer ' + token });
+          if (data && data.tracks?.items) {
+            return data.tracks.items.map(item => {
+              const t = item.track;
+              if (!t) return null;
+              return {
+                title: t.name,
+                artist: t.artists?.map(a => a.name).join(', ') || '',
+                album: t.album?.name || '',
+                durationSec: Math.round((t.duration_ms || 0) / 1000),
+                thumbnail: t.album?.images?.[0]?.url || '',
+                query: (t.name + ' ' + (t.artists?.[0]?.name || '')).trim()
+              };
+            }).filter(Boolean);
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  // HTML Next.js Embed Scraper Fallback
+  try {
+    let embedPath = spotifyUrl;
+    if (spotifyUrl.includes('/track/')) embedPath = 'https://open.spotify.com/embed/track/' + spotifyUrl.split('/track/')[1]?.split('?')[0];
+    else if (spotifyUrl.includes('/album/')) embedPath = 'https://open.spotify.com/embed/album/' + spotifyUrl.split('/album/')[1]?.split('?')[0];
+    else if (spotifyUrl.includes('/playlist/')) embedPath = 'https://open.spotify.com/embed/playlist/' + spotifyUrl.split('/playlist/')[1]?.split('?')[0];
+
+    const html = await fetchHttpsHtml(embedPath);
+    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
+    if (match) {
+      const json = JSON.parse(match[1]);
+      const entity = json.props?.pageProps?.state?.data?.entity;
+      if (entity) {
+        const trackList = entity.trackList || entity.tracks || [entity];
+        return trackList.map(t => ({
+          title: t.name || entity.name,
+          artist: t.artists?.map(a => a.name).join(', ') || entity.artists?.map(a => a.name).join(', ') || '',
+          album: entity.album?.name || entity.name || '',
+          durationSec: Math.round((t.duration || t.duration_ms || entity.duration || 0) / 1000),
+          thumbnail: entity.coverArt?.sources?.[0]?.url || entity.images?.[0]?.url || '',
+          query: ((t.name || entity.name) + ' ' + (t.artists?.[0]?.name || entity.artists?.[0]?.name || '')).trim()
+        }));
+      }
+    }
+  } catch (_) {}
+
+  // oEmbed Fallback for single track
+  try {
+    const oembed = await fetchHttpsJson('https://open.spotify.com/oembed?url=' + encodeURIComponent(spotifyUrl));
+    if (oembed && oembed.title) {
+      return [{
+        title: oembed.title,
+        artist: oembed.author_name || '',
+        album: 'Spotify Track',
+        durationSec: 0,
+        thumbnail: oembed.thumbnail_url || '',
+        query: oembed.title
+      }];
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+async function searchBestTrack(inputQuery, requestedUser) {
+  await ensurePlayDlReady();
+
+  if (inputQuery.includes('spotify.com')) {
+    const spResult = await resolveSpotifyMetadata(inputQuery);
+    if (spResult && spResult.length > 0) {
+      const tracks = spResult.map(t => ({
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        durationSec: t.durationSec,
+        thumbnail: t.thumbnail,
+        url: '',
+        query: t.query,
+        requestedBy: requestedUser.id
+      }));
+      return { isPlaylist: tracks.length > 1, tracks };
+    }
+  }
+
+  let searchQuery = inputQuery;
+  const isDirectUrl = searchQuery.startsWith('http://') || searchQuery.startsWith('https://');
+
+  if (isDirectUrl && (searchQuery.includes('youtube.com/watch') || searchQuery.includes('youtu.be/'))) {
+    try {
+      if (playdl) {
+        const info = await playdl.video_basic_info(searchQuery).catch(() => null);
+        if (info && info.video_details) {
+          const d = info.video_details;
+          return {
+            isPlaylist: false,
+            tracks: [{
+              title: d.title,
+              artist: d.channel?.name || 'YouTube',
+              album: 'YouTube Single',
+              durationSec: d.durationInSec || 0,
+              thumbnail: d.thumbnails?.[0]?.url || '',
+              url: d.url,
+              query: searchQuery,
+              requestedBy: requestedUser.id
+            }]
+          };
+        }
+      }
+    } catch (_) {}
+  }
+
+  const searchResults = await playdl.search(searchQuery, { limit: 10, source: { youtube: 'video' } }).catch(() => []);
+  if (!searchResults || searchResults.length === 0) return null;
+
+  const lowerQuery = searchQuery.toLowerCase();
+  const wantsCover = lowerQuery.includes('cover');
+  const wantsRemix = lowerQuery.includes('remix');
+  const wantsInstrumental = lowerQuery.includes('instrumental') || lowerQuery.includes('karaoke');
+  const wantsShorts = lowerQuery.includes('short') || lowerQuery.includes('shorts');
+  const wantsLive = lowerQuery.includes('live');
+  const wantsAcoustic = lowerQuery.includes('acoustic');
+
+  let bestMatch = searchResults[0];
+  let bestScore = -999;
+
+  for (const candidate of searchResults) {
+    let score = 100;
+    const candTitle = (candidate.title || '').toLowerCase();
+    const candChannel = (candidate.channel?.name || '').toLowerCase();
+
+    if (candidate.durationInSec && candidate.durationInSec < 40 && !wantsShorts) score -= 80;
+    if (candidate.durationInSec && candidate.durationInSec > 10800) score -= 60;
+
+    if (!wantsCover && candTitle.includes('cover')) score -= 40;
+    if (!wantsRemix && (candTitle.includes('remix') || candTitle.includes('slowed') || candTitle.includes('reverb') || candTitle.includes('8d'))) score -= 40;
+    if (!wantsInstrumental && (candTitle.includes('instrumental') || candTitle.includes('karaoke') || candTitle.includes('backing track'))) score -= 50;
+    if (!wantsLive && (candTitle.includes('live at') || candTitle.includes('live performance') || candTitle.includes('live on'))) score -= 30;
+    if (!wantsAcoustic && candTitle.includes('acoustic')) score -= 20;
+
+    if (candTitle.includes('official video') || candTitle.includes('official audio')) score += 30;
+    if (candChannel.includes('topic') || candidate.channel?.artist) score += 25;
+
+    const queryTokens = lowerQuery.split(/\s+/).filter(t => t.length > 2);
+    for (const token of queryTokens) {
+      if (candTitle.includes(token)) score += 10;
+      if (candChannel.includes(token)) score += 5;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = candidate;
+    }
+  }
+
+  return {
+    isPlaylist: false,
+    tracks: [{
+      title: bestMatch.title || searchQuery,
+      artist: bestMatch.channel?.name || 'Artist',
+      album: 'Single',
+      durationSec: bestMatch.durationInSec || 0,
+      thumbnail: bestMatch.thumbnails?.[0]?.url || '',
+      url: bestMatch.url,
+      query: searchQuery,
+      requestedBy: requestedUser.id
+    }]
+  };
+}
+
 const musicQueues = new Map();
+
 function getQ(gid) {
-  if (!musicQueues.has(gid)) musicQueues.set(gid, { connection: null, player: null, queue: [], isPlaying: false });
+  if (!musicQueues.has(gid)) {
+    musicQueues.set(gid, {
+      guildId: gid,
+      connection: null,
+      player: null,
+      queue: [],
+      history: [],
+      currentTrack: null,
+      isPlaying: false,
+      isPaused: false,
+      loopMode: 'off',
+      volume: 100,
+      idleTimer: null,
+      textChannel: null,
+      panelMessage: null
+    });
+  }
   return musicQueues.get(gid);
 }
-async function playTrack(gid) {
+
+function buildNowPlayingEmbed(guild, q) {
+  const track = q.currentTrack;
+  if (!track) {
+    return new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle('🎵 THOR APEX Music Session')
+      .setDescription('No song currently playing. Use /play to start playback!')
+      .setFooter({ text: 'Multi-Guild Isolated Session' })
+      .setTimestamp();
+  }
+
+  const durationStr = track.durationSec ? (Math.floor(track.durationSec / 60) + ':' + String(track.durationSec % 60).padStart(2, '0')) : 'Live Stream';
+  const statusStr = q.isPaused ? '⏸️ Paused' : '▶️ Now Playing';
+  const loopStr = q.loopMode === 'track' ? '🔂 Track Loop' : q.loopMode === 'queue' ? '🔁 Queue Loop' : '➡️ Off';
+
+  const embed = new EmbedBuilder()
+    .setColor(q.isPaused ? '#FEE75C' : '#57F287')
+    .setTitle(statusStr + ' — ' + track.title)
+    .setDescription(
+      '**Artist:** ' + (track.artist || 'Unknown Artist') + '\n' +
+      '**Album:** ' + (track.album || 'Single') + '\n' +
+      '**Duration:** ' + durationStr + ' | **Loop:** ' + loopStr + ' | **Volume:** ' + q.volume + '%\n' +
+      '**Requested By:** <@' + (track.requestedBy || 'System') + '>\n' +
+      '**Upcoming Tracks:** ' + Math.max(0, q.queue.length - 1) + ' track(s)'
+    )
+    .setFooter({ text: 'Server: ' + (guild?.name || 'Guild') + ' • THOR APEX Music' })
+    .setTimestamp();
+
+  if (track.thumbnail) embed.setThumbnail(track.thumbnail);
+  return embed;
+}
+
+function buildMusicControlButtons(q) {
+  if (!q.currentTrack) return [];
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('btn_m_play_pause')
+      .setLabel(q.isPaused ? 'Resume' : 'Pause')
+      .setEmoji(q.isPaused ? '▶️' : '⏸️')
+      .setStyle(q.isPaused ? ButtonStyle.Success : ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('btn_m_skip')
+      .setLabel('Skip')
+      .setEmoji('⏭️')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('btn_m_stop')
+      .setLabel('Stop')
+      .setEmoji('⏹️')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId('btn_m_loop')
+      .setLabel('Loop: ' + q.loopMode.toUpperCase())
+      .setEmoji('🔁')
+      .setStyle(q.loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('btn_m_shuffle')
+      .setLabel('Shuffle')
+      .setEmoji('🔀')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return [row1];
+}
+
+async function updateMusicPanel(gid) {
+  const q = getQ(gid);
+  if (!q || !q.textChannel) return;
+  try {
+    const guild = q.textChannel.guild;
+    const embed = buildNowPlayingEmbed(guild, q);
+    const components = buildMusicControlButtons(q);
+
+    if (q.panelMessage) {
+      await q.panelMessage.edit({ embeds: [embed], components }).catch(() => { q.panelMessage = null; });
+    } else {
+      q.panelMessage = await q.textChannel.send({ embeds: [embed], components }).catch(() => null);
+    }
+  } catch (_) {}
+}
+
+async function playNextTrack(gid) {
   if (!voiceLib) return;
-  const q = getQ(gid); if (!q || !q.connection) return;
+  const q = getQ(gid);
+  if (!q || !q.connection) return;
+
+  if (q.idleTimer) {
+    clearTimeout(q.idleTimer);
+    q.idleTimer = null;
+  }
+
   await ensurePlayDlReady();
+
   if (!q.player) {
     try {
-      q.player = voiceLib.createAudioPlayer({ behaviors: { noSubscriber: voiceLib.NoSubscriberBehavior.Play, maxMissedFrames: Math.round(5000/20) } });
-      q.connection.subscribe(q.player);
-      q.player.on(voiceLib.AudioPlayerStatus.Idle, old => {
-        if (old.status === voiceLib.AudioPlayerStatus.Playing || old.status === voiceLib.AudioPlayerStatus.Buffering) {
-          q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false;
+      q.player = voiceLib.createAudioPlayer({
+        behaviors: {
+          noSubscriber: voiceLib.NoSubscriberBehavior.Play,
+          maxMissedFrames: Math.round(5000 / 20)
         }
       });
+
+      q.connection.subscribe(q.player);
+
+      q.player.on(voiceLib.AudioPlayerStatus.Idle, oldState => {
+        if (oldState.status === voiceLib.AudioPlayerStatus.Playing || oldState.status === voiceLib.AudioPlayerStatus.Buffering) {
+          handleTrackEnded(gid);
+        }
+      });
+
       q.player.on('error', err => {
-        console.error('Audio player error:', err.message);
-        q.queue.shift(); if (q.queue.length > 0) playTrack(gid); else q.isPlaying = false;
+        console.error(redactSecrets('Audio player error: ' + err.message));
+        if (q.textChannel) {
+          q.textChannel.send({
+            embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('⚠️ Playback Error').setDescription('An audio error occurred playing **' + (q.currentTrack?.title || 'track') + '**. Skipping to next track...')]
+          }).catch(() => {});
+        }
+        handleTrackEnded(gid);
       });
     } catch (e) {
-      console.error('Audio player creation error:', e.message);
+      console.error(redactSecrets('Audio player creation error: ' + e.message));
       return;
     }
   } else if (q.connection) {
     try { q.connection.subscribe(q.player); } catch (_) {}
   }
-  const track = q.queue[0]; if (!track) { q.isPlaying = false; return; }
+
+  if (q.queue.length === 0) {
+    q.isPlaying = false;
+    q.currentTrack = null;
+    updateMusicPanel(gid);
+
+    q.idleTimer = setTimeout(() => {
+      if (q.queue.length === 0 && !q.isPlaying) {
+        if (q.textChannel) {
+          q.textChannel.send({ embeds: [new EmbedBuilder().setColor('#FEE75C').setDescription('👋 Disconnected from voice channel due to inactivity.')] }).catch(() => {});
+        }
+        stopMusicSession(gid);
+      }
+    }, 180000);
+    return;
+  }
+
+  const track = q.queue[0];
+  q.currentTrack = track;
+
   try {
     let streamObj = null;
-    let searchQuery = track.query || track.title;
 
-    if (playdl) {
+    let streamUrl = track.url;
+    if (!streamUrl || !streamUrl.startsWith('http')) {
+      const resolved = await searchBestTrack(track.query || track.title, { id: track.requestedBy });
+      if (resolved && resolved.tracks && resolved.tracks[0]) {
+        const best = resolved.tracks[0];
+        streamUrl = best.url;
+        track.url = streamUrl;
+        if (best.thumbnail) track.thumbnail = best.thumbnail;
+        if (best.durationSec) track.durationSec = best.durationSec;
+        if (best.artist && !track.artist) track.artist = best.artist;
+      }
+    }
+
+    if (playdl && streamUrl) {
       try {
-        // If Spotify link, fetch title and search YouTube
-        if (searchQuery.includes('spotify.com')) {
-          const spTitle = await getSpotifyTrackInfo(searchQuery);
-          if (spTitle) searchQuery = spTitle;
-        }
-
-        // Direct YouTube URL stream
-        if (searchQuery.includes('youtube.com/watch') || searchQuery.includes('youtu.be/')) {
-          const res = await playdl.stream(searchQuery).catch(() => null);
-          if (res && res.stream) streamObj = res;
-        }
-
-        // Search YouTube for query / Spotify title
-        if (!streamObj) {
-          const searched = await playdl.search(searchQuery, { limit: 1 }).catch(() => null);
-          if (searched && searched[0] && searched[0].url) {
-            const res = await playdl.stream(searched[0].url).catch(() => null);
-            if (res && res.stream) {
-              streamObj = res;
-              track.title = searched[0].title || searched[0].name || track.title;
-            }
-          }
-        }
+        const res = await playdl.stream(streamUrl).catch(() => null);
+        if (res && res.stream) streamObj = res;
       } catch (err) {
-        console.error('play-dl stream error:', err.message);
+        console.error(redactSecrets('play-dl stream error: ' + err.message));
+      }
+    }
+
+    if (!streamObj && playdl) {
+      console.log(redactSecrets('MUSIC: Provider fallback activated for track: ' + track.title));
+      const fallbackSearch = await playdl.search(track.title + ' ' + (track.artist || ''), { limit: 3 }).catch(() => null);
+      if (fallbackSearch && fallbackSearch[0]) {
+        const res = await playdl.stream(fallbackSearch[0].url).catch(() => null);
+        if (res && res.stream) streamObj = res;
       }
     }
 
     if (streamObj && streamObj.stream) {
-      const res = voiceLib.createAudioResource(streamObj.stream, { inputType: streamObj.type || voiceLib.StreamType.Arbitrary });
+      const resource = voiceLib.createAudioResource(streamObj.stream, { inputType: streamObj.type || voiceLib.StreamType.Arbitrary });
       q.isPlaying = true;
-      q.player.play(res);
-    } else if (track.url && track.url.startsWith('http') && !track.url.includes('spotify.com')) {
-      const res = voiceLib.createAudioResource(track.url, { inputType: voiceLib.StreamType.Arbitrary });
-      q.isPlaying = true;
-      q.player.play(res);
+      q.isPaused = false;
+      q.player.play(resource);
+      updateMusicPanel(gid);
     } else {
-      console.log('Skipping unplayable track:', track.title);
+      if (q.textChannel) {
+        q.textChannel.send({ embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('⚠️ Track Unavailable').setDescription('Could not resolve stream for **' + track.title + '**. Skipping track...')] }).catch(() => {});
+      }
       q.queue.shift();
-      if (q.queue.length > 0) playTrack(gid);
-      else q.isPlaying = false;
+      playNextTrack(gid);
     }
   } catch (err) {
-    console.error('playTrack error:', err.message);
+    console.error(redactSecrets('playNextTrack error: ' + err.message));
     q.queue.shift();
-    if (q.queue.length > 0) playTrack(gid);
-    else q.isPlaying = false;
+    playNextTrack(gid);
   }
 }
-function addToQ(guild, vc, user, query) {
-  const q = getQ(guild.id); let title = query, isUrl = false;
-  try { new URL(query); isUrl = true; title = 'Song Link'; } catch (_) {}
-  const track = { title, query, url: isUrl ? query : '', requestedBy: user.id };
-  q.queue.push(track);
+
+function handleTrackEnded(gid) {
+  const q = getQ(gid);
+  if (!q) return;
+
+  const finishedTrack = q.queue[0];
+  if (finishedTrack) {
+    q.history.unshift(finishedTrack);
+    if (q.history.length > 20) q.history.pop();
+  }
+
+  if (q.loopMode === 'track' && q.currentTrack) {
+    // Retain current track
+  } else if (q.loopMode === 'queue' && finishedTrack) {
+    q.queue.shift();
+    q.queue.push(finishedTrack);
+  } else {
+    q.queue.shift();
+  }
+
+  playNextTrack(gid);
+}
+
+function stopMusicSession(gid) {
+  const q = getQ(gid);
+  if (!q) return;
+  if (q.idleTimer) clearTimeout(q.idleTimer);
+  q.queue = [];
+  q.history = [];
+  q.currentTrack = null;
+  q.isPlaying = false;
+  q.isPaused = false;
+  if (q.player) { try { q.player.stop(); } catch (_) {} }
+  if (q.connection) { try { q.connection.destroy(); } catch (_) {} }
+  q.connection = null;
+  q.player = null;
+  q.panelMessage = null;
+  updateMusicPanel(gid);
+}
+
+async function addMusicToQueue(guild, vc, user, textChannel, query) {
+  const q = getQ(guild.id);
+  q.textChannel = textChannel;
+
   if (voiceLib && vc) {
     if (!q.connection) {
       try {
@@ -198,7 +646,7 @@ function addToQ(guild, vc, user, query) {
           selfDeaf: false,
           selfMute: false,
         });
-      } catch (err) { console.error('Voice join error:', err.message); }
+      } catch (err) { console.error(redactSecrets('Voice join error: ' + err.message)); }
     } else if (q.connection.joinConfig?.channelId !== vc.id) {
       try {
         q.connection = voiceLib.joinVoiceChannel({
@@ -208,11 +656,30 @@ function addToQ(guild, vc, user, query) {
           selfDeaf: false,
           selfMute: false,
         });
-      } catch (err) { console.error('Voice switch error:', err.message); }
+      } catch (err) { console.error(redactSecrets('Voice switch error: ' + err.message)); }
     }
-    if (!q.isPlaying) playTrack(guild.id);
   }
-  return { track, position: q.queue.length };
+
+  const result = await searchBestTrack(query, user);
+  if (!result || !result.tracks || result.tracks.length === 0) {
+    return { success: false, message: 'No matching songs could be found for your search.' };
+  }
+
+  for (const t of result.tracks) {
+    q.queue.push(t);
+  }
+
+  if (!q.isPlaying) {
+    playNextTrack(guild.id);
+  }
+
+  return {
+    success: true,
+    isPlaylist: result.isPlaylist,
+    count: result.tracks.length,
+    firstTrack: result.tracks[0],
+    position: q.queue.length - result.tracks.length + 1
+  };
 }
 
 // ── Invite Tracking
@@ -513,7 +980,7 @@ async function executePunishment(member, action, reason, channel, eventId) {
     }
   } catch (err) { console.error('Punishment execution error:', err.message); }
 
-  await sendLog(guild, new EmbedBuilder()
+  await sendAutoModLog(guild, new EmbedBuilder()
     .setColor('#FF0000')
     .setTitle('🤖 AutoMod Punishment Triggered')
     .addFields(
@@ -538,97 +1005,365 @@ function isRaiding() {
   const r = recentJoins.filter(t => now - t < 10000); r.push(now); recentJoins.length = 0; recentJoins.push(...r);
   return r.length >= thr;
 }
-const nukeMap = new Map();
-function isNuking(uid) {
-  const now = Date.now(), thr = config.security?.nukeThreshold || 1;
-  if (!nukeMap.has(uid)) nukeMap.set(uid, []);
-  const t = nukeMap.get(uid).filter(x => now - x < 15000); t.push(now); nukeMap.set(uid, t);
-  return t.length >= thr;
+const nukeTracker = new Map();
+
+function checkNukeThreshold(guildId, executorId, eventType, thresholdOverride = null) {
+  const sec = config.security || {};
+  const win = sec.nukeWindow || 15000;
+  let thr = thresholdOverride || sec.nukeThreshold || 3;
+  if (eventType === 'antiChannelDelete') thr = sec.channelDeleteThreshold || 2;
+  if (eventType === 'antiRoleDelete') thr = sec.roleDeleteThreshold || 2;
+  if (eventType === 'antiBan') thr = sec.banThreshold || 3;
+  if (eventType === 'antiKick') thr = sec.kickThreshold || 3;
+  if (eventType === 'antiChannelCreate') thr = sec.channelCreateThreshold || 5;
+  if (eventType === 'antiRoleCreate') thr = sec.roleCreateThreshold || 5;
+  if (eventType === 'antiWebhookCreate') thr = sec.webhookThreshold || 3;
+
+  const key = guildId + ':' + executorId + ':' + eventType;
+  const now = Date.now();
+  if (!nukeTracker.has(key)) nukeTracker.set(key, []);
+  const timestamps = nukeTracker.get(key).filter(ts => now - ts < win);
+  timestamps.push(now);
+  nukeTracker.set(key, timestamps);
+
+  return { triggered: timestamps.length >= thr, count: timestamps.length, threshold: thr, windowMs: win };
 }
 
-async function handleNukeAction(guild, executor, permType, actionName) {
-  if (!config.security?.antiNuke) return;
-  if (!executor || (executor.bot && executor.id === guild.client.user.id)) return;
-  if (executor.id === BOT_OWNER_ID || executor.id === guild.ownerId) return;
+async function handleNukeAction(guild, executor, permType, actionName, thresholdOverride = null) {
+  if (!config.security?.antiNuke) return false;
+  if (!executor || (executor.bot && executor.id === guild.client.user.id)) return false;
+  if (executor.id === BOT_OWNER_ID || executor.id === guild.ownerId) return false;
 
   const member = guild.members.cache.get(executor.id) || await guild.members.fetch(executor.id).catch(() => null);
 
-  if (isWhitelisted(member, permType)) return;
+  if (isWhitelisted(member, permType)) return false;
 
-  console.log(`🚨 ANTI-NUKE EMERGENCY ACTION: ${executor.tag} performed ${actionName}`);
+  const check = checkNukeThreshold(guild.id, executor.id, permType, thresholdOverride);
+  if (!check.triggered) {
+    console.log(redactSecrets('ℹ️ Anti-Nuke Monitor: ' + executor.tag + ' performed ' + actionName + ' (' + check.count + '/' + check.threshold + ' within ' + (check.windowMs / 1000) + 's)'));
+    return false;
+  }
+
+  const sec = config.security || {};
+  const actionToTake = sec.nukeAction || 'strip_and_ban';
+
+  console.log(redactSecrets('🚨 ANTI-NUKE TRIGGERED: ' + executor.tag + ' reached threshold (' + check.count + '/' + check.threshold + ') for ' + actionName));
 
   try {
-    if (member) {
-      const rolesToRemove = member.roles.cache.filter(r => r.id !== guild.roles.everyone.id);
-      await member.roles.remove(rolesToRemove, 'Anti-Nuke: ' + actionName).catch(() => {});
+    let actionSummary = 'Log Only';
+    if (actionToTake === 'strip_roles' || actionToTake === 'strip_and_ban') {
+      if (member) {
+        const rolesToRemove = member.roles.cache.filter(r => r.id !== guild.roles.everyone.id);
+        await member.roles.remove(rolesToRemove, 'Anti-Nuke Threshold Exceeded: ' + actionName).catch(() => {});
+      }
+      actionSummary = 'Roles Stripped';
+    }
+    if (actionToTake === 'ban' || actionToTake === 'strip_and_ban') {
+      await guild.bans.create(executor.id, { reason: 'Anti-Nuke Threshold Exceeded: ' + actionName }).catch(() => {});
+      actionSummary = actionToTake === 'strip_and_ban' ? 'INSTANT BAN & ROLES STRIPPED' : 'INSTANT BAN';
+    } else if (actionToTake === 'kick') {
+      if (member) await member.kick('Anti-Nuke Threshold Exceeded: ' + actionName).catch(() => {});
+      actionSummary = 'INSTANT KICK';
     }
 
-    await guild.bans.create(executor.id, { reason: 'Anti-Nuke: ' + actionName }).catch(() => {});
-
-    await sendLog(guild, new EmbedBuilder()
+    await sendAutoModLog(guild, new EmbedBuilder()
       .setColor('#FF0000')
-      .setTitle('🚨 ANTI-NUKE EMERGENCY ACTION TAKEN!')
-      .setDescription(`**Executor:** **${executor.tag}** (\`${executor.id}\`)\n**Action Attempted:** ${actionName}\n**Action Taken:** **INSTANT BAN & ROLES STRIPPED**`)
-      .setFooter({ text: 'THOR APEX Ultimate Anti-Nuke System' })
+      .setTitle('🚨 ANTI-NUKE PROTECTION TRIGGERED!')
+      .addFields(
+        { name: 'Executor', value: executor.tag + ' (' + executor.id + ')', inline: true },
+        { name: 'Action Attempted', value: actionName, inline: true },
+        { name: 'Detection Reason', value: check.count + ' actions within ' + (check.windowMs / 1000) + 's (Threshold: ' + check.threshold + ')', inline: false },
+        { name: 'Action Taken', value: '**' + actionSummary + '**', inline: true }
+      )
+      .setFooter({ text: 'THOR APEX Security & Anti-Nuke System' })
       .setTimestamp()
     );
+    return true;
   } catch (err) {
-    console.error('Anti-Nuke enforcement error:', err.message);
+    console.error(redactSecrets('Anti-Nuke enforcement error: ' + err.message));
+    return false;
   }
+}
+
+
+
+function buildSecurityPanel(guild) {
+  const s = config.security || {};
+  const ic = v => v ? '🟩 Enabled' : '🟥 Disabled';
+
+  const bannerUrl = guild.bannerURL({ size: 1024 });
+  const iconUrl = guild.iconURL({ size: 1024, forceStatic: false });
+  const owner = guild.ownerId ? '<@' + guild.ownerId + '>' : 'Unknown';
+
+  const embed = new EmbedBuilder()
+    .setColor(s.lockdown ? '#ED4245' : '#5865F2')
+    .setTitle('🛡️ Security & Anti-Nuke Settings — ' + guild.name)
+    .setDescription(
+      '**Server Name:** ' + guild.name + ' (`' + guild.id + '`)\n' +
+      '**Server Owner:** ' + owner + '\n' +
+      '**Security Status:** ' + (s.lockdown ? '🚨 **SERVER LOCKDOWN ACTIVE**' : '✅ **PROTECTED**') + '\n\n' +
+      '### 🔒 Protection Modules\n' +
+      '• **Anti-Nuke:** ' + ic(s.antiNuke) + ' (Threshold: ' + (s.nukeThreshold || 3) + ' actions/15s)\n' +
+      '• **Anti-Raid:** ' + ic(s.antiRaid) + ' (Threshold: ' + (s.raidThreshold || 10) + ' joins/10s)\n' +
+      '• **Anti-Spam:** ' + ic(s.antiSpam) + ' (Threshold: ' + (s.spamThreshold || 3) + ' msgs/' + ((s.spamWindow || 4000)/1000) + 's)\n' +
+      '• **Anti-Link/Ads:** ' + ic(s.antiLink) + '\n' +
+      '• **Word Filter:** ' + ic(s.wordFilter) + ' (' + (s.blacklistedWords ? s.blacklistedWords.length : 0) + ' blacklisted words)\n' +
+      '• **Alt Detection:** ' + ic(s.altDetection) + ' (Min Account Age: ' + (s.altMinDays || 7) + ' days)\n' +
+      '• **Lockdown Mode:** ' + (s.lockdown ? '🔴 ACTIVE' : '🟢 INACTIVE') + '\n\n' +
+      '### 👥 Whitelist Overview\n' +
+      '• **Whitelisted Users:** ' + (s.whitelistedUsers?.length || 0) + '\n' +
+      '• **Whitelisted Roles:** ' + (s.whitelistedRoles?.length || 0)
+    )
+    .setFooter({ text: 'Use /antispam, /antilink, /antinuke, /antiraid, /lockdown, or /whitelist to configure' })
+    .setTimestamp();
+
+  if (bannerUrl) {
+    embed.setImage(bannerUrl);
+    if (iconUrl) embed.setThumbnail(iconUrl);
+  } else if (iconUrl) {
+    embed.setThumbnail(iconUrl);
+  }
+
+  return embed;
+}
+
+// ── Auto-Create Dedicated Log Channels & Logging Helpers
+const logChannelCaches = {
+  automod: new Map(),
+  msg: new Map(),
+  voice: new Map(),
+  role: new Map(),
+  member: new Map(),
+  mod: new Map(),
+};
+
+async function ensureLogChannel(guild, category, channelName, topic, welcomeConfig, fallbackRegexes, configuredId) {
+  if (!guild) return null;
+  const cacheMap = logChannelCaches[category] || new Map();
+
+  // Check cache first
+  const cachedId = cacheMap.get(guild.id);
+  if (cachedId) {
+    const cached = guild.channels.cache.get(cachedId);
+    if (cached) return cached;
+    cacheMap.delete(guild.id);
+  }
+
+  // Fetch channels if cache is empty
+  if (guild.channels.cache.size === 0) {
+    await guild.channels.fetch().catch(() => {});
+  }
+
+  // Check configured ID first
+  if (configuredId) {
+    let ch = guild.channels.cache.get(configuredId);
+    if (!ch) ch = await guild.channels.fetch(configuredId).catch(() => null);
+    if (ch && ch.isTextBased()) {
+      cacheMap.set(guild.id, ch.id);
+      return ch;
+    }
+  }
+
+  // Look for existing channel by exact name
+  let channel = guild.channels.cache.find(c => c.isTextBased() && c.name === channelName);
+
+  // Fallback regex search
+  if (!channel && fallbackRegexes && fallbackRegexes.length > 0) {
+    for (const regex of fallbackRegexes) {
+      channel = guild.channels.cache.find(c => c.isTextBased() && regex.test(c.name));
+      if (channel) break;
+    }
+  }
+
+  if (channel) {
+    cacheMap.set(guild.id, channel.id);
+    return channel;
+  }
+
+  // Check bot ManageChannels permission before auto-creating
+  const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+    console.warn(`⚠️ Log System: Missing ManageChannels permission in ${guild.name} — cannot create #${channelName}`);
+    return null;
+  }
+
+  // Create the channel automatically
+  try {
+    channel = await guild.channels.create({
+      name: channelName,
+      type: ChannelType.GuildText,
+      topic: topic,
+      reason: `THOR APEX Bot: Auto-created ${channelName} channel`,
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionsBitField.Flags.SendMessages],
+        },
+        {
+          id: botMember.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.EmbedLinks,
+            PermissionsBitField.Flags.AttachFiles,
+          ],
+        },
+      ],
+    });
+
+    cacheMap.set(guild.id, channel.id);
+    console.log(`✅ Log System: Created #${channelName} in ${guild.name}`);
+
+    // Send Welcome Embed
+    const welcomeEmbed = new EmbedBuilder()
+      .setColor('#57F287')
+      .setTitle(welcomeConfig.title)
+      .setDescription(welcomeConfig.description)
+      .setFooter({ text: 'THOR APEX Logging System' })
+      .setTimestamp();
+
+    const logo = guild.iconURL({ size: 1024, forceStatic: false });
+    if (logo) welcomeEmbed.setThumbnail(logo);
+
+    await channel.send({ embeds: [welcomeEmbed] }).catch(() => {});
+    return channel;
+  } catch (err) {
+    console.error(`❌ Log System: Failed to create #${channelName} in ${guild.name}: ${err.message}`);
+    return null;
+  }
+}
+
+async function ensureAutoModLogChannel(guild) {
+  return ensureLogChannel(
+    guild, 'automod', 'thor-apex-commands',
+    'Automatic moderation & anti-nuke logs generated by THOR APEX Bot',
+    {
+      title: '🛡️ THOR APEX — AutoMod & Anti-Nuke Log Channel',
+      description: 'This channel has been automatically created by **THOR APEX Bot**.\n\nAll **AutoMod punishments**, **Anti-Nuke protection events**, and **Security alerts** will be logged here.'
+    },
+    [/automod-log|automod-logs|security-log/i],
+    config.automodLogChannelId
+  );
+}
+
+async function ensureMsgLogChannel(guild) {
+  return ensureLogChannel(
+    guild, 'msg', 'thor-apex-msg-logs',
+    'Message edit & deletion logs generated by THOR APEX Bot',
+    {
+      title: '📝 THOR APEX — Message Log Channel',
+      description: 'This channel has been automatically created by **THOR APEX Bot**.\n\nAll **Message Edits** and **Message Deletions** will be logged here.'
+    },
+    [/msg-log|message-log|message-logs|msglog/i],
+    config.msgLogChannelId
+  );
+}
+
+async function ensureVoiceLogChannel(guild) {
+  return ensureLogChannel(
+    guild, 'voice', 'thor-apex-voice-logs',
+    'Voice channel activity logs generated by THOR APEX Bot',
+    {
+      title: '🔊 THOR APEX — Voice Activity Log Channel',
+      description: 'This channel has been automatically created by **THOR APEX Bot**.\n\nAll **Voice Joins, Leaves, Switches, Mutes, and Deafens** will be logged here.'
+    },
+    [/voice-log|voicelog|voice-logs|v-log/i],
+    config.voiceLogChannelId
+  );
+}
+
+async function ensureRoleLogChannel(guild) {
+  return ensureLogChannel(
+    guild, 'role', 'thor-apex-role-logs',
+    'Role creation, deletion & update logs generated by THOR APEX Bot',
+    {
+      title: '🛡️ THOR APEX — Role Log Channel',
+      description: 'This channel has been automatically created by **THOR APEX Bot**.\n\nAll **Role Creations, Deletions, and Permission Updates** will be logged here.'
+    },
+    [/role-log|rolelog|role-logs|r-log/i],
+    config.roleLogChannelId
+  );
+}
+
+async function ensureMemberLogChannel(guild) {
+  return ensureLogChannel(
+    guild, 'member', 'thor-apex-member-logs',
+    'Member join, leave & update logs generated by THOR APEX Bot',
+    {
+      title: '👥 THOR APEX — Member Log Channel',
+      description: 'This channel has been automatically created by **THOR APEX Bot**.\n\nAll **Member Joins, Leaves, and Profile Updates** will be logged here.'
+    },
+    [/member-log|memberlog|user-log|join-log|leave-log|m-log/i],
+    config.memberLogChannelId
+  );
+}
+
+async function ensureModLogChannel(guild) {
+  return ensureLogChannel(
+    guild, 'mod', 'thor-apex-mod-logs',
+    'General moderation & server action logs generated by THOR APEX Bot',
+    {
+      title: '⚖️ THOR APEX — Moderation & Server Log Channel',
+      description: 'This channel has been automatically created by **THOR APEX Bot**.\n\nAll **Manual Moderation Actions (/warn, /mute, /kick, /ban)** and **Server Updates** will be logged here.'
+    },
+    [/mod-log|modlog|audit-log|logs|log/i],
+    config.logChannelId
+  );
+}
+
+async function ensureAllLogChannels(guild) {
+  if (!guild) return;
+  await ensureAutoModLogChannel(guild);
+  await ensureMsgLogChannel(guild);
+  await ensureVoiceLogChannel(guild);
+  await ensureRoleLogChannel(guild);
+  await ensureMemberLogChannel(guild);
+  await ensureModLogChannel(guild);
+}
+
+async function sendAutoModLog(guild, embed) {
+  try {
+    const ch = await ensureAutoModLogChannel(guild);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendAutoModLog error:', err.message));
+  } catch (err) { console.error('sendAutoModLog error:', err.message); }
+}
+
+async function sendMsgLog(guild, embed) {
+  try {
+    const ch = await ensureMsgLogChannel(guild);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendMsgLog error:', err.message));
+  } catch (err) { console.error('sendMsgLog error:', err.message); }
+}
+
+async function sendVoiceLog(guild, embed) {
+  try {
+    const ch = await ensureVoiceLogChannel(guild);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendVoiceLog error:', err.message));
+  } catch (err) { console.error('sendVoiceLog error:', err.message); }
+}
+
+async function sendRoleLog(guild, embed) {
+  try {
+    const ch = await ensureRoleLogChannel(guild);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendRoleLog error:', err.message));
+  } catch (err) { console.error('sendRoleLog error:', err.message); }
+}
+
+async function sendMemberLog(guild, embed) {
+  try {
+    const ch = await ensureMemberLogChannel(guild);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendMemberLog error:', err.message));
+  } catch (err) { console.error('sendMemberLog error:', err.message); }
+}
+
+async function sendLog(guild, embed) {
+  try {
+    const ch = await ensureModLogChannel(guild);
+    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendLog error:', err.message));
+  } catch (err) { console.error('sendLog error:', err.message); }
 }
 
 function isHex(s) { return /^#[0-9A-Fa-f]{6}$/.test(s); }
-async function getLogChannel(guild, primaryId, fallbackRegexes) {
-  if (!guild) return null;
-  if (guild.channels?.cache?.size === 0) {
-    await guild.channels.fetch().catch(() => {});
-  }
-  if (primaryId) {
-    let ch = guild.channels.cache.get(primaryId);
-    if (!ch) ch = await guild.channels.fetch(primaryId).catch(() => null);
-    if (ch && ch.isTextBased()) return ch;
-  }
-  if (config.logChannelId && config.logChannelId !== primaryId) {
-    let ch = guild.channels.cache.get(config.logChannelId);
-    if (!ch) ch = await guild.channels.fetch(config.logChannelId).catch(() => null);
-    if (ch && ch.isTextBased()) return ch;
-  }
-  if (fallbackRegexes && fallbackRegexes.length > 0) {
-    for (const regex of fallbackRegexes) {
-      const found = guild.channels.cache.find(c => c.isTextBased() && regex.test(c.name));
-      if (found) return found;
-    }
-  }
-  return guild.channels.cache.find(c => c.isTextBased() && /log|audit/i.test(c.name)) || null;
-}
-async function sendLog(guild, embed) {
-  try {
-    const ch = await getLogChannel(guild, config.logChannelId, [/mod-log|modlog|audit-log|security-log|logs|log/i]);
-    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendLog error:', err.message));
-    else console.log('sendLog: No log channel configured or found in ' + (guild?.name || 'guild'));
-  } catch (err) { console.error('sendLog error:', err.message); }
-}
-async function sendVoiceLog(guild, embed) {
-  try {
-    const ch = await getLogChannel(guild, config.voiceLogChannelId, [/voice-log|voicelog|voice-logs|v-log/i]);
-    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendVoiceLog error:', err.message));
-    else console.log('sendVoiceLog: No voice log channel configured or found in ' + (guild?.name || 'guild'));
-  } catch (err) { console.error('sendVoiceLog error:', err.message); }
-}
-async function sendRoleLog(guild, embed) {
-  try {
-    const ch = await getLogChannel(guild, config.roleLogChannelId, [/role-log|rolelog|role-logs|r-log/i]);
-    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendRoleLog error:', err.message));
-    else console.log('sendRoleLog: No role log channel configured or found in ' + (guild?.name || 'guild'));
-  } catch (err) { console.error('sendRoleLog error:', err.message); }
-}
-async function sendMemberLog(guild, embed) {
-  try {
-    const ch = await getLogChannel(guild, config.memberLogChannelId, [/member-log|memberlog|user-log|join-log|leave-log|m-log/i]);
-    if (ch) await ch.send({ embeds: [embed] }).catch(err => console.error('sendMemberLog error:', err.message));
-    else console.log('sendMemberLog: No member log channel configured or found in ' + (guild?.name || 'guild'));
-  } catch (err) { console.error('sendMemberLog error:', err.message); }
-}
 async function safeReply(i, content, eph = true) {
   try { if (i.replied || i.deferred) await i.followUp({ content, ephemeral: eph }); else await i.reply({ content, ephemeral: eph }); } catch (_) {}
 }
@@ -788,7 +1523,11 @@ async function startBot() {
     console.log('Servers: ' + client.guilds.cache.size);
     client.guilds.cache.forEach(g => console.log('  ' + g.name + ' (' + g.id + ')'));
     console.log('=======================================================');
-    for (const g of client.guilds.cache.values()) await cacheInvites(g);
+    for (const g of client.guilds.cache.values()) {
+      await cacheInvites(g);
+      // Auto-create all dedicated log channels (commands, msg, voice, role, member, mod)
+      await ensureAllLogChannels(g);
+    }
     await regCmds(client);
   });
 
@@ -810,6 +1549,8 @@ async function startBot() {
   client.on('guildCreate', async (guild) => {
     console.log('Joined: ' + guild.name);
     await cacheInvites(guild);
+    // Auto-create all dedicated log channels in new guilds
+    await ensureAllLogChannels(guild);
     const token = process.env.DISCORD_TOKEN;
     if (token) {
       const rest = new REST({ version: '10' }).setToken(token);
@@ -830,7 +1571,7 @@ async function startBot() {
         const ageDays = Math.floor((Date.now() - member.user.createdTimestamp) / 86400000);
         if (ageDays < minDays) {
           try { await member.kick('Alt account - ' + ageDays + ' days old, min ' + minDays); } catch (_) {}
-          await sendLog(guild, new EmbedBuilder().setColor('#FF0000').setTitle('Alt Account Kicked').addFields({ name: 'User', value: member.user.tag + ' (' + member.id + ')' }, { name: 'Account Age', value: ageDays + ' days' }, { name: 'Minimum', value: minDays + ' days' }).setTimestamp());
+          await sendAutoModLog(guild, new EmbedBuilder().setColor('#FF0000').setTitle('Alt Account Kicked').addFields({ name: 'User', value: member.user.tag + ' (' + member.id + ')' }, { name: 'Account Age', value: ageDays + ' days' }, { name: 'Minimum', value: minDays + ' days' }).setTimestamp());
           return;
         }
       }
@@ -838,7 +1579,7 @@ async function startBot() {
       if (sec.antiRaid && isRaiding()) {
         config.security.lockdown = true; saveConfig();
         try { await member.kick('Anti-Raid: raid detected'); } catch (_) {}
-        await sendLog(guild, new EmbedBuilder().setColor('#FF6600').setTitle('RAID DETECTED - Lockdown Activated!').setTimestamp());
+        await sendAutoModLog(guild, new EmbedBuilder().setColor('#FF6600').setTitle('RAID DETECTED - Lockdown Activated!').setTimestamp());
         return;
       }
       // Lockdown
@@ -1177,7 +1918,7 @@ async function startBot() {
         .setTitle('🗑️ Message Deleted')
         .setDescription(`**Author:** ${message.author ? `${message.author.tag} (<@${message.author.id}>)` : 'Unknown'}\n**Channel:** <#${message.channel.id}>\n**Content:**\n${message.content || '*[Attachment / Embed]*'}${executor ? `\n**Deleted By:** ${executor.tag} (<@${executor.id}>)` : ''}`)
         .setTimestamp();
-      await sendLog(message.guild, embed);
+      await sendMsgLog(message.guild, embed);
     } catch (_) {}
   });
 
@@ -1191,7 +1932,7 @@ async function startBot() {
         .setTitle('✏️ Message Edited')
         .setDescription(`**Author:** ${newMessage.author.tag} (<@${newMessage.author.id}>)\n**Channel:** <#${newMessage.channel.id}>\n**Before:** ${oldMessage.content || '*None*'}\n**After:** ${newMessage.content || '*None*'}`)
         .setTimestamp();
-      await sendLog(newMessage.guild, embed);
+      await sendMsgLog(newMessage.guild, embed);
     } catch (_) {}
   });
 
@@ -1204,7 +1945,7 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(channel.guild, entry.executor, 'antiChannelDelete', 'Channel Deleted (' + channel.name + ')');
       }
-      await sendLog(channel.guild, new EmbedBuilder().setColor('#ED4245').setTitle('🗑️ Channel Deleted').setDescription(`**Channel:** #${channel.name} (\`${channel.id}\`)${entry?.executor ? `\n**Action By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      await sendAutoModLog(channel.guild, new EmbedBuilder().setColor('#ED4245').setTitle('🗑️ Channel Deleted').setDescription(`**Channel:** #${channel.name} (\`${channel.id}\`)${entry?.executor ? `\n**Action By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1216,7 +1957,7 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(channel.guild, entry.executor, 'antiChannelCreate', 'Channel Created (' + channel.name + ')');
       }
-      await sendLog(channel.guild, new EmbedBuilder().setColor('#57F287').setTitle('📁 Channel Created').setDescription(`**Channel:** <#${channel.id}> (\`${channel.name}\`)${entry?.executor ? `\n**Created By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      await sendAutoModLog(channel.guild, new EmbedBuilder().setColor('#57F287').setTitle('📁 Channel Created').setDescription(`**Channel:** <#${channel.id}> (\`${channel.name}\`)${entry?.executor ? `\n**Created By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1228,7 +1969,7 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(newChannel.guild, entry.executor, 'antiChannelUpdate', 'Channel Modified (' + newChannel.name + ')');
       }
-      await sendLog(newChannel.guild, new EmbedBuilder().setColor('#FEE75C').setTitle('⚙️ Channel Updated').setDescription(`**Channel:** <#${newChannel.id}>${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      await sendAutoModLog(newChannel.guild, new EmbedBuilder().setColor('#FEE75C').setTitle('⚙️ Channel Updated').setDescription(`**Channel:** <#${newChannel.id}>${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1240,7 +1981,9 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(role.guild, entry.executor, 'antiRoleDelete', 'Role Deleted (' + role.name + ')');
       }
-      await sendRoleLog(role.guild, new EmbedBuilder().setColor('#ED4245').setTitle('🗑️ Role Deleted').setDescription(`**Role:** ${role.name} (\`${role.id}\`)${entry?.executor ? `\n**Deleted By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      const embed = new EmbedBuilder().setColor('#ED4245').setTitle('🗑️ Role Deleted').setDescription(`**Role:** ${role.name} (\`${role.id}\`)${entry?.executor ? `\n**Deleted By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp();
+      await sendRoleLog(role.guild, embed);
+      await sendAutoModLog(role.guild, embed);
     } catch (_) {}
   });
 
@@ -1252,7 +1995,9 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(role.guild, entry.executor, 'antiRoleCreate', 'Role Created (' + role.name + ')');
       }
-      await sendRoleLog(role.guild, new EmbedBuilder().setColor('#57F287').setTitle('🛡️ Role Created').setDescription(`**Role:** <@&${role.id}> (\`${role.name}\`)${entry?.executor ? `\n**Created By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      const embed = new EmbedBuilder().setColor('#57F287').setTitle('🛡️ Role Created').setDescription(`**Role:** <@&${role.id}> (\`${role.name}\`)${entry?.executor ? `\n**Created By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp();
+      await sendRoleLog(role.guild, embed);
+      await sendAutoModLog(role.guild, embed);
     } catch (_) {}
   });
 
@@ -1271,7 +2016,9 @@ async function startBot() {
       if (gained && entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(newRole.guild, entry.executor, 'antiRoleUpdate', 'Dangerous Permissions Granted to Role (' + newRole.name + ')');
       }
-      await sendRoleLog(newRole.guild, new EmbedBuilder().setColor('#FEE75C').setTitle('🛠️ Role Updated').setDescription(`**Role:** <@&${newRole.id}> (\`${newRole.name}\`)${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      const embed = new EmbedBuilder().setColor('#FEE75C').setTitle('🛠️ Role Updated').setDescription(`**Role:** <@&${newRole.id}> (\`${newRole.name}\`)${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp();
+      await sendRoleLog(newRole.guild, embed);
+      await sendAutoModLog(newRole.guild, embed);
     } catch (_) {}
   });
 
@@ -1282,7 +2029,7 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(ban.guild, entry.executor, 'antiBan', 'Member Banned (' + ban.user.tag + ')');
       }
-      await sendLog(ban.guild, new EmbedBuilder().setColor('#ED4245').setTitle('⛔ Member Banned').setDescription(`**User:** ${ban.user.tag} (\`${ban.user.id}\`)${entry?.executor ? `\n**Banned By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      await sendAutoModLog(ban.guild, new EmbedBuilder().setColor('#ED4245').setTitle('⛔ Member Banned').setDescription(`**User:** ${ban.user.tag} (\`${ban.user.id}\`)${entry?.executor ? `\n**Banned By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1290,7 +2037,7 @@ async function startBot() {
     try {
       const logs = await ban.guild.fetchAuditLogs({ type: AuditLogEvent.MemberBanRemove, limit: 1 }).catch(() => null);
       const entry = logs?.entries.first();
-      await sendLog(ban.guild, new EmbedBuilder().setColor('#57F287').setTitle('🔓 Member Unbanned').setDescription(`**User:** ${ban.user.tag} (\`${ban.user.id}\`)${entry?.executor ? `\n**Unbanned By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      await sendAutoModLog(ban.guild, new EmbedBuilder().setColor('#57F287').setTitle('🔓 Member Unbanned').setDescription(`**User:** ${ban.user.tag} (\`${ban.user.id}\`)${entry?.executor ? `\n**Unbanned By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1302,7 +2049,7 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(channel.guild, entry.executor, 'antiWebhookCreate', 'Webhook Created in #' + channel.name);
       }
-      await sendLog(channel.guild, new EmbedBuilder().setColor('#FEE75C').setTitle('🔗 Webhook Updated').setDescription(`**Channel:** <#${channel.id}>${entry?.executor ? `\n**Action By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      await sendAutoModLog(channel.guild, new EmbedBuilder().setColor('#FEE75C').setTitle('🔗 Webhook Updated').setDescription(`**Channel:** <#${channel.id}>${entry?.executor ? `\n**Action By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
     } catch (_) {}
   });
 
@@ -1313,7 +2060,20 @@ async function startBot() {
       if (entry && Date.now() - entry.createdTimestamp < 8000) {
         await handleNukeAction(newGuild, entry.executor, 'antiGuildUpdate', 'Server Settings Modified');
       }
-      await sendLog(newGuild, new EmbedBuilder().setColor('#FEE75C').setTitle('🏰 Server Settings Updated').setDescription(`**Server Name:** ${newGuild.name}${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+      await sendAutoModLog(newGuild, new EmbedBuilder().setColor('#FEE75C').setTitle('🏰 Server Settings Updated').setDescription(`**Server Name:** ${newGuild.name}${entry?.executor ? `\n**Updated By:** ${entry.executor.tag} (<@${entry.executor.id}>)` : ''}`).setTimestamp());
+    } catch (_) {}
+  });
+
+  client.on('autoModerationActionExecution', async (actionExecution) => {
+    try {
+      const guild = actionExecution.guild;
+      if (!guild) return;
+      const embed = new EmbedBuilder()
+        .setColor('#ED4245')
+        .setTitle('🛡️ Discord Native AutoMod Action Triggered')
+        .setDescription(`**User:** <@${actionExecution.userId}>\n**Channel:** <#${actionExecution.channelId}>\n**Matched Content:** ${actionExecution.content || actionExecution.matchedKeyword || 'N/A'}`)
+        .setTimestamp();
+      await sendAutoModLog(guild, embed);
     } catch (_) {}
   });
 
@@ -1462,6 +2222,68 @@ async function startBot() {
 
     if (interaction.isButton()) {
       const id = interaction.customId;
+      if (id.startsWith('btn_m_')) {
+        const vc = interaction.member?.voice?.channel;
+        if (!vc) return safeReply(interaction, 'You must be in a Voice Channel to use music controls!');
+        const q = getQ(interaction.guildId);
+        if (!q.connection || q.connection.joinConfig?.channelId !== vc.id) {
+          return safeReply(interaction, 'You must be in the same voice channel as the bot to use music controls!');
+        }
+
+        if (id === 'btn_m_play_pause') {
+          if (q.player) {
+            if (q.isPaused) {
+              q.player.unpause();
+              q.isPaused = false;
+              await safeReply(interaction, '▶️ Playback resumed.');
+            } else {
+              q.player.pause();
+              q.isPaused = true;
+              await safeReply(interaction, '⏸️ Playback paused.');
+            }
+            updateMusicPanel(interaction.guildId);
+          } else {
+            await safeReply(interaction, 'No active music player found.');
+          }
+          return;
+        }
+        if (id === 'btn_m_skip') {
+          if (q.currentTrack) {
+            await safeReply(interaction, '⏭️ Track skipped: **' + q.currentTrack.title + '**');
+            handleTrackEnded(interaction.guildId);
+          } else {
+            await safeReply(interaction, 'Queue is empty!');
+          }
+          return;
+        }
+        if (id === 'btn_m_stop') {
+          stopMusicSession(interaction.guildId);
+          await safeReply(interaction, '⏹️ Music stopped and session cleared.');
+          return;
+        }
+        if (id === 'btn_m_loop') {
+          const modes = ['off', 'track', 'queue'];
+          const nextIndex = (modes.indexOf(q.loopMode) + 1) % modes.length;
+          q.loopMode = modes[nextIndex];
+          updateMusicPanel(interaction.guildId);
+          await safeReply(interaction, '🔁 Loop mode set to: **' + q.loopMode.toUpperCase() + '**');
+          return;
+        }
+        if (id === 'btn_m_shuffle') {
+          if (q.queue.length <= 1) {
+            return safeReply(interaction, 'Not enough tracks in queue to shuffle!');
+          }
+          const current = q.queue.shift();
+          for (let i = q.queue.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [q.queue[i], q.queue[j]] = [q.queue[j], q.queue[i]];
+          }
+          q.queue.unshift(current);
+          updateMusicPanel(interaction.guildId);
+          await safeReply(interaction, '🔀 Queue shuffled!');
+          return;
+        }
+      }
       if (id === 'am_enable_all') {
         await interaction.deferUpdate().catch(() => {});
         if (!config.security) config.security = {};
@@ -1649,8 +2471,7 @@ async function startBot() {
       return;
     }
     if (commandName === 'security') {
-      const s = config.security || {}; const ic = v => v ? 'YES' : 'NO';
-      await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('THOR APEX Security Settings').addFields({ name: 'Modules', value: ['Anti-Raid: ' + ic(s.antiRaid) + ' (threshold: ' + (s.raidThreshold || 10) + ' joins/10s)', 'Anti-Spam: ' + ic(s.antiSpam) + ' (threshold: ' + (s.spamThreshold || 5) + ' msgs/' + ((s.spamWindow || 5000) / 1000) + 's)', 'Anti-Link/Ads: ' + ic(s.antiLink), 'Word Filter: ' + ic(s.wordFilter) + ' (' + (s.blacklistedWords ? s.blacklistedWords.length : 0) + ' words)', 'Alt Detection: ' + ic(s.altDetection) + ' (min: ' + (s.altMinDays || 7) + ' days)', 'Anti-Nuke: ' + ic(s.antiNuke), 'Lockdown: ' + (s.lockdown ? 'ACTIVE' : 'OFF')].join('\n') }).setFooter({ text: 'Use /antispam /antilink /antinuke /lockdown to toggle' }).setTimestamp()] });
+      await interaction.reply({ ephemeral: true, embeds: [buildSecurityPanel(guild)] });
       return;
     }
     const togMap = { antispam: 'antiSpam', antilink: 'antiLink', antiraid: 'antiRaid', antinuke: 'antiNuke' };
@@ -1684,13 +2505,113 @@ async function startBot() {
     if (commandName === 'myinvites') { try { const inv = await guild.invites.fetch().catch(() => null); let total = 0; if (inv) inv.forEach(i => { if (i.inviter && i.inviter.id === interaction.user.id) total += (i.uses || 0); }); await interaction.reply({ ephemeral: true, content: 'You have **' + total + '** total invites in **' + guild.name + '**!' }); } catch (_) { await safeReply(interaction, 'Could not fetch invite data.'); } return; }
     if (commandName === 'invites') { const target = interaction.options.getUser('user') || interaction.user; try { const inv = await guild.invites.fetch().catch(() => null); let total = 0; if (inv) inv.forEach(i => { if (i.inviter && i.inviter.id === target.id) total += (i.uses || 0); }); await interaction.reply({ ephemeral: true, content: '**' + target.tag + '** has **' + total + '** total invites!' }); } catch (_) { await safeReply(interaction, 'Could not fetch invite data.'); } return; }
     if (commandName === 'invitetop') { try { const inv = await guild.invites.fetch().catch(() => null); if (!inv || inv.size === 0) return safeReply(interaction, 'No invites found!'); const totals = new Map(); inv.forEach(i => { if (!i.inviter) return; totals.set(i.inviter.id, (totals.get(i.inviter.id) || 0) + (i.uses || 0)); }); const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10); const desc = sorted.map((e, i) => (i + 1) + '. <@' + e[0] + '> - **' + e[1] + '** invites').join('\n'); await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Top Inviters - ' + guild.name).setDescription(desc || 'No data').setTimestamp()] }); } catch (_) { await safeReply(interaction, 'Could not fetch invite data.'); } return; }
-    if (commandName === 'play') { const vc = interaction.member?.voice?.channel; if (!vc) return safeReply(interaction, 'Join a Voice Channel first!'); const r = addToQ(guild, vc, interaction.user, interaction.options.getString('song')); await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(r.position === 1 ? 'Now Playing' : 'Added to Queue').setDescription('**' + r.track.title + '**').addFields({ name: 'Voice', value: '<#' + vc.id + '>', inline: true }, { name: 'By', value: '<@' + interaction.user.id + '>', inline: true }).setTimestamp()] }); return; }
-    if (commandName === 'pause')  { return safeReply(interaction, 'Paused.', false); }
-    if (commandName === 'resume') { return safeReply(interaction, 'Resumed.', false); }
-    if (commandName === 'skip')   { const q = getQ(guild.id); if (q.queue.length > 0) { const s = q.queue.shift(); return safeReply(interaction, 'Skipped: **' + (s?.title || 'Song') + '**', false); } return safeReply(interaction, 'Queue is empty!'); }
-    if (commandName === 'stop')   { const q = getQ(guild.id); q.queue = []; q.isPlaying = false; if (q.connection) { try { q.connection.destroy(); } catch (_) {} q.connection = null; } return safeReply(interaction, 'Stopped and left voice channel.', false); }
-    if (commandName === 'queue')  { const vc = interaction.member?.voice?.channel; const sp = interaction.options.getString('song'); if (sp) { if (!vc) return safeReply(interaction, 'Join Voice first!'); const r = addToQ(guild, vc, interaction.user, sp); return interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Added to Queue').setDescription('**' + r.track.title + '**').addFields({ name: 'Position', value: '#' + r.position }).setTimestamp()] }); } const q = getQ(guild.id); if (q.queue.length === 0) return safeReply(interaction, 'Queue empty! Use /play'); const list = q.queue.slice(0, 10).map((t, i) => (i + 1) + '. **' + t.title + '** (<@' + t.requestedBy + '>)').join('\n'); await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Music Queue').setDescription(list).setFooter({ text: 'Total: ' + q.queue.length }).setTimestamp()] }); return; }
-    if (commandName === 'nowplaying') { const t = getQ(guild.id).queue[0]; if (!t) return safeReply(interaction, 'Nothing playing! Use /play'); await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Now Playing').setDescription('**' + t.title + '**').addFields({ name: 'By', value: '<@' + t.requestedBy + '>' }).setTimestamp()] }); return; }
+    if (commandName === 'play') {
+      const vc = interaction.member?.voice?.channel;
+      if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
+      await interaction.deferReply();
+      const query = interaction.options.getString('song');
+      const res = await addMusicToQueue(guild, vc, interaction.user, interaction.channel, query);
+      if (!res.success) {
+        return interaction.editReply({ content: '❌ ' + res.message });
+      }
+      if (res.isPlaylist) {
+        return interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('📜 Playlist Added').setDescription('Added **' + res.count + '** tracks to the queue!').setTimestamp()] });
+      }
+      return interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(res.position === 1 ? '▶️ Playing Now' : '📌 Added to Queue').setDescription('**' + res.firstTrack.title + '**').addFields({ name: 'Artist', value: res.firstTrack.artist || 'Unknown', inline: true }, { name: 'Voice Channel', value: '<#' + vc.id + '>', inline: true }, { name: 'Position', value: '#' + res.position, inline: true }).setThumbnail(res.firstTrack.thumbnail || null).setTimestamp()] });
+    }
+
+    if (commandName === 'pause') {
+      const q = getQ(guild.id);
+      if (!q.player || !q.isPlaying) return safeReply(interaction, 'Nothing is currently playing!');
+      q.player.pause();
+      q.isPaused = true;
+      updateMusicPanel(guild.id);
+      return safeReply(interaction, '⏸️ Music paused.');
+    }
+
+    if (commandName === 'resume') {
+      const q = getQ(guild.id);
+      if (!q.player || !q.isPaused) return safeReply(interaction, 'Music is not paused!');
+      q.player.unpause();
+      q.isPaused = false;
+      updateMusicPanel(guild.id);
+      return safeReply(interaction, '▶️ Music resumed.');
+    }
+
+    if (commandName === 'skip') {
+      const q = getQ(guild.id);
+      if (!q.currentTrack) return safeReply(interaction, 'Queue is empty!');
+      const skipped = q.currentTrack;
+      handleTrackEnded(guild.id);
+      return safeReply(interaction, '⏭️ Skipped: **' + skipped.title + '**');
+    }
+
+    if (commandName === 'stop') {
+      stopMusicSession(guild.id);
+      return safeReply(interaction, '⏹️ Stopped music playback and left the voice channel.');
+    }
+
+    if (commandName === 'shuffle') {
+      const q = getQ(guild.id);
+      if (q.queue.length <= 1) return safeReply(interaction, 'Not enough tracks in queue to shuffle!');
+      const current = q.queue.shift();
+      for (let i = q.queue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [q.queue[i], q.queue[j]] = [q.queue[j], q.queue[i]];
+      }
+      q.queue.unshift(current);
+      updateMusicPanel(guild.id);
+      return safeReply(interaction, '🔀 Queue shuffled!');
+    }
+
+    if (commandName === 'loop') {
+      const mode = interaction.options.getString('mode') || 'off';
+      const q = getQ(guild.id);
+      q.loopMode = mode;
+      updateMusicPanel(guild.id);
+      return safeReply(interaction, '🔁 Loop mode set to: **' + mode.toUpperCase() + '**');
+    }
+
+    if (commandName === 'volume') {
+      const level = interaction.options.getInteger('level');
+      const q = getQ(guild.id);
+      q.volume = level;
+      updateMusicPanel(guild.id);
+      return safeReply(interaction, '🔊 Volume set to **' + level + '%**');
+    }
+
+    if (commandName === 'previous') {
+      const q = getQ(guild.id);
+      if (q.history.length === 0) return safeReply(interaction, 'No previous tracks in history!');
+      const prev = q.history.shift();
+      q.queue.unshift(prev);
+      playNextTrack(guild.id);
+      return safeReply(interaction, '⏮️ Playing previous track: **' + prev.title + '**');
+    }
+
+    if (commandName === 'queue') {
+      const sp = interaction.options.getString('song');
+      const vc = interaction.member?.voice?.channel;
+      if (sp) {
+        if (!vc) return safeReply(interaction, 'Join Voice first!');
+        await interaction.deferReply();
+        const res = await addMusicToQueue(guild, vc, interaction.user, interaction.channel, sp);
+        if (!res.success) return interaction.editReply('❌ ' + res.message);
+        return interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('📌 Added to Queue').setDescription('**' + res.firstTrack.title + '**').addFields({ name: 'Position', value: '#' + res.position }).setTimestamp()] });
+      }
+      const q = getQ(guild.id);
+      if (q.queue.length === 0) return safeReply(interaction, 'Queue is currently empty! Use `/play` to add tracks.');
+      const list = q.queue.slice(0, 10).map((t, i) => (i === 0 ? '▶️ **' + t.title + '**' : (i + 1) + '. **' + t.title + '**') + ' (By: <@' + t.requestedBy + '>)').join('\n');
+      await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('📜 Music Queue — ' + guild.name).setDescription(list).setFooter({ text: 'Total Tracks: ' + q.queue.length + ' | Loop: ' + q.loopMode.toUpperCase() }).setTimestamp()] });
+      return;
+    }
+
+    if (commandName === 'nowplaying') {
+      const q = getQ(guild.id);
+      if (!q.currentTrack) return safeReply(interaction, 'Nothing is currently playing! Use `/play`');
+      await interaction.reply({ embeds: [buildNowPlayingEmbed(guild, q)], components: buildMusicControlButtons(q) });
+      return;
+    }
     if (commandName === 'radio') { const vc = interaction.member?.voice?.channel; if (!vc) return safeReply(interaction, 'Join a Voice Channel first!'); const genre = interaction.options.getString('genre') || 'lofi'; const sel = RADIO_STREAMS[genre] || RADIO_STREAMS.lofi; const q = getQ(guild.id); if (voiceLib) { if (!q.connection) { try { q.connection = voiceLib.joinVoiceChannel({ channelId: vc.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator, selfDeaf: false }); } catch (_) {} } if (!q.player) { q.player = voiceLib.createAudioPlayer(); q.connection?.subscribe(q.player); } try { q.player.play(voiceLib.createAudioResource(sel.url, { inputType: voiceLib.StreamType.Arbitrary })); } catch (_) {} } await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('Radio: ' + sel.name).setDescription('Playing in <#' + vc.id + '>!').setTimestamp()] }); return; }
     if (commandName === 'help') {
       await interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('THOR APEX - All-in-One Bot Commands').setThumbnail(guild.iconURL({ size: 256 })).addFields(
