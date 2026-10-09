@@ -486,6 +486,17 @@ async function playNextTrack(gid) {
 
   await ensurePlayDlReady();
 
+  // Ensure Voice Connection is in Ready state before playing
+  if (q.connection.state.status !== voiceLib.VoiceConnectionStatus.Ready) {
+    try {
+      console.log(redactSecrets(`⏳ MUSIC: Waiting for Voice Connection Ready state in guild ${gid}...`));
+      await voiceLib.entersState(q.connection, voiceLib.VoiceConnectionStatus.Ready, 10_000);
+      console.log(redactSecrets(`✅ MUSIC: Voice Connection is READY in guild ${gid}`));
+    } catch (e) {
+      console.error(redactSecrets(`❌ MUSIC: Voice Connection failed to reach Ready state in guild ${gid}: ` + e.message));
+    }
+  }
+
   if (!q.player) {
     try {
       q.player = voiceLib.createAudioPlayer({
@@ -497,6 +508,10 @@ async function playNextTrack(gid) {
 
       q.connection.subscribe(q.player);
 
+      q.player.on('stateChange', (oldState, newState) => {
+        console.log(redactSecrets(`🎵 MUSIC Audio Player [Guild ${gid}]: ${oldState.status} ➔ ${newState.status}`));
+      });
+
       q.player.on(voiceLib.AudioPlayerStatus.Idle, oldState => {
         if (oldState.status === voiceLib.AudioPlayerStatus.Playing || oldState.status === voiceLib.AudioPlayerStatus.Buffering) {
           handleTrackEnded(gid);
@@ -504,7 +519,7 @@ async function playNextTrack(gid) {
       });
 
       q.player.on('error', err => {
-        console.error(redactSecrets('Audio player error: ' + err.message));
+        console.error(redactSecrets('❌ MUSIC Audio player error: ' + err.message));
         if (q.textChannel) {
           q.textChannel.send({
             embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('⚠️ Playback Error').setDescription('An audio error occurred playing **' + (q.currentTrack?.title || 'track') + '**. Skipping to next track...')]
@@ -578,10 +593,16 @@ async function playNextTrack(gid) {
     }
 
     if (streamObj && streamObj.stream) {
-      const resource = voiceLib.createAudioResource(streamObj.stream, { inputType: streamObj.type || voiceLib.StreamType.Arbitrary });
+      const resource = voiceLib.createAudioResource(streamObj.stream, {
+        inputType: streamObj.type || voiceLib.StreamType.Arbitrary,
+        inlineVolume: true
+      });
+      if (resource.volume) resource.volume.setVolume((q.volume || 100) / 100);
+
       q.isPlaying = true;
       q.isPaused = false;
       q.player.play(resource);
+      console.log(redactSecrets(`▶️ MUSIC: Playing resource for "${track.title}" in guild ${gid}`));
       updateMusicPanel(gid);
     } else {
       if (q.textChannel) {
@@ -641,13 +662,21 @@ async function addMusicToQueue(guild, vc, user, textChannel, query) {
   q.textChannel = textChannel;
 
   if (voiceLib && vc) {
+    const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+    if (me) {
+      const perms = vc.permissionsFor(me);
+      if (perms && (!perms.has(PermissionsBitField.Flags.Connect) || !perms.has(PermissionsBitField.Flags.Speak))) {
+        return { success: false, message: 'I need **Connect** and **Speak** permissions in your Voice Channel!' };
+      }
+    }
+
     if (!q.connection) {
       try {
         q.connection = voiceLib.joinVoiceChannel({
           channelId: vc.id,
           guildId: guild.id,
           adapterCreator: guild.voiceAdapterCreator,
-          selfDeaf: false,
+          selfDeaf: true,
           selfMute: false,
         });
       } catch (err) { console.error(redactSecrets('Voice join error: ' + err.message)); }
@@ -657,7 +686,7 @@ async function addMusicToQueue(guild, vc, user, textChannel, query) {
           channelId: vc.id,
           guildId: guild.id,
           adapterCreator: guild.voiceAdapterCreator,
-          selfDeaf: false,
+          selfDeaf: true,
           selfMute: false,
         });
       } catch (err) { console.error(redactSecrets('Voice switch error: ' + err.message)); }
