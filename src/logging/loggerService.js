@@ -62,17 +62,23 @@ async function resolveLogChannel(guild, categoryKey) {
 
   // Fallback: search by channel name
   const catDef = LOG_CATEGORIES.find(c => c.key === categoryKey);
-  if (catDef) {
-    const byName = guild.channels.cache.find(c => c.isTextBased() && c.name === catDef.name);
-    if (byName) return byName;
+  if (catDef && guild.channels?.cache) {
+    if (typeof guild.channels.cache.find === 'function') {
+      const byName = guild.channels.cache.find(c => c.isTextBased?.() && c.name === catDef.name);
+      if (byName) return byName;
+    } else if (typeof guild.channels.cache.values === 'function') {
+      for (const c of guild.channels.cache.values()) {
+        if (c.name === catDef.name) return c;
+      }
+    }
   }
 
   // Fallback 2: general security or moderation log if specific channel is missing
   if (categoryKey === 'antiNuke' && config.logging?.channels?.security) {
-    return guild.channels.cache.get(config.logging.channels.security);
+    return guild.channels?.cache?.get?.(config.logging.channels.security);
   }
   if (categoryKey === 'automod' && config.logging?.channels?.moderation) {
-    return guild.channels.cache.get(config.logging.channels.moderation);
+    return guild.channels?.cache?.get?.(config.logging.channels.moderation);
   }
 
   return null;
@@ -117,22 +123,35 @@ async function setupAllLogChannels(guild) {
   if (!config.logging) config.logging = { categoryChannelId: '', channels: {} };
   if (!config.logging.channels) config.logging.channels = {};
 
+  const findInCache = (predicate) => {
+    if (!guild.channels?.cache) return null;
+    if (typeof guild.channels.cache.find === 'function') {
+      return guild.channels.cache.find(predicate);
+    }
+    if (typeof guild.channels.cache.values === 'function') {
+      for (const val of guild.channels.cache.values()) {
+        if (predicate(val)) return val;
+      }
+    }
+    return null;
+  };
+
   // 1. Find or create Category '📁 SERVER LOGS'
   let category = null;
   if (config.logging.categoryChannelId) {
     category = guild.channels.cache.get(config.logging.categoryChannelId) || await guild.channels.fetch(config.logging.categoryChannelId).catch(() => null);
   }
   if (!category) {
-    category = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && /server logs/i.test(c.name));
+    category = findInCache(c => c.type === ChannelType.GuildCategory && /server logs/i.test(c.name));
   }
-  if (!category) {
+  if (!category && guild.channels.create) {
     try {
       category = await guild.channels.create({
         name: '📁 SERVER LOGS',
         type: ChannelType.GuildCategory,
         permissionOverwrites: [
           {
-            id: guild.roles.everyone.id,
+            id: guild.roles?.everyone?.id || guild.id,
             deny: [PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ViewChannel],
           },
           {
@@ -152,7 +171,7 @@ async function setupAllLogChannels(guild) {
     } catch (err) {
       return { success: false, message: `Could not create category: ${err.message}` };
     }
-  } else {
+  } else if (category) {
     config.logging.categoryChannelId = category.id;
   }
 
@@ -166,27 +185,27 @@ async function setupAllLogChannels(guild) {
       existing = guild.channels.cache.get(currentId) || await guild.channels.fetch(currentId).catch(() => null);
     }
     if (!existing) {
-      existing = guild.channels.cache.find(c => c.isTextBased() && c.name === cat.name);
+      existing = findInCache(c => c.isTextBased?.() && c.name === cat.name);
     }
 
     if (existing) {
       config.logging.channels[cat.key] = existing.id;
       // If channel is not under the category, move it
-      if (existing.parentId !== category.id && existing.manageable) {
+      if (category && existing.parentId !== category.id && existing.manageable) {
         await existing.setParent(category.id, { lockPermissions: false }).catch(() => {});
       }
       results.push(`🔹 **#${existing.name}** linked (${cat.key})`);
-    } else {
+    } else if (guild.channels.create) {
       try {
         const newChan = await guild.channels.create({
           name: cat.name,
           type: ChannelType.GuildText,
-          parent: category.id,
+          parent: category?.id || null,
           topic: cat.topic,
           reason: `Automated Log Setup: #${cat.name}`,
           permissionOverwrites: [
             {
-              id: guild.roles.everyone.id,
+              id: guild.roles?.everyone?.id || guild.id,
               deny: [PermissionsBitField.Flags.SendMessages],
             },
             {
@@ -220,7 +239,7 @@ async function setupAllLogChannels(guild) {
   }
 
   saveGuildConfig(guild.id, config);
-  return { success: true, categoryId: category.id, details: results };
+  return { success: true, categoryId: category?.id || null, details: results };
 }
 
 module.exports = {

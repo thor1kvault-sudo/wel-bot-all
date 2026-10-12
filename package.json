@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test test/bot.test.js",
+    "test": "node --test test/bot.test.js test/interactions.test.js test/automod.test.js test/antinuke.test.js test/allCommands.test.js",
     "push": "node push.js",
     "push:msg": "node push.js"
   },

@@ -16,7 +16,7 @@ function isTrustedUser(guild, userId) {
   // 1. Server Owner is always protected
   if (userId === guild.ownerId) return true;
   // 2. Bot itself is immune
-  if (userId === guild.client.user.id) return true;
+  if (guild.client?.user?.id && userId === guild.client.user.id) return true;
   // 3. Global Bot Owner
   const botOwnerId = process.env.OWNER_ID;
   if (botOwnerId && userId === botOwnerId) return true;
@@ -28,7 +28,7 @@ function isTrustedUser(guild, userId) {
   if (sec.trustedUsers && sec.trustedUsers.includes(userId)) return true;
 
   // 5. Configured Trusted Roles
-  const member = guild.members.cache.get(userId);
+  const member = guild.members?.cache?.get(userId);
   if (member && sec.trustedRoles && sec.trustedRoles.length > 0) {
     if (member.roles.cache.some(r => sec.trustedRoles.includes(r.id))) return true;
   }
@@ -97,7 +97,7 @@ async function resolveAuditActor(guild, auditLogEvent, targetId = null, maxAgeMs
 }
 
 /**
- * Executes configured anti-nuke punishment on an unauthorized actor.
+ * Executes configured anti-nuke punishment on an unauthorized actor with honest verification.
  */
 async function executeEnforcement(guild, actor, actionName, detectionDetails) {
   const startTime = Date.now();
@@ -118,39 +118,63 @@ async function executeEnforcement(guild, actor, actionName, detectionDetails) {
 
   let resultSummary = 'Logged';
   let rolesStrippedCount = 0;
+  let actionSuccess = false;
 
   try {
     // 1. Strip Dangerous Roles
     if ((actionToTake === 'quarantine' || actionToTake === 'strip_and_ban' || actionToTake === 'ban') && member) {
-      if (me && member.manageable) {
+      if (me?.permissions?.has(PermissionsBitField.Flags.ManageRoles) && member.manageable) {
         const botHighestRole = me.roles.highest;
         const strippable = member.roles.cache.filter(r => r.id !== guild.roles.everyone.id && r.position < botHighestRole.position);
         rolesStrippedCount = strippable.size;
         if (strippable.size > 0) {
-          await member.roles.remove(strippable, `Anti-Nuke Enforcement: ${actionName}`).catch(() => {});
-          resultSummary = 'Roles Stripped';
+          try {
+            await member.roles.remove(strippable, `Anti-Nuke Enforcement: ${actionName}`);
+            resultSummary = `Roles Stripped (${rolesStrippedCount})`;
+          } catch (_) {}
         }
       }
     }
 
-    // 2. Ban or Kick
+    // 2. Ban or Kick with genuine verification
     if (actionToTake === 'ban' || actionToTake === 'strip_and_ban') {
-      if (me && me.permissions.has(PermissionsBitField.Flags.BanMembers)) {
-        await guild.bans.create(actor.id, {
-          reason: `Anti-Nuke Detection: ${actionName} (${detectionDetails.count}/${detectionDetails.limit} in ${detectionDetails.windowMs / 1000}s)`,
-          deleteMessageSeconds: 86400,
-        }).catch(err => {
-          console.error(redactSecrets(`Ban failed: ${err.message}`));
-        });
-        resultSummary = 'INSTANT BAN & ROLES STRIPPED';
+      if (!me?.permissions?.has(PermissionsBitField.Flags.BanMembers)) {
+        resultSummary = 'Ban Failed (Bot lacks BanMembers permission)';
+      } else if (member && !member.bannable) {
+        resultSummary = 'Ban Failed (Target role is higher or equal to bot)';
+      } else {
+        try {
+          await guild.bans.create(actor.id, {
+            reason: `Anti-Nuke Detection: ${actionName} (${detectionDetails.count}/${detectionDetails.limit} in ${detectionDetails.windowMs / 1000}s)`,
+            deleteMessageSeconds: 86400,
+          });
+          resultSummary = rolesStrippedCount > 0 ? 'INSTANT BAN & ROLES STRIPPED' : 'INSTANT BAN';
+          actionSuccess = true;
+        } catch (err) {
+          resultSummary = `Ban Failed: ${err.message}`;
+          console.error(redactSecrets(`Anti-nuke ban failed: ${err.message}`));
+        }
       }
-    } else if (actionToTake === 'kick' && member && member.kickable) {
-      await member.kick(`Anti-Nuke Detection: ${actionName}`).catch(() => {});
-      resultSummary = 'INSTANT KICK';
+    } else if (actionToTake === 'kick') {
+      if (!me?.permissions?.has(PermissionsBitField.Flags.KickMembers)) {
+        resultSummary = 'Kick Failed (Bot lacks KickMembers permission)';
+      } else if (member && !member.kickable) {
+        resultSummary = 'Kick Failed (Target role is higher or equal to bot)';
+      } else {
+        try {
+          await member.kick(`Anti-Nuke Detection: ${actionName}`);
+          resultSummary = 'INSTANT KICK';
+          actionSuccess = true;
+        } catch (err) {
+          resultSummary = `Kick Failed: ${err.message}`;
+        }
+      }
     } else if (actionToTake === 'quarantine') {
-      resultSummary = `QUARANTINE (${rolesStrippedCount} roles removed)`;
+      resultSummary = rolesStrippedCount > 0 ? `QUARANTINE (${rolesStrippedCount} roles removed)` : 'QUARANTINE (No removable roles found)';
+      actionSuccess = rolesStrippedCount > 0;
     } else if (actionToTake === 'alert') {
       resultSummary = 'ALERT SENT (No Punishment)';
+      actionSuccess = true;
     }
 
     const latencyMs = Date.now() - startTime;
@@ -176,7 +200,7 @@ async function executeEnforcement(guild, actor, actionName, detectionDetails) {
 
     // 4. Dispatch Embed to #anti-nuke-logs & #security-logs
     const alertEmbed = new EmbedBuilder()
-      .setColor('#FF0000')
+      .setColor(actionSuccess ? '#FF0000' : '#FEE75C')
       .setTitle('🚨 HIGH-SPEED ANTI-NUKE DETECTED!')
       .setDescription(`An unauthorized administrative action burst was intercepted and contained.`)
       .addFields(
@@ -194,7 +218,7 @@ async function executeEnforcement(guild, actor, actionName, detectionDetails) {
     await logSecurity(guild, alertEmbed);
 
     console.warn(redactSecrets(`[Anti-Nuke Intercept] Guild: ${guild.name} | Actor: ${actor.tag || actor.id} | Action: ${actionName} | Result: ${resultSummary} (${latencyMs}ms)`));
-    return { executed: true, incident };
+    return { executed: true, incident, success: actionSuccess };
   } catch (err) {
     console.error(redactSecrets(`Enforcement error: ${err.message}`));
     return { executed: false, error: err.message };

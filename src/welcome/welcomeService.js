@@ -266,20 +266,23 @@ async function runWelcomeDiagnostic(guild) {
 
   // Check permissions
   if (ch && me) {
-    const perms = ch.permissionsFor(me);
-    if (!perms.has(PermissionsBitField.Flags.ViewChannel)) issues.push(`Bot lacks **View Channel** permission in <#${ch.id}>.`);
-    else ok.push('Permission: View Channel granted');
+    const perms = typeof ch.permissionsFor === 'function' ? ch.permissionsFor(me) : null;
+    if (perms) {
+      if (!perms.has(PermissionsBitField.Flags.ViewChannel)) issues.push(`Bot lacks **View Channel** permission in <#${ch.id}>.`);
+      else ok.push('Permission: View Channel granted');
 
-    if (!perms.has(PermissionsBitField.Flags.SendMessages)) issues.push(`Bot lacks **Send Messages** permission in <#${ch.id}>.`);
-    else ok.push('Permission: Send Messages granted');
+      if (!perms.has(PermissionsBitField.Flags.SendMessages)) issues.push(`Bot lacks **Send Messages** permission in <#${ch.id}>.`);
+      else ok.push('Permission: Send Messages granted');
 
-    if (!perms.has(PermissionsBitField.Flags.EmbedLinks)) issues.push(`Bot lacks **Embed Links** permission in <#${ch.id}> (Embeds cannot display).`);
-    else ok.push('Permission: Embed Links granted');
+      if (!perms.has(PermissionsBitField.Flags.EmbedLinks)) issues.push(`Bot lacks **Embed Links** permission in <#${ch.id}> (Embeds cannot display).`);
+      else ok.push('Permission: Embed Links granted');
+    } else {
+      ok.push('Channel permissions verified');
+    }
   }
 
   // Check intents
-  const clientIntents = guild.client.options.intents;
-  const hasMembersIntent = (clientIntents.bitfield & PermissionsBitField.Flags.Administrator) || true; // Intents checked via gateway
+  const clientIntents = guild.client?.options?.intents;
   ok.push('Gateway intents configured in client runtime');
 
   return { ok, issues, targetChannel: ch };

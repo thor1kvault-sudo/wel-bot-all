@@ -1,5 +1,5 @@
 /**
- * Utility helpers: secret redaction, safe formatting, time parsing, and hierarchy checks.
+ * Utility helpers: secret redaction, safe formatting, time parsing, and safe interaction replies.
  */
 
 function redactSecrets(str) {
@@ -7,6 +7,7 @@ function redactSecrets(str) {
   let cleaned = str;
   const secrets = [
     process.env.DISCORD_TOKEN,
+    process.env.GITHUB_PAT,
     process.env.SPOTIFY_CLIENT_SECRET,
     process.env.SPOTIFY_CLIENT_ID,
     process.env.OWNER_ID,
@@ -14,7 +15,7 @@ function redactSecrets(str) {
   for (const s of secrets) {
     if (s && s.length > 3) cleaned = cleaned.replaceAll(s, '[REDACTED]');
   }
-  cleaned = cleaned.replace(/(?:sk_live_|MTA|NDE|OTA|MTB|NzE)[a-zA-Z0-9_\-\.|]{20,}/g, '[REDACTED]');
+  cleaned = cleaned.replace(/(?:ghp_[a-zA-Z0-9]{36}|sk_live_[a-zA-Z0-9]+|MTA|NDE|OTA|MTB|NzE)[a-zA-Z0-9_\-\.|]{20,}/g, '[REDACTED]');
   return cleaned;
 }
 
@@ -53,16 +54,35 @@ function isHex(s) {
   return typeof s === 'string' && /^#[0-9A-Fa-f]{6}$/.test(s.trim());
 }
 
+/**
+ * Universal safe reply helper that guarantees correct Discord interaction acknowledgement
+ * - If deferred but not replied: calls editReply
+ * - If already replied: calls followUp
+ * - If unacknowledged: calls reply
+ */
 async function safeReply(interaction, content, ephemeral = true) {
+  if (!interaction) return null;
   try {
     const payload = typeof content === 'string' ? { content, ephemeral } : { ...content, ephemeral };
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.replied) {
       return await interaction.followUp(payload);
+    } else if (interaction.deferred) {
+      return await interaction.editReply(payload);
     } else {
       return await interaction.reply(payload);
     }
   } catch (err) {
-    console.error('safeReply failed:', err.message);
+    console.error('safeReply initial error:', redactSecrets(err.message));
+    try {
+      // Fallback rescue attempt
+      if (interaction.deferred && !interaction.replied) {
+        return await interaction.editReply(typeof content === 'string' ? { content } : content);
+      } else if (!interaction.replied && !interaction.deferred) {
+        return await interaction.reply(typeof content === 'string' ? { content, ephemeral: true } : { ...content, ephemeral: true });
+      }
+    } catch (rescueErr) {
+      console.error('safeReply rescue failed:', redactSecrets(rescueErr.message));
+    }
   }
 }
 

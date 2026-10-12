@@ -1,6 +1,6 @@
 const { PermissionsBitField, EmbedBuilder } = require('discord.js');
 const { getGuildConfig, saveGuildConfig } = require('../config/guildConfig');
-const { logAutoMod } = require('../logging/loggerService');
+const { logAutoMod, resolveLogChannel } = require('../logging/loggerService');
 const { countEmojis, redactSecrets } = require('../utils/helpers');
 
 // Per-user message history: Map<"guildId:userId", { timestamps: number[], lastMessages: string[] }>
@@ -8,6 +8,17 @@ const userMessageHistory = new Map();
 
 // Join raid tracker: Map<guildId, number[]>
 const raidJoinTracker = new Map();
+
+// Processed message IDs set to prevent duplicate punishments (bounded ring cache)
+const processedMessagesRing = new Set();
+function markMessageProcessed(id) {
+  if (!id) return;
+  if (processedMessagesRing.size > 2000) {
+    const first = processedMessagesRing.values().next().value;
+    processedMessagesRing.delete(first);
+  }
+  processedMessagesRing.add(id);
+}
 
 /**
  * Checks if a user or role is whitelisted from AutoMod in this guild.
@@ -39,70 +50,129 @@ function isAutoModWhitelisted(member, channel = null) {
 }
 
 /**
- * Executes configured AutoMod punishment
+ * Executes configured AutoMod punishment with honest result tracking
  */
 async function applyAutoModPunishment(member, actionType, reason, message = null, ruleKey = '') {
   const guild = member.guild;
   const config = getGuildConfig(guild.id, guild.name);
   let action = (actionType || 'delete').toLowerCase();
 
-  // 1. Delete message
-  if (message && message.deletable) {
-    await message.delete().catch(() => {});
+  // Deduplication check
+  if (message?.id && processedMessagesRing.has(message.id)) {
+    return { executed: false, reason: 'Already processed' };
+  }
+  if (message?.id) markMessageProcessed(message.id);
+
+  // 1. Message Deletion
+  let deletionSucceeded = false;
+  if (message) {
+    if (message.deletable) {
+      try {
+        await message.delete();
+        deletionSucceeded = true;
+      } catch (delErr) {
+        deletionSucceeded = false;
+      }
+    }
   }
 
   const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
-  let penaltyResult = 'Message Deleted';
+  let penaltyResult = deletionSucceeded ? 'Message Deleted' : 'Message Delete Failed (Missing Permissions)';
+  let punishmentSucceeded = deletionSucceeded;
 
   try {
     if (action === 'timeout') {
-      const durationMs = 60 * 1000; // default 1 min
-      if (me && me.permissions.has(PermissionsBitField.Flags.ModerateMembers) && member.moderatable) {
-        await member.timeout(durationMs, `AutoMod: ${reason}`).catch(() => {});
-        penaltyResult = 'Timed out for 60s';
+      const durationMs = (config.automod?.[ruleKey]?.timeoutSec || 60) * 1000;
+      if (!me?.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
+        penaltyResult = 'Timeout Failed (Bot lacks ModerateMembers permission)';
+        punishmentSucceeded = false;
+      } else if (!member.moderatable) {
+        penaltyResult = 'Timeout Failed (Target role is higher or equal to bot)';
+        punishmentSucceeded = false;
+      } else {
+        try {
+          await member.timeout(durationMs, `AutoMod: ${reason}`);
+          penaltyResult = `Timed out for ${Math.round(durationMs / 1000)}s`;
+          punishmentSucceeded = true;
+        } catch (tErr) {
+          penaltyResult = `Timeout Failed: ${tErr.message}`;
+          punishmentSucceeded = false;
+        }
       }
     } else if (action === 'warn') {
       if (!config.warnings) config.warnings = {};
       if (!config.warnings[member.id]) config.warnings[member.id] = [];
-      config.warnings[member.id].push({
-        id: `W-${Date.now().toString(36)}`,
+      const warnEntry = {
+        id: `W-${Date.now().toString(36).toUpperCase()}`,
         reason: `AutoMod: ${reason}`,
         mod: 'AutoMod System',
         timestamp: Date.now(),
-      });
+      };
+      config.warnings[member.id].push(warnEntry);
       saveGuildConfig(guild.id, config);
-      penaltyResult = `Warned (Total: ${config.warnings[member.id].length})`;
+      penaltyResult = `Warned (Total Strikes: ${config.warnings[member.id].length})`;
+      punishmentSucceeded = true;
     } else if (action === 'kick') {
-      if (me && me.permissions.has(PermissionsBitField.Flags.KickMembers) && member.kickable) {
-        await member.kick(`AutoMod: ${reason}`).catch(() => {});
-        penaltyResult = 'Kicked from server';
+      if (!me?.permissions.has(PermissionsBitField.Flags.KickMembers)) {
+        penaltyResult = 'Kick Failed (Bot lacks KickMembers permission)';
+        punishmentSucceeded = false;
+      } else if (!member.kickable) {
+        penaltyResult = 'Kick Failed (Role hierarchy restriction)';
+        punishmentSucceeded = false;
+      } else {
+        try {
+          await member.kick(`AutoMod: ${reason}`);
+          penaltyResult = 'Kicked from server';
+          punishmentSucceeded = true;
+        } catch (kErr) {
+          penaltyResult = `Kick Failed: ${kErr.message}`;
+          punishmentSucceeded = false;
+        }
       }
     } else if (action === 'ban') {
-      if (me && me.permissions.has(PermissionsBitField.Flags.BanMembers) && member.bannable) {
-        await guild.bans.create(member.id, { reason: `AutoMod: ${reason}` }).catch(() => {});
-        penaltyResult = 'Banned from server';
+      if (!me?.permissions.has(PermissionsBitField.Flags.BanMembers)) {
+        penaltyResult = 'Ban Failed (Bot lacks BanMembers permission)';
+        punishmentSucceeded = false;
+      } else if (!member.bannable) {
+        penaltyResult = 'Ban Failed (Role hierarchy restriction)';
+        punishmentSucceeded = false;
+      } else {
+        try {
+          await guild.bans.create(member.id, { reason: `AutoMod: ${reason}`, deleteMessageSeconds: 86400 });
+          penaltyResult = 'Banned from server';
+          punishmentSucceeded = true;
+        } catch (bErr) {
+          penaltyResult = `Ban Failed: ${bErr.message}`;
+          punishmentSucceeded = false;
+        }
       }
+    } else if (action === 'log') {
+      penaltyResult = 'Logged (No punitive action taken)';
+      punishmentSucceeded = true;
     }
   } catch (err) {
     console.error(redactSecrets(`AutoMod penalty failed: ${err.message}`));
+    penaltyResult = `Penalty Error: ${err.message}`;
+    punishmentSucceeded = false;
   }
 
-  // Notify channel temporarily
-  if (message && message.channel) {
+  // Temporary in-channel alert if message was deleted
+  if (deletionSucceeded && message?.channel) {
     message.channel.send({
-      content: `🛡️ <@${member.id}>'s message was removed by **AutoMod** (${reason}).`,
+      content: `🛡️ <@${member.id}>'s message was intercepted by **AutoMod** (${reason}).`,
     }).then(msg => setTimeout(() => msg.delete().catch(() => {}), 5000)).catch(() => {});
   }
 
-  // Log to #automod-logs
+  // Log incident to #automod-logs
   const embed = new EmbedBuilder()
-    .setColor('#ED4245')
-    .setTitle('🤖 AutoMod Rule Triggered')
+    .setColor(punishmentSucceeded ? '#ED4245' : '#FEE75C')
+    .setTitle(punishmentSucceeded ? '🤖 AutoMod Action Enforced' : '⚠️ AutoMod Triggered (Action Incomplete)')
     .addFields(
-      { name: 'User', value: `${member.user?.tag || member.id} (<@${member.id}>)`, inline: true },
+      { name: 'Target User', value: `${member.user?.tag || member.id} (<@${member.id}>)`, inline: true },
       { name: 'Channel', value: message?.channel ? `<#${message.channel.id}>` : 'Unknown', inline: true },
-      { name: 'Violated Rule', value: reason, inline: true },
-      { name: 'Action Taken', value: penaltyResult, inline: true }
+      { name: 'Triggered Rule', value: reason, inline: true },
+      { name: 'Enforcement Result', value: `\`${penaltyResult}\``, inline: true },
+      { name: 'Status', value: punishmentSucceeded ? '✅ Successfully Enforced' : '⚠️ Enforcement Error', inline: true }
     )
     .setTimestamp();
 
@@ -112,13 +182,14 @@ async function applyAutoModPunishment(member, actionType, reason, message = null
   }
 
   await logAutoMod(guild, embed);
+  return { executed: punishmentSucceeded, result: penaltyResult };
 }
 
 /**
  * Evaluates a message against all AutoMod rules.
  */
 async function processMessage(message) {
-  if (!message || !message.guild || message.author.bot) return;
+  if (!message || !message.guild || message.author?.bot) return;
   const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
   if (!member) return;
 
@@ -167,8 +238,8 @@ async function processMessage(message) {
 
   // 3. Mention Spam & Mass Mention
   if (am.antiMentionSpam?.enabled) {
-    const userMentions = message.mentions.users.size;
-    const roleMentions = message.mentions.roles.size;
+    const userMentions = message.mentions?.users?.size || 0;
+    const roleMentions = message.mentions?.roles?.size || 0;
     const total = userMentions + roleMentions;
     const maxMentions = am.antiMentionSpam.maxMentions || 5;
     if (total >= maxMentions) {
@@ -179,7 +250,7 @@ async function processMessage(message) {
 
   // 4. Anti-Everyone / Anti-Here Ping
   if (am.antiEveryone?.enabled) {
-    if (content.includes('@everyone') || content.includes('@here') || message.mentions.everyone) {
+    if (content.includes('@everyone') || content.includes('@here') || message.mentions?.everyone) {
       await applyAutoModPunishment(member, am.antiEveryone.action || 'delete', 'Unauthorized @everyone / @here Ping', message, 'antiEveryone');
       return;
     }
@@ -196,7 +267,6 @@ async function processMessage(message) {
   // 6. Anti-Links / Phishing
   if (am.antiLinks?.enabled) {
     if (/https?:\/\/[^\s]+/i.test(content)) {
-      // Check allowed domains
       const allowed = am.antiLinks.allowedDomains || ['discord.com', 'tenor.com', 'giphy.com', 'youtube.com', 'youtu.be', 'spotify.com'];
       const isAllowed = allowed.some(d => content.includes(d));
       if (!isAllowed) {
@@ -220,7 +290,6 @@ async function processMessage(message) {
     const lowerContent = content.toLowerCase();
     for (const w of words) {
       if (!w) continue;
-      // Word boundary regex to avoid false positives (e.g. "pass" matching "ass")
       const regex = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
       if (regex.test(lowerContent)) {
         await applyAutoModPunishment(member, am.wordFilter.action || 'delete', `Blacklisted Word: \`${w}\``, message, 'wordFilter');
@@ -256,7 +325,7 @@ async function processMessage(message) {
  * Checks member join for Raid / Alt signals.
  */
 async function processMemberJoin(member) {
-  if (!member || !member.guild) return;
+  if (!member || !member.guild) return { intercepted: false };
   const guild = member.guild;
   const config = getGuildConfig(guild.id, guild.name);
   const am = config.automod || {};
@@ -266,16 +335,21 @@ async function processMemberJoin(member) {
     const minDays = am.altDetection.minDays || 7;
     const ageDays = Math.floor((Date.now() - member.user.createdTimestamp) / 86400000);
     if (ageDays < minDays) {
-      if (member.kickable) {
-        await member.kick(`Alt Account: ${ageDays} days old (Minimum: ${minDays} days)`).catch(() => {});
+      let kickSuccess = false;
+      const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+      if (me?.permissions.has(PermissionsBitField.Flags.KickMembers) && member.kickable) {
+        try {
+          await member.kick(`Alt Account: ${ageDays} days old (Minimum: ${minDays} days)`);
+          kickSuccess = true;
+        } catch (_) {}
       }
       const embed = new EmbedBuilder()
         .setColor('#ED4245')
         .setTitle('🛡️ Alt Account Intercepted')
-        .setDescription(`**User:** ${member.user.tag} (\`${member.id}\`)\n**Account Age:** ${ageDays} days\n**Minimum Allowed:** ${minDays} days\n**Action:** Kicked`)
+        .setDescription(`**User:** ${member.user.tag} (\`${member.id}\`)\n**Account Age:** ${ageDays} days\n**Minimum Allowed:** ${minDays} days\n**Action:** ${kickSuccess ? 'Kicked' : 'Kick Failed (Hierarchy/Permissions)'}`)
         .setTimestamp();
       await logAutoMod(guild, embed);
-      return { intercepted: true, reason: 'alt' };
+      return { intercepted: true, reason: 'alt', kicked: kickSuccess };
     }
   }
 
@@ -307,9 +381,96 @@ async function processMemberJoin(member) {
   return { intercepted: false };
 }
 
+/**
+ * Diagnostic and simulation test engine for /automod test
+ * Validates config, permissions, rules, and simulations without modifying live members.
+ */
+async function runAutoModDiagnostic(guild) {
+  const config = getGuildConfig(guild.id, guild.name);
+  const am = config.automod || {};
+  const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+
+  const checks = [];
+  const issues = [];
+
+  // 1. Engine enabled check
+  if (am.enabled) {
+    checks.push('AutoMod Engine is **Active & Enabled**');
+  } else {
+    issues.push('AutoMod Engine is currently **Disabled** (use `/automod enable`)');
+  }
+
+  // 2. Permission health check
+  const requiredPerms = [
+    { flag: PermissionsBitField.Flags.ManageMessages, name: 'Manage Messages' },
+    { flag: PermissionsBitField.Flags.ModerateMembers, name: 'Moderate Members (Timeout)' },
+    { flag: PermissionsBitField.Flags.KickMembers, name: 'Kick Members' },
+    { flag: PermissionsBitField.Flags.BanMembers, name: 'Ban Members' },
+  ];
+
+  for (const p of requiredPerms) {
+    if (me?.permissions?.has(p.flag)) {
+      checks.push(`Permission **${p.name}**: Granted`);
+    } else {
+      issues.push(`Permission **${p.name}**: ❌ Missing`);
+    }
+  }
+
+  // 3. Log destination channel check
+  const logChan = await resolveLogChannel(guild, 'automod');
+  if (logChan) {
+    checks.push(`AutoMod Log Channel: <#${logChan.id}>`);
+  } else {
+    issues.push('AutoMod Log Channel: ⚠️ Not found (Run `/logs setup` to create `#automod-logs`)');
+  }
+
+  // 4. Safe Filter Simulations (No members harmed)
+  const simulations = [];
+
+  // Word Filter simulation
+  const badWordTest = (am.wordFilter?.words || []).length > 0;
+  simulations.push(`Word Blacklist: ${badWordTest ? `Active (${am.wordFilter.words.length} words)` : 'No words configured'}`);
+
+  // Invite regex simulation
+  const inviteRegex = /(?:https?:\/\/)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com\/invite|dsc\.gg|invite\.gg)\/[a-zA-Z0-9]+/i;
+  const testInviteMatch = inviteRegex.test('Join here: discord.gg/testserver');
+  simulations.push(`Invite Filter Pattern: ${testInviteMatch ? 'Operational' : 'Regex Error'}`);
+
+  // Caps simulation
+  const testCapsLetters = 'HELLO THIS IS ALL CAPS TEST'.replace(/[^a-zA-Z]/g, '');
+  const testCapsRatio = (testCapsLetters.replace(/[^A-Z]/g, '').length / testCapsLetters.length) * 100;
+  simulations.push(`Caps Analyzer: Operational (Evaluated sample to ${Math.round(testCapsRatio)}% caps)`);
+
+  // Emoji simulation
+  const emojiCount = countEmojis('😀🔥🚀⚡');
+  simulations.push(`Emoji Counter: Operational (Counted ${emojiCount} emojis)`);
+
+  return {
+    operational: issues.length === 0,
+    checks,
+    issues,
+    simulations,
+    activeRulesCount: [
+      am.antiSpam?.enabled,
+      am.antiDuplicate?.enabled,
+      am.antiMentionSpam?.enabled,
+      am.antiEveryone?.enabled,
+      am.antiInvites?.enabled,
+      am.antiLinks?.enabled,
+      am.antiNsfwLinks?.enabled,
+      am.wordFilter?.enabled,
+      am.antiCaps?.enabled,
+      am.antiEmojiSpam?.enabled,
+      am.altDetection?.enabled,
+      am.antiRaid?.enabled,
+    ].filter(Boolean).length,
+  };
+}
+
 module.exports = {
   isAutoModWhitelisted,
   processMessage,
   processMemberJoin,
   applyAutoModPunishment,
+  runAutoModDiagnostic,
 };
