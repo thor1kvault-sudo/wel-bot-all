@@ -114,6 +114,8 @@ function createFullMockInteraction(commandName, subcommandName = null) {
       },
       getChannel: () => mockChannel,
       getRole: () => ({ id: 'role_admin', name: 'Admin' }),
+      getAttachment: () => null,
+      getBoolean: (name) => false,
     },
     get replied() { return replied; },
     get deferred() { return deferred; },
@@ -165,5 +167,5 @@ test('Group D: Every single declared command and subcommand executes and acknowl
     }
   }
 
-  assert.strictEqual(auditedEndpoints, 101, 'All 101 command and subcommand endpoints must be audited');
+  assert.strictEqual(auditedEndpoints, 106, 'All 106 command and subcommand endpoints must be audited');
 });

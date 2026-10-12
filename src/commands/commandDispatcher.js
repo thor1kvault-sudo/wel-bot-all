@@ -660,8 +660,60 @@ async function dispatchCommand(interaction, context = {}) {
       const embed = new EmbedBuilder()
         .setColor(w.embedColor || '#FF0000')
         .setTitle(`Welcome Configuration — ${guild.name}`)
-        .setDescription(`• **Channel:** ${w.channelId ? `<#${w.channelId}>` : '*Auto-detect*'}\n• **Status:** ${w.enabled ? '🟢 Enabled' : '🔴 Disabled'}\n• **Embed Color:** \`${w.embedColor}\`\n• **Auto-Role:** ${w.autoRoleId ? `<@&${w.autoRoleId}>` : '*None*'}\n• **Rules Channel:** ${w.rulesChannelId ? `<#${w.rulesChannelId}>` : '*Not set*'}\n• **Roles Channel:** ${w.rolesChannelId ? `<#${w.rolesChannelId}>` : '*Not set*'}`)
+        .setDescription(
+          `• **Channel:** ${w.channelId ? `<#${w.channelId}>` : '*Auto-detect*'}\n` +
+          `• **Status:** ${w.enabled ? '🟢 Enabled' : '🔴 Disabled'}\n` +
+          `• **Embed Color:** \`${w.embedColor}\`\n` +
+          `• **Banner:** ${w.bannerUrl ? `[Custom Banner](${w.bannerUrl})` : (guild?.bannerURL?.({ size: 1024 }) ? 'Discord Server Banner (Boost Lv.2)' : '*Not set (use `/setbanner`)*')}\n` +
+          `• **Logo:** ${w.logoUrl ? `[Custom Logo](${w.logoUrl})` : 'Server Icon'}\n` +
+          `• **Auto-Role:** ${w.autoRoleId ? `<@&${w.autoRoleId}>` : '*None*'}\n` +
+          `• **Rules Channel:** ${w.rulesChannelId ? `<#${w.rulesChannelId}>` : '*Not set*'}\n` +
+          `• **Roles Channel:** ${w.rolesChannelId ? `<#${w.rolesChannelId}>` : '*Not set*'}`
+        )
         .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+    if (sub === 'banner') {
+      const file = interaction.options.getAttachment?.('image');
+      const urlInput = interaction.options.getString('url')?.trim();
+
+      let finalBannerUrl = null;
+
+      if (file) {
+        finalBannerUrl = file.url;
+      } else if (urlInput) {
+        if (urlInput.toLowerCase() === 'reset' || urlInput.toLowerCase() === 'clear') {
+          config.welcome.bannerUrl = '';
+          saveGuildConfig(guild.id, config);
+          return safeReply(interaction, '🧹 Welcome banner cleared! The welcome card will no longer display a custom banner.');
+        } else if (urlInput.toLowerCase() === 'server') {
+          finalBannerUrl = guild?.bannerURL?.({ size: 1024 }) || guild?.splashURL?.({ size: 1024 });
+          if (!finalBannerUrl) {
+            return safeReply(interaction, '⚠️ This server does not have a native Discord banner or splash (requires Server Boost Level 2). Upload an image file or provide an image link instead.');
+          }
+        } else if (urlInput.startsWith('http://') || urlInput.startsWith('https://')) {
+          finalBannerUrl = urlInput;
+        } else {
+          return safeReply(interaction, '⚠️ Invalid image URL. Please provide a valid link starting with `http://` or `https://`, or upload an image file.');
+        }
+      } else {
+        finalBannerUrl = guild?.bannerURL?.({ size: 1024 }) || guild?.splashURL?.({ size: 1024 });
+        if (!finalBannerUrl) {
+          return safeReply(interaction, 'ℹ️ **No banner provided and server has no native Discord banner.**\n\n• To upload a banner from your phone/PC: `/welcome banner image:[attach file]`\n• To use an image link: `/welcome banner url:[paste https:// link]`\n• To use native server banner: `/welcome banner url:server`\n• To reset/remove banner: `/welcome banner url:reset`');
+        }
+      }
+
+      config.welcome.bannerUrl = finalBannerUrl;
+      saveGuildConfig(guild.id, config);
+
+      const embed = new EmbedBuilder()
+        .setColor(config.welcome.embedColor || '#FF0000')
+        .setTitle('🎨 Server Welcome Banner Updated!')
+        .setDescription(`Your welcome card banner is now set!\nRun \`/testwelcome\` to preview the card with your new banner.`)
+        .setImage(finalBannerUrl)
+        .setFooter({ text: 'THOR APEX • Welcome System' })
+        .setTimestamp();
+
       return safeReply(interaction, { embeds: [embed] });
     }
     if (sub === 'test') {
@@ -773,6 +825,120 @@ async function dispatchCommand(interaction, context = {}) {
     saveGuildConfig(guild.id, config);
     return safeReply(interaction, '📝 Welcome card text updated.');
   }
+  if (commandName === 'setbanner' || commandName === 'setwelcomebanner') {
+    const file = interaction.options.getAttachment?.('image');
+    const urlInput = interaction.options.getString('url')?.trim();
+
+    let finalBannerUrl = null;
+
+    if (file) {
+      finalBannerUrl = file.url;
+    } else if (urlInput) {
+      if (urlInput.toLowerCase() === 'reset' || urlInput.toLowerCase() === 'clear') {
+        config.welcome.bannerUrl = '';
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, '🧹 Welcome banner cleared! The welcome card will no longer display a custom banner.');
+      } else if (urlInput.toLowerCase() === 'server') {
+        finalBannerUrl = guild?.bannerURL?.({ size: 1024 }) || guild?.splashURL?.({ size: 1024 });
+        if (!finalBannerUrl) {
+          return safeReply(interaction, '⚠️ This server does not have a native Discord banner or splash (requires Server Boost Level 2). Upload an image file with `/setbanner image:<file>` or paste an image URL instead.');
+        }
+      } else if (urlInput.startsWith('http://') || urlInput.startsWith('https://')) {
+        finalBannerUrl = urlInput;
+      } else {
+        return safeReply(interaction, '⚠️ Invalid image URL. Please provide a valid link starting with `http://` or `https://`, or upload an image file directly.');
+      }
+    } else {
+      finalBannerUrl = guild?.bannerURL?.({ size: 1024 }) || guild?.splashURL?.({ size: 1024 });
+      if (!finalBannerUrl) {
+        return safeReply(interaction, 'ℹ️ **No banner specified and server has no native Discord banner.**\n\n• To upload a banner from your phone/PC: `/setbanner image:[attach file]`\n• To use an image link: `/setbanner url:[paste https:// link]`\n• To auto-use native server banner (Level 2 Boost): `/setbanner url:server`\n• To reset/remove banner: `/setbanner url:reset`');
+      }
+    }
+
+    config.welcome.bannerUrl = finalBannerUrl;
+    saveGuildConfig(guild.id, config);
+
+    const embed = new EmbedBuilder()
+      .setColor(config.welcome.embedColor || '#FF0000')
+      .setTitle('🎨 Server Welcome Banner Updated!')
+      .setDescription(`Your welcome card banner is now active.\nRun \`/testwelcome\` to preview how it looks!`)
+      .setImage(finalBannerUrl)
+      .setFooter({ text: 'THOR APEX • Welcome System' })
+      .setTimestamp();
+
+    return safeReply(interaction, { embeds: [embed] });
+  }
+
+  if (commandName === 'setlogo') {
+    const file = interaction.options.getAttachment?.('image');
+    const urlInput = interaction.options.getString('url')?.trim();
+
+    let finalLogoUrl = null;
+
+    if (file) {
+      finalLogoUrl = file.url;
+    } else if (urlInput) {
+      if (urlInput.toLowerCase() === 'reset' || urlInput.toLowerCase() === 'clear') {
+        config.welcome.logoUrl = '';
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, '🧹 Welcome logo cleared! Default server icon will be used.');
+      } else if (urlInput.toLowerCase() === 'server') {
+        finalLogoUrl = guild?.iconURL?.({ size: 1024, forceStatic: false });
+        if (!finalLogoUrl) {
+          return safeReply(interaction, '⚠️ Server has no icon set.');
+        }
+      } else if (urlInput.startsWith('http://') || urlInput.startsWith('https://')) {
+        finalLogoUrl = urlInput;
+      } else {
+        return safeReply(interaction, '⚠️ Invalid image URL. Must start with `http://` or `https://`.');
+      }
+    } else {
+      finalLogoUrl = guild?.iconURL?.({ size: 1024, forceStatic: false });
+      if (!finalLogoUrl) {
+        return safeReply(interaction, 'ℹ️ Provide an image attachment or URL, or type `/setlogo url:server`.');
+      }
+    }
+
+    config.welcome.logoUrl = finalLogoUrl;
+    saveGuildConfig(guild.id, config);
+
+    const embed = new EmbedBuilder()
+      .setColor(config.welcome.embedColor || '#FF0000')
+      .setTitle('🖼️ Welcome Logo/Icon Updated!')
+      .setDescription('Your welcome card thumbnail and header icon have been updated.\nRun `/testwelcome` to preview!')
+      .setThumbnail(finalLogoUrl)
+      .setTimestamp();
+
+    return safeReply(interaction, { embeds: [embed] });
+  }
+
+  if (commandName === 'serverbanner') {
+    const applyWelcome = interaction.options.getBoolean?.('apply_welcome') ?? false;
+    const bannerUrl = guild?.bannerURL?.({ size: 1024 }) || guild?.splashURL?.({ size: 1024 }) || config.welcome.bannerUrl;
+
+    if (!bannerUrl) {
+      return safeReply(interaction, {
+        content: `ℹ️ **${guild.name}** has no banner set on Discord (requires Server Boost Level 2) and no custom welcome banner configured.\n\nUse \`/setbanner\` to upload an image from your PC/phone or paste an image URL!`,
+        ephemeral: true,
+      });
+    }
+
+    if (applyWelcome) {
+      config.welcome.bannerUrl = bannerUrl;
+      saveGuildConfig(guild.id, config);
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(config.welcome.embedColor || '#FF0000')
+      .setTitle(`🖼️ ${guild.name} — Server Banner`)
+      .setDescription(applyWelcome ? '✅ This banner has also been applied to the **THOR APEX Welcome Card**!' : `[Click here for full resolution](${bannerUrl})`)
+      .setImage(bannerUrl)
+      .setFooter({ text: applyWelcome ? 'Applied to Welcome Card' : 'Use /setbanner to customize welcome banner' })
+      .setTimestamp();
+
+    return safeReply(interaction, { embeds: [embed] });
+  }
+
   if (commandName === 'setleavetext') {
     const msg = interaction.options.getString('message', true);
     config.goodbye.message = msg; saveGuildConfig(guild.id, config);
@@ -802,7 +968,9 @@ async function dispatchCommand(interaction, context = {}) {
         `• **Gaming Channel:** ${w.gamingChannelId ? `<#${w.gamingChannelId}>` : '*Auto-detect*'}\n` +
         `• **General/Chill Channel:** ${w.generalChannelId || w.chillChannelId ? `<#${w.generalChannelId || w.chillChannelId}>` : '*Auto-detect*'}\n` +
         `• **Leave Channel:** ${config.goodbye?.channelId ? `<#${config.goodbye.channelId}>` : '*Auto-detect*'}\n` +
-        `• **Color:** \`${w.embedColor}\``
+        `• **Color:** \`${w.embedColor}\`\n` +
+        `• **Banner:** ${w.bannerUrl ? `[Custom Banner](${w.bannerUrl})` : (guild?.bannerURL?.({ size: 1024 }) ? 'Discord Server Banner (Boost Lv.2)' : '*Not set (use `/setbanner`)*')}\n` +
+        `• **Logo:** ${w.logoUrl ? `[Custom Logo](${w.logoUrl})` : 'Server Icon'}`
       )
       .setTimestamp();
     return safeReply(interaction, { embeds: [embed] });

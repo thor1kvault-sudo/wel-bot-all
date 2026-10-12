@@ -234,7 +234,10 @@ function buildApplicationCommands() {
       .addSubcommand(s => s.setName('config').setDescription('View current welcome card settings'))
       .addSubcommand(s => s.setName('test').setDescription('Preview welcome card & run permission diagnostic'))
       .addSubcommand(s => s.setName('enable').setDescription('Enable welcome messages'))
-      .addSubcommand(s => s.setName('disable').setDescription('Disable welcome messages')),
+      .addSubcommand(s => s.setName('disable').setDescription('Disable welcome messages'))
+      .addSubcommand(s => s.setName('banner').setDescription('Set or sync welcome banner image')
+        .addAttachmentOption(o => o.setName('image').setDescription('Upload banner image file').setRequired(false))
+        .addStringOption(o => o.setName('url').setDescription('Or paste banner image URL (or "server" / "reset")').setRequired(false))),
 
     new SlashCommandBuilder()
       .setName('goodbye')
@@ -345,6 +348,32 @@ function buildApplicationCommands() {
       .addStringOption(o => o.setName('greeting').setDescription('Greeting prefix').setRequired(false))
       .addStringOption(o => o.setName('subtitle').setDescription('Welcome subtitle').setRequired(false))
       .addStringOption(o => o.setName('outro').setDescription('Closing line').setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName('setbanner')
+      .setDescription('Set or sync welcome banner image (upload file, paste URL, or use server banner)')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addAttachmentOption(o => o.setName('image').setDescription('Upload banner image file').setRequired(false))
+      .addStringOption(o => o.setName('url').setDescription('Or paste banner image URL (or "server" / "reset")').setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName('setwelcomebanner')
+      .setDescription('Set or sync welcome banner image (upload file, paste URL, or use server banner)')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addAttachmentOption(o => o.setName('image').setDescription('Upload banner image file').setRequired(false))
+      .addStringOption(o => o.setName('url').setDescription('Or paste banner image URL (or "server" / "reset")').setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName('setlogo')
+      .setDescription('Set or sync welcome card logo/icon (upload file, paste URL, or use server icon)')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addAttachmentOption(o => o.setName('image').setDescription('Upload logo image file').setRequired(false))
+      .addStringOption(o => o.setName('url').setDescription('Or paste logo image URL (or "server" / "reset")').setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName('serverbanner')
+      .setDescription('Display server banner and optionally apply it to welcome card')
+      .addBooleanOption(o => o.setName('apply_welcome').setDescription('Apply as welcome card banner?').setRequired(false)),
 
     new SlashCommandBuilder()
       .setName('setleavetext')

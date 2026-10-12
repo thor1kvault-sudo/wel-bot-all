@@ -64,11 +64,16 @@
 ### 🎉 4. Welcome & Goodbye Commands
 * **`/welcome setup channel:#channel`** — Locks the designated channel for welcome cards.
 * **`/welcome test`** — Sends an interactive preview of the welcome card matching the premium demo layout and runs a full permissions diagnostic.
-* **`/welcome config`** — Displays current welcome card channels, color, and options.
+* **`/welcome config`** — Displays current welcome card channels, color, banner, logo, and options.
+* **`/welcome banner [image] [url]`** — Sets or syncs welcome banner image (upload file, paste URL, or use "server").
 * **`/welcome enable`** / **`/welcome disable`** — Toggles welcome messages.
 * **`/goodbye setup channel:#channel`** — Locks the channel for member leave/goodbye embeds.
 * **`/goodbye test`** — Sends a preview of the departure embed.
 * **`/goodbye enable`** / **`/goodbye disable`** — Toggles leave messages.
+* **`/setbanner [image] [url]`** — Upload image file from PC/phone or paste link to set welcome card banner (or `url:server` to sync Discord server banner, `url:reset` to clear).
+* **`/setwelcomebanner [image] [url]`** — Alias for `/setbanner`.
+* **`/setlogo [image] [url]`** — Set custom logo/icon for welcome card thumbnail and header (or `url:server` to sync icon).
+* **`/serverbanner [apply_welcome:true|false]`** — View server banner and optionally apply it to the welcome card.
 * **`/setwelcomecolor color:<#hex>`** — Customizes embed sidebar color (e.g. `#FF0000` for Red).
 * **`/setwelcometext`** — Customizes greeting, subtitle, and closing lines.
 * **`/setleavetext`** — Customizes departure message with `{username}`, `{server}`, `{membercount}` placeholders.

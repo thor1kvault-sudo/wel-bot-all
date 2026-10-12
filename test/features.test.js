@@ -16,6 +16,7 @@ const {
   getQuarantinedCount, isQuarantined,
 } = require('../src/security/antiRaid');
 const { getGuildConfig, saveGuildConfig } = require('../src/config/guildConfig');
+const { buildWelcomeMessage } = require('../src/welcome/welcomeService');
 const { dispatchCommand } = require('../src/commands/commandDispatcher');
 
 // ═══════════════════════════════════════════════════════════════════
@@ -441,3 +442,182 @@ test('F5.6: /quarantine release (mass) clears all quarantined members', async ()
   assert.ok(responseContent, '/quarantine release must respond');
   assert.ok(responseContent.includes('Released'), 'Response must confirm release');
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// FEATURE 6: Server Banner & Logo Management Commands
+// ═══════════════════════════════════════════════════════════════════
+
+test('F6.1: /setbanner with attachment saves bannerUrl to config', async () => {
+  const guildId = 'guild_banner_test_1';
+  let responsePayload = null;
+
+  const interaction = {
+    commandName: 'setbanner',
+    guild: { id: guildId, name: 'Banner Test Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getAttachment: (name) => name === 'image' ? { url: 'https://cdn.discordapp.com/attachments/banner1.png' } : null,
+      getString: () => null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responsePayload = payload;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.welcome.bannerUrl, 'https://cdn.discordapp.com/attachments/banner1.png');
+  assert.ok(responsePayload?.embeds?.length > 0, 'Must reply with preview embed');
+  assert.strictEqual(responsePayload.embeds[0].data.image.url, 'https://cdn.discordapp.com/attachments/banner1.png');
+});
+
+test('F6.2: /setbanner with url string saves bannerUrl to config', async () => {
+  const guildId = 'guild_banner_test_2';
+  let responsePayload = null;
+
+  const interaction = {
+    commandName: 'setbanner',
+    guild: { id: guildId, name: 'Banner Test Guild 2' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getAttachment: () => null,
+      getString: (name) => name === 'url' ? 'https://example.com/custom_banner.jpg' : null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responsePayload = payload;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.welcome.bannerUrl, 'https://example.com/custom_banner.jpg');
+});
+
+test('F6.3: /setbanner with "reset" clears bannerUrl from config', async () => {
+  const guildId = 'guild_banner_test_3';
+  const cfg = getGuildConfig(guildId);
+  cfg.welcome.bannerUrl = 'https://example.com/old_banner.png';
+  saveGuildConfig(guildId, cfg);
+
+  let responseText = null;
+  const interaction = {
+    commandName: 'setbanner',
+    guild: { id: guildId, name: 'Banner Test Guild 3' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getAttachment: () => null,
+      getString: (name) => name === 'url' ? 'reset' : null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responseText = typeof payload === 'string' ? payload : payload.content;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const updatedCfg = getGuildConfig(guildId);
+  assert.strictEqual(updatedCfg.welcome.bannerUrl, '', 'Banner URL must be cleared');
+  assert.ok(responseText.includes('cleared'), 'Must confirm banner cleared');
+});
+
+test('F6.4: /welcome banner sets banner and returns confirmation embed', async () => {
+  const guildId = 'guild_banner_test_4';
+  let responsePayload = null;
+
+  const interaction = {
+    commandName: 'welcome',
+    guild: { id: guildId, name: 'Banner Test Guild 4' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'banner',
+      getAttachment: () => null,
+      getString: (name) => name === 'url' ? 'https://cdn.discordapp.com/banners/server_welcome.png' : null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responsePayload = payload;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.welcome.bannerUrl, 'https://cdn.discordapp.com/banners/server_welcome.png');
+  assert.ok(responsePayload?.embeds?.length > 0, 'Must include confirmation embed');
+});
+
+test('F6.5: /serverbanner previews banner and applies to welcome card when apply_welcome is true', async () => {
+  const guildId = 'guild_banner_test_5';
+  let responsePayload = null;
+
+  const interaction = {
+    commandName: 'serverbanner',
+    guild: {
+      id: guildId,
+      name: 'Server Banner Guild',
+      bannerURL: () => 'https://cdn.discordapp.com/banners/guild_native_banner.png',
+      splashURL: () => null,
+    },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getBoolean: (name) => name === 'apply_welcome' ? true : false,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responsePayload = payload;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.welcome.bannerUrl, 'https://cdn.discordapp.com/banners/guild_native_banner.png');
+  assert.ok(responsePayload?.embeds?.length > 0, 'Must return banner embed');
+});
+
+test('F6.6: buildWelcomeMessage incorporates custom configured bannerUrl in welcome card', () => {
+  const guildId = 'guild_welcome_banner_check';
+  const cfg = getGuildConfig(guildId);
+  cfg.welcome.bannerUrl = 'https://cdn.discordapp.com/banners/thor_apex_banner_final.png';
+  saveGuildConfig(guildId, cfg);
+
+  const fakeGuild = {
+    id: guildId,
+    name: 'THOR APEX BANNER CHECK',
+    channels: { cache: new Map() },
+    iconURL: () => 'https://cdn.discordapp.com/icons/logo.png',
+    bannerURL: () => null, // Guild has NO native boost banner
+  };
+
+  const fakeMember = {
+    id: 'user_banner_preview',
+    user: { id: 'user_banner_preview', username: 'TheRealThor', tag: 'TheRealThor#0001' },
+    guild: fakeGuild,
+  };
+
+  const messagePayload = buildWelcomeMessage(fakeMember, fakeGuild);
+  assert.ok(messagePayload.embeds?.length > 0, 'Must produce embed');
+  const embed = messagePayload.embeds[0];
+  assert.strictEqual(embed.data.image.url, 'https://cdn.discordapp.com/banners/thor_apex_banner_final.png', 'Embed must display custom configured banner');
+});
+
