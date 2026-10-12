@@ -165,5 +165,5 @@ test('Group D: Every single declared command and subcommand executes and acknowl
     }
   }
 
-  assert.strictEqual(auditedEndpoints, 97, 'All 97 command and subcommand endpoints must be audited');
+  assert.strictEqual(auditedEndpoints, 101, 'All 101 command and subcommand endpoints must be audited');
 });

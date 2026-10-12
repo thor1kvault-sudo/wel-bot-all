@@ -3,6 +3,28 @@ const { getGuildConfig, saveGuildConfig } = require('../config/guildConfig');
 const { logAutoMod, resolveLogChannel } = require('../logging/loggerService');
 const { countEmojis, redactSecrets } = require('../utils/helpers');
 
+// ── Smart Anti-Phishing Pattern Library ──────────────────────────────────────
+// Covers: fake Nitro, typo-squatted Discord domains, free Steam gift scams,
+// token grabbers, suspicious short-URLs posing as Discord invites.
+const PHISHING_PATTERNS = [
+  // Fake Nitro / gift scams (keyword-based, domain-agnostic)
+  /(?:free[-. ]?nitro|nitro[-. ]?gift|discord[-. ]?nitro[-. ]?free|airdrop[-. ]?discord)/i,
+  /gift[-. ]?nitro[-. ]?discord/i,
+  /discordnitro[^.]*\.(?:com|net|org|io|xyz|gift|tk|ml|cf|ga)/i,
+  // Fake Discord gift domains (NOT discord.gg/WORD — only suspicious TLDs)
+  /discord\.(?:gift|gifts|rip|tk|ml|cf|ga|xyz|store|online|click|live)\//i,
+  // Typo-squatted Discord domain names (dlscord, discorcl, discorrd, etc.)
+  /(?:dlscord|discorcl|discod\.|discorrd\.|dscord|d1scord|disc0rd)\./i,
+  // Fake Steam community — typo variants with double letters or transposed chars
+  /steam(?:c[o0]mmunit[y1]{1,2}|communt[iy]+|c[o0]immunty|c[o0]mmunl)\./i,
+  /(?:steamcoimunity|steamcommuntiy|stearncommunity|steamcommuniity)\./i,
+  /steam[-. ]?gift[-. ]?card/i,
+  // Suspicious token-grab patterns
+  /(?:click[-. ]?here[-. ]?for[-. ]?nitro|claim[-. ]?your[-. ]?nitro|get[-. ]?free[-. ]?nitro)/i,
+  // Generic phishing redirect signals (link shorteners used in scams)
+  /(?:[a-z0-9-]+\.)?(?:bit\.ly|is\.gd|cutt\.ly)\/[a-zA-Z0-9]{4,}/i,
+];
+
 // Per-user message history: Map<"guildId:userId", { timestamps: number[], lastMessages: string[] }>
 const userMessageHistory = new Map();
 
@@ -264,7 +286,29 @@ async function processMessage(message) {
     }
   }
 
-  // 6. Anti-Links / Phishing
+  // 6. Smart Anti-Phishing & Fake Nitro Scanner (runs BEFORE generic antiLinks)
+  if (am.antiPhishing?.enabled !== false) { // default ON unless explicitly disabled
+    const cleanContent = content
+      .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '') // strip zero-width chars
+      .replace(/\s+/g, ' ');
+
+    const phishingHit = PHISHING_PATTERNS.find(re => re.test(cleanContent));
+    if (phishingHit) {
+      // Instant delete + 60-minute timeout (regardless of antiLinks setting)
+      await applyAutoModPunishment(
+        member, 'timeout',
+        '🚨 Phishing / Fake Nitro Link Detected — Immediate 60m Timeout',
+        message, 'antiPhishing'
+      );
+      // Self-deleting channel alert (5 seconds)
+      message.channel?.send({
+        content: `🚨 **SCAM ALERT** — <@${member.id}>'s message contained a **phishing link** and was blocked. Do NOT click any links shared by unverified users!`,
+      }).then(m => setTimeout(() => m.delete().catch(() => {}), 7000)).catch(() => {});
+      return;
+    }
+  }
+
+  // 6b. Anti-Links / External URL filter
   if (am.antiLinks?.enabled) {
     if (/https?:\/\/[^\s]+/i.test(content)) {
       const allowed = am.antiLinks.allowedDomains || ['discord.com', 'tenor.com', 'giphy.com', 'youtube.com', 'youtu.be', 'spotify.com'];
@@ -473,4 +517,5 @@ module.exports = {
   processMemberJoin,
   applyAutoModPunishment,
   runAutoModDiagnostic,
+  PHISHING_PATTERNS,
 };

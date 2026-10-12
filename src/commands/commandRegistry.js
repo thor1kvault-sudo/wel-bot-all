@@ -515,6 +515,25 @@ function buildApplicationCommands() {
     new SlashCommandBuilder()
       .setName('previous')
       .setDescription('Play the previous track in history'),
+
+    // ── INTERACTIVE CONTROL CENTRE & DEFCON ──
+    new SlashCommandBuilder()
+      .setName('panel')
+      .setDescription('Open the THOR APEX interactive admin control centre')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+
+    new SlashCommandBuilder()
+      .setName('threat')
+      .setDescription('Instantly switch server DEFCON threat level')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+
+    new SlashCommandBuilder()
+      .setName('quarantine')
+      .setDescription('Anti-Raid quarantine management')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('status').setDescription('View current quarantine status'))
+      .addSubcommand(s => s.setName('release').setDescription('Release all quarantined members')
+        .addUserOption(o => o.setName('user').setDescription('Specific user to release (leave blank for all)').setRequired(false))),
   ];
 
   return commands.map(c => c.toJSON());

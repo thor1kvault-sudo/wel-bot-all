@@ -1,5 +1,7 @@
 const {
-  EmbedBuilder, PermissionsBitField, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle
+  EmbedBuilder, PermissionsBitField, ChannelType,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const os = require('os');
 const { getGuildConfig, saveGuildConfig } = require('../config/guildConfig');
@@ -17,6 +19,9 @@ const {
 const {
   runAutoModDiagnostic,
 } = require('../automod/autoModEngine');
+const {
+  getQuarantinedCount, releaseAllQuarantine, releaseMember,
+} = require('../security/antiRaid');
 const {
   redactSecrets, safeReply, isHex, formatDuration,
 } = require('../utils/helpers');
@@ -1035,6 +1040,174 @@ async function dispatchCommand(interaction, context = {}) {
       return safeReply(interaction, `⏮️ Playing previous track: **${prev.title}**.`);
     }
     return safeReply(interaction, 'Could not replay previous track.');
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 8a. INTERACTIVE PANEL — /panel
+  // ─────────────────────────────────────────────────────────────
+  if (commandName === 'panel') {
+    const am = config.automod || {};
+    const sec = config.security || {};
+    const quarantinedCount = getQuarantinedCount(guild.id);
+
+    // Status card embed
+    const embed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle('⚡ THOR APEX — Admin Control Centre')
+      .setDescription(
+        `**🤖 AutoMod Engine:** ${am.enabled ? '🟢 Active' : '🔴 Disabled'}\n` +
+        `**🛡️ Anti-Nuke:** ${sec.antiNuke ? '🟢 Active' : '🔴 Disabled'}\n` +
+        `**🔒 Server Lockdown:** ${sec.lockdown ? '🔴 LOCKED DOWN' : '🟢 Normal'}\n` +
+        `**⚠️ Quarantined Members:** ${quarantinedCount > 0 ? `🟡 **${quarantinedCount} members**` : '🟢 None'}\n` +
+        `**🚨 DEFCON Level:** ${sec.defcon === 1 ? '🔴 DEFCON 1 — Raid Underway' : sec.defcon === 2 ? '🟡 DEFCON 2 — High Alert' : '🟢 DEFCON 3 — Normal'}\n\n` +
+        `*Click a button below to take immediate action.*`
+      )
+      .setFooter({ text: 'Only visible to you • Actions apply immediately' })
+      .setTimestamp();
+
+    // Row 1: Core toggle buttons
+    const row1 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('panel_toggle_automod')
+        .setLabel(am.enabled ? '🔴 Disable AutoMod' : '🟢 Enable AutoMod')
+        .setStyle(am.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('panel_toggle_antinuke')
+        .setLabel(sec.antiNuke ? '🔴 Disable Anti-Nuke' : '🟢 Enable Anti-Nuke')
+        .setStyle(sec.antiNuke ? ButtonStyle.Danger : ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('panel_lockdown')
+        .setLabel(sec.lockdown ? '🔓 Lift Lockdown' : '🔒 Quick Lockdown')
+        .setStyle(sec.lockdown ? ButtonStyle.Secondary : ButtonStyle.Danger),
+    );
+
+    // Row 2: Management buttons
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('panel_edit_filters')
+        .setLabel('⚙️ Edit Filter Rules')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('panel_automod_diag')
+        .setLabel('🔍 Run AutoMod Diagnostic')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('panel_release_quarantine')
+        .setLabel(`🟢 Release Quarantine (${quarantinedCount})`)
+        .setStyle(quarantinedCount > 0 ? ButtonStyle.Success : ButtonStyle.Secondary)
+        .setDisabled(quarantinedCount === 0),
+    );
+
+    // Row 3: Threat level selector
+    const row3 = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('panel_defcon_select')
+        .setPlaceholder('🎯 Change DEFCON Threat Level...')
+        .addOptions([
+          {
+            label: '🟢 DEFCON 3 — Normal Operations',
+            description: 'Standard AutoMod & Anti-Nuke. Unrestricted access.',
+            value: 'defcon_3',
+            emoji: '🟢',
+          },
+          {
+            label: '🟡 DEFCON 2 — High Alert',
+            description: 'Block accounts <3 days old. External links restricted.',
+            value: 'defcon_2',
+            emoji: '🟡',
+          },
+          {
+            label: '🔴 DEFCON 1 — Raid Underway',
+            description: 'Instant lockdown. Rate limits enforced. Joins quarantined.',
+            value: 'defcon_1',
+            emoji: '🔴',
+          },
+        ])
+    );
+
+    return safeReply(interaction, { embeds: [embed], components: [row1, row2, row3], ephemeral: true });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 8b. DEFCON SWITCHER — /threat
+  // ─────────────────────────────────────────────────────────────
+  if (commandName === 'threat') {
+    const sec = config.security || {};
+    const currentDefcon = sec.defcon || 3;
+
+    const embed = new EmbedBuilder()
+      .setColor(currentDefcon === 1 ? '#ED4245' : currentDefcon === 2 ? '#FEE75C' : '#57F287')
+      .setTitle('🚨 THOR APEX — DEFCON Threat Level Switcher')
+      .setDescription(
+        `**Current Level:** ${currentDefcon === 1 ? '🔴 DEFCON 1 — Raid Underway' : currentDefcon === 2 ? '🟡 DEFCON 2 — High Alert' : '🟢 DEFCON 3 — Normal'}\n\n` +
+        `Select your threat response level below:`
+      )
+      .addFields(
+        { name: '🟢 DEFCON 3 — Normal', value: 'Standard rules active. All members have full access.', inline: false },
+        { name: '🟡 DEFCON 2 — High Alert', value: 'Blocks accounts < 3 days old. All external links blocked except YouTube/Spotify.', inline: false },
+        { name: '🔴 DEFCON 1 — Raid Underway', value: 'Server lockdown engaged. New joins quarantined. Rate limits enforced.', inline: false },
+      )
+      .setFooter({ text: 'Only visible to you • Takes effect immediately' })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('threat_defcon_3')
+        .setLabel('🟢 DEFCON 3 — Normal')
+        .setStyle(currentDefcon === 3 ? ButtonStyle.Secondary : ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('threat_defcon_2')
+        .setLabel('🟡 DEFCON 2 — High Alert')
+        .setStyle(currentDefcon === 2 ? ButtonStyle.Secondary : ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('threat_defcon_1')
+        .setLabel('🔴 DEFCON 1 — Lockdown')
+        .setStyle(currentDefcon === 1 ? ButtonStyle.Secondary : ButtonStyle.Danger),
+    );
+
+    return safeReply(interaction, { embeds: [embed], components: [row], ephemeral: true });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 8c. QUARANTINE MANAGEMENT — /quarantine
+  // ─────────────────────────────────────────────────────────────
+  if (commandName === 'quarantine') {
+    const sub = interaction.options.getSubcommand();
+    const qCount = getQuarantinedCount(guild.id);
+
+    if (sub === 'status') {
+      const sec = config.security || {};
+      const embed = new EmbedBuilder()
+        .setColor(qCount > 0 ? '#FEE75C' : '#57F287')
+        .setTitle('⚠️ Anti-Raid Quarantine Status')
+        .addFields(
+          { name: 'Quarantined Members', value: `**${qCount}**`, inline: true },
+          { name: 'Emergency Quarantine Mode', value: sec.emergencyQuarantine ? '🔴 Active' : '🟢 Inactive', inline: true },
+          { name: 'Server Lockdown', value: sec.lockdown ? '🔴 Active' : '🟢 Inactive', inline: true },
+        )
+        .setDescription(qCount > 0 ? `Use \`/quarantine release\` or **/panel** → Release Quarantine to free ${qCount} member(s).` : 'No members are currently quarantined.')
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'release') {
+      const targetUser = interaction.options.getUser('user');
+
+      if (targetUser) {
+        const targetMember = guild.members.cache.get(targetUser.id) || await guild.members.fetch(targetUser.id).catch(() => null);
+        if (!targetMember) return safeReply(interaction, `❌ Member \`${targetUser.tag}\` not found in this server.`);
+        const result = await releaseMember(targetMember, `Admin release by ${user.tag}`);
+        if (result.success) return safeReply(interaction, `✅ **${targetUser.tag}** has been released from quarantine.`);
+        return safeReply(interaction, `❌ Release failed: ${result.reason}`);
+      } else {
+        // Mass release all
+        const result = await releaseAllQuarantine(guild, `Mass release by ${user.tag}`);
+        config.security = config.security || {};
+        config.security.emergencyQuarantine = false;
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `✅ Released **${result.released}** quarantined member(s). Failed: ${result.failed}.`);
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────

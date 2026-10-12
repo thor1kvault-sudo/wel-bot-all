@@ -29,6 +29,9 @@ const {
 const { buildApplicationCommands } = require('./src/commands/commandRegistry');
 const { dispatchCommand } = require('./src/commands/commandDispatcher');
 const { redactSecrets, safeReply, isHex, formatDuration } = require('./src/utils/helpers');
+const {
+  processRaidJoin, releaseAllQuarantine, releaseMember, getQuarantinedCount,
+} = require('./src/security/antiRaid');
 
 // Setup FFMPEG static if present
 try {
@@ -464,7 +467,11 @@ async function startBot() {
         return;
       }
 
-      // AutoMod Alt & Join-Raid Check
+      // Smart Anti-Raid Mass Join Quarantiner (Velocity-based wave detection)
+      const raidCheck = await processRaidJoin(member);
+      if (raidCheck?.intercepted) return;
+
+      // AutoMod Alt & Join-Raid Check (legacy alt detector)
       const amCheck = await processMemberJoin(member);
       if (amCheck?.intercepted) return;
 
@@ -810,7 +817,178 @@ async function startBot() {
         }
       }
 
-      // 2. Chat Input Slash Commands
+      // ── Panel Button Handlers ──
+      if (interaction.isButton()) {
+        const id = interaction.customId;
+        const guild = interaction.guild;
+        if (!guild) return;
+        const config = getGuildConfig(guild.id, guild.name);
+
+        // /panel toggle AutoMod
+        if (id === 'panel_toggle_automod') {
+          config.automod.enabled = !config.automod.enabled;
+          saveGuildConfig(guild.id, config);
+          return interaction.reply({ content: `🤖 AutoMod Engine is now **${config.automod.enabled ? '🟢 ENABLED' : '🔴 DISABLED'}**.`, ephemeral: true });
+        }
+
+        // /panel toggle Anti-Nuke
+        if (id === 'panel_toggle_antinuke') {
+          config.security.antiNuke = !config.security.antiNuke;
+          saveGuildConfig(guild.id, config);
+          return interaction.reply({ content: `🛡️ Anti-Nuke is now **${config.security.antiNuke ? '🟢 ENABLED' : '🔴 DISABLED'}**.`, ephemeral: true });
+        }
+
+        // /panel lockdown toggle
+        if (id === 'panel_lockdown') {
+          config.security.lockdown = !config.security.lockdown;
+          saveGuildConfig(guild.id, config);
+          return interaction.reply({ content: `🔒 Server Lockdown is now **${config.security.lockdown ? '🔴 ENGAGED' : '🟢 LIFTED'}**.`, ephemeral: true });
+        }
+
+        // /panel release quarantine
+        if (id === 'panel_release_quarantine') {
+          const result = await releaseAllQuarantine(guild, `Panel release by ${interaction.user.tag}`);
+          config.security.emergencyQuarantine = false;
+          saveGuildConfig(guild.id, config);
+          return interaction.reply({ content: `✅ Released **${result.released}** quarantined member(s). Failed: **${result.failed}**.`, ephemeral: true });
+        }
+
+        // /panel automod diagnostic
+        if (id === 'panel_automod_diag') {
+          await interaction.deferReply({ ephemeral: true });
+          const { runAutoModDiagnostic } = require('./src/automod/autoModEngine');
+          const diag = await runAutoModDiagnostic(guild);
+          const summary = [
+            ...diag.checks.map(c => `✅ ${c}`),
+            ...diag.issues.map(i => `❌ ${i}`),
+          ].join('\n') || 'No data.';
+          return interaction.editReply({ content: `**🔍 AutoMod Diagnostic (${diag.activeRulesCount} active rules)**\n${summary}`, ephemeral: true });
+        }
+
+        // /panel edit filter rules — opens Modal
+        if (id === 'panel_edit_filters') {
+          const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder: ARB } = require('discord.js');
+          const am = config.automod || {};
+          const modal = new ModalBuilder()
+            .setCustomId('modal_edit_filters')
+            .setTitle('⚙️ AutoMod Filter Rules Editor');
+
+          modal.addComponents(
+            new ARB().addComponents(
+              new TextInputBuilder()
+                .setCustomId('input_spam_limit')
+                .setLabel('Spam Limit (messages per 5s)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+                .setValue(String(am.antiSpam?.maxMessages || 5))
+                .setPlaceholder('e.g. 5')
+            ),
+            new ARB().addComponents(
+              new TextInputBuilder()
+                .setCustomId('input_max_mentions')
+                .setLabel('Max Mentions Allowed Per Message')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+                .setValue(String(am.antiMentionSpam?.maxMentions || 5))
+                .setPlaceholder('e.g. 5')
+            ),
+            new ARB().addComponents(
+              new TextInputBuilder()
+                .setCustomId('input_caps_threshold')
+                .setLabel('Caps Threshold (%)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+                .setValue(String(am.antiCaps?.maxPercentage || 70))
+                .setPlaceholder('e.g. 70')
+            ),
+            new ARB().addComponents(
+              new TextInputBuilder()
+                .setCustomId('input_blacklist_preview')
+                .setLabel('Blacklisted Words (comma-separated)')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(false)
+                .setValue((am.wordFilter?.words || []).slice(0, 10).join(', '))
+                .setPlaceholder('e.g. badword1, badword2, badword3')
+            ),
+          );
+          return interaction.showModal(modal);
+        }
+
+        // /threat DEFCON buttons
+        if (id.startsWith('threat_defcon_') || id.startsWith('panel_defcon_')) {
+          const level = parseInt(id.replace('threat_defcon_', '').replace('panel_defcon_defcon_', '')) || 3;
+          config.security.defcon = level;
+          if (level === 1) {
+            config.security.lockdown = true;
+            config.automod.altDetection = config.automod.altDetection || {};
+            config.automod.altDetection.enabled = true;
+          } else if (level === 2) {
+            config.security.lockdown = false;
+            config.automod.altDetection = config.automod.altDetection || {};
+            config.automod.altDetection.enabled = true;
+            config.automod.altDetection.minDays = 3;
+          } else {
+            config.security.lockdown = false;
+          }
+          saveGuildConfig(guild.id, config);
+          const labels = { 1: '🔴 DEFCON 1 — Raid Underway', 2: '🟡 DEFCON 2 — High Alert', 3: '🟢 DEFCON 3 — Normal' };
+          return interaction.reply({ content: `🚨 Threat level set to **${labels[level]}**. All corresponding security rules have been updated.`, ephemeral: true });
+        }
+      }
+
+      // ── Select Menu Handlers ──
+      if (interaction.isStringSelectMenu()) {
+        const id = interaction.customId;
+        const guild = interaction.guild;
+        if (!guild) return;
+        const config = getGuildConfig(guild.id, guild.name);
+
+        if (id === 'panel_defcon_select') {
+          const value = interaction.values[0]; // 'defcon_1', 'defcon_2', 'defcon_3'
+          const level = parseInt(value.replace('defcon_', ''));
+          config.security.defcon = level;
+          if (level === 1) { config.security.lockdown = true; }
+          else if (level === 2) { config.security.lockdown = false; config.automod.altDetection = { ...(config.automod.altDetection || {}), enabled: true, minDays: 3 }; }
+          else { config.security.lockdown = false; }
+          saveGuildConfig(guild.id, config);
+          const labels = { 1: '🔴 DEFCON 1 — Raid Underway', 2: '🟡 DEFCON 2 — High Alert', 3: '🟢 DEFCON 3 — Normal' };
+          return interaction.reply({ content: `🚨 DEFCON level switched to **${labels[level]}**.`, ephemeral: true });
+        }
+      }
+
+      // ── Modal Submit Handlers ──
+      if (interaction.isModalSubmit()) {
+        const id = interaction.customId;
+        const guild = interaction.guild;
+        if (!guild) return;
+        const config = getGuildConfig(guild.id, guild.name);
+
+        if (id === 'modal_edit_filters') {
+          const spamLimit = parseInt(interaction.fields.getTextInputValue('input_spam_limit')) || config.automod.antiSpam?.maxMessages || 5;
+          const maxMentions = parseInt(interaction.fields.getTextInputValue('input_max_mentions')) || config.automod.antiMentionSpam?.maxMentions || 5;
+          const capsThreshold = parseInt(interaction.fields.getTextInputValue('input_caps_threshold')) || config.automod.antiCaps?.maxPercentage || 70;
+          const blacklistRaw = interaction.fields.getTextInputValue('input_blacklist_preview') || '';
+          const newWords = blacklistRaw.split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+
+          config.automod.antiSpam = { ...(config.automod.antiSpam || {}), maxMessages: spamLimit };
+          config.automod.antiMentionSpam = { ...(config.automod.antiMentionSpam || {}), maxMentions };
+          config.automod.antiCaps = { ...(config.automod.antiCaps || {}), maxPercentage: capsThreshold };
+          if (newWords.length > 0) {
+            config.automod.wordFilter = { ...(config.automod.wordFilter || {}), words: newWords };
+          }
+          saveGuildConfig(guild.id, config);
+          return interaction.reply({
+            content: `✅ **AutoMod rules updated!**\n` +
+              `• Spam Limit: **${spamLimit} msgs/5s**\n` +
+              `• Max Mentions: **${maxMentions}**\n` +
+              `• Caps Threshold: **${capsThreshold}%**\n` +
+              `• Blacklisted Words: **${newWords.length > 0 ? newWords.length + ' words' : 'unchanged'}**`,
+            ephemeral: true,
+          });
+        }
+      }
+
+      // ── Chat Input Slash Commands ──
       if (!interaction.isChatInputCommand()) return;
 
       const context = {
