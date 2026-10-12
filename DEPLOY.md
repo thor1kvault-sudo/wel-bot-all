@@ -1,122 +1,105 @@
-## FILES TO PUSH (All in this folder)
+# 🚀 PRODUCTION 24/7 DEPLOYMENT & SETUP GUIDE
 
-index.js        - Main bot code
-package.json    - Dependencies
-.env.example    - Token template (safe to push)
-.gitignore      - Hides .env and node_modules
-README.md       - Bot documentation
-config.json     - Bot info
+This guide explains how to deploy and run your Discord bot continuously with 99.9% uptime, multi-server data persistence, and proper security configuration.
 
-DO NOT PUSH:
-.env            - Has your real token (auto-hidden by .gitignore)
-node_modules/   - Auto-hidden by .gitignore
+---
 
+## 🔑 1. DISCORD DEVELOPER PORTAL REQUIREMENTS
 
-## STEP 1 - Create GitHub Repo
+Before deploying your bot, you **MUST** configure two critical settings in the Discord Developer Portal:
 
-1. Go to: https://github.com/new
-2. Fill in:
-   - Repository name: welcome-bot
-   - Visibility: Public
-   - Do NOT add README, .gitignore, or license
-3. Click Create repository
-4. Copy your repo URL:
-   https://github.com/YOUR_USERNAME/welcome-bot.git
+1. Visit [Discord Developer Portal](https://discord.com/developers/applications).
+2. Select your Bot Application.
+3. In the left sidebar, click **Bot**.
+4. Scroll down to **Privileged Gateway Intents**:
+   * ✅ Enable **SERVER MEMBERS INTENT** *(Required for welcome messages, goodbye messages, member join logs, and alt detection)*.
+   * ✅ Enable **MESSAGE CONTENT INTENT** *(Required for AutoMod keyword blacklist, link filtering, and spam analysis)*.
+5. Click **Save Changes**.
 
+### Bot Role Hierarchy in Your Discord Server
+> ⚠️ **CRITICAL SECURITY NOTE:**
+> A Discord bot **cannot** punish, ban, or strip roles from any user whose highest role is **above or equal to** the bot's highest role.
+> To ensure Anti-Nuke and Moderation work correctly:
+> 1. Go to **Server Settings** ➔ **Roles**.
+> 2. Drag the Bot's role (`THOR APEX` or your bot name) to the **very top** (just below Server Owner / Administrator).
+> 3. Ensure the bot has `Administrator` or the permissions listed below.
 
-## STEP 2 - Push Code
+---
 
-Open Git Bash inside this bot folder, run these one by one:
+## ⚙️ 2. REQUIRED ENVIRONMENT VARIABLES
 
-git init
-git add .
-git commit -m "multi-server welcome bot v2.0"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/welcome-bot.git
-git push -u origin main
+Create a `.env` file in the root directory (or enter these in your hosting provider's Environment Variables dashboard):
 
-NOTE: Replace YOUR_USERNAME with your actual GitHub username!
+| Variable | Required | Description | Example |
+|---|---|---|---|
+| `DISCORD_TOKEN` | **YES** | Your Discord Bot Token | `MTA...` |
+| `OWNER_ID` | Optional | Bot Creator's User ID (immune to security triggers) | `791552110600123456` |
+| `PORT` | Optional | HTTP Health Check Server Port (defaults to 10000) | `10000` |
+| `SPOTIFY_CLIENT_ID` | Optional | Spotify API credentials for music resolver | `your_id` |
+| `SPOTIFY_CLIENT_SECRET`| Optional | Spotify API secret | `your_secret` |
 
-When asked for password, use a Personal Access Token (NOT your real password):
-Get one at: https://github.com/settings/tokens/new
-Tick the "repo" checkbox, then Generate token, copy it.
+---
 
+## ☁️ 3. RECOMMENDED HOSTING PLATFORMS (REAL 24/7)
 
-## STEP 3 - Deploy on Render
+Discord bots maintain an active, long-lived **WebSocket Gateway connection**. Because of this, traditional free serverless functions (like Vercel or Netlify) are **not suitable**. You need an always-on process host.
 
-1. Go to: https://render.com
-2. Sign up / Log in with GitHub
-3. Click: New then Web Service
-4. Connect your welcome-bot repo
-5. Set these options:
+### Option A: Railway (Recommended — Best Balance of Ease & Reliability)
+1. Go to [railway.app](https://railway.app).
+2. Click **New Project** ➔ **Deploy from GitHub repo**.
+3. Select this repository.
+4. Go to **Variables** and add:
+   * `DISCORD_TOKEN` = `your_token`
+   * `PORT` = `10000`
+5. Railway will automatically detect Node.js, run `npm install`, and start the bot with persistent disk storage.
 
-   Name:           welcome-bot
-   Environment:    Node
-   Build Command:  npm install
-   Start Command:  npm start
-   Instance Type:  Free
+### Option B: Discloud (Dedicated Discord Bot Host)
+1. This project already includes `discloud.config`:
+   ```ini
+   ID=thorapexwelcomebot
+   TYPE=bot
+   MAIN=index.js
+   RAM=100
+   VERSION=latest
+   ```
+2. Upload the project zip or push via Git to Discloud.
 
-6. Scroll to "Environment Variables" then Add:
+### Option C: VPS / Dedicated Server (Ubuntu Linux with PM2)
+If hosting on your own Linux server / AWS EC2 / DigitalOcean Droplet:
+```bash
+# 1. Install Node.js (v18+) and PM2 process supervisor
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm install -g pm2
 
-   Key:    DISCORD_TOKEN
-   Value:  (paste your bot token here)
+# 2. Clone repo and install dependencies
+git clone <your-repo-url> bot
+cd bot
+npm install
 
-7. Click Create Web Service
-8. Wait 2-3 minutes, then bot goes online!
+# 3. Create .env file with your token
+nano .env
 
+# 4. Start with PM2 (Auto-restarts after crashes or server reboots)
+pm2 start index.js --name "discord-bot"
+pm2 save
+pm2 startup
+```
 
-## STEP 4 - Keep Bot Alive 24/7 (Free)
+### Option D: Render (Web Service or Background Worker)
+1. Go to [render.com](https://render.com) ➔ **New Web Service**.
+2. Connect your repository.
+3. Build Command: `npm install`
+4. Start Command: `npm start`
+5. Add `DISCORD_TOKEN` in Environment Variables.
+> 💡 *Note on Render Free Tier:* Web services on Render sleep after 15 minutes of inactivity. The bot runs an HTTP health check server on port 10000. On free tiers, configure [UptimeRobot](https://uptimerobot.com) to ping `https://your-service.onrender.com/` every 5 minutes to keep it awake. For production, a Background Worker or paid instance is recommended.
 
-Render free tier sleeps after 15 mins with no traffic.
-Fix this with UptimeRobot (free):
+---
 
-1. Go to: https://uptimerobot.com
-2. Sign up free, then Add New Monitor
-3. Fill in:
-   - Monitor Type: HTTP(s)
-   - Friendly Name: Welcome Bot
-   - URL: https://YOUR-APP-NAME.onrender.com
-   - Interval: Every 5 minutes
-4. Click Create Monitor
-Bot stays online 24/7!
+## 🧪 4. VERIFYING YOUR BOT
 
-
-## STEP 5 - Future Code Updates
-
-Every time you change the code, push like this:
-
-git add .
-git commit -m "describe your change here"
-git push
-
-Render will auto-redeploy!
-
-
-## RENDER SETTINGS QUICK REFERENCE
-
-Setting         Value
------------     -----------
-Environment     Node
-Build Command   npm install
-Start Command   npm start
-Instance Type   Free
-
-Environment Variable:
-Key   = DISCORD_TOKEN
-Value = your_bot_token_here
-
-
-## BOT SLASH COMMANDS (For Server Admins)
-
-Once the bot is live, server admins run these in their server:
-
-/welcomehelp       - See all commands
-/setwelcome        - Set welcome channel
-/setrules          - Set rules channel
-/setroles          - Set roles channel
-/setgeneral        - Set general channel
-/setwelcomecolor   - Change embed color (e.g. #FF5733)
-/setwelcometext    - Change greeting, subtitle, outro text
-/welcomeconfig     - View current settings
-/testwelcome       - Preview the welcome message
-/resetwelcome      - Reset all settings to default
+Once the bot is online in your Discord server:
+1. Run `/ping` — Verifies WebSocket and API response times.
+2. Run `/logs setup` — Creates the `📁 SERVER LOGS` category and all 14 log channels.
+3. Run `/welcome test` — Checks permissions and previews the welcome card.
+4. Run `/security status` — Confirms Anti-Nuke and AutoMod are protecting the guild.
