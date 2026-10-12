@@ -188,7 +188,32 @@ function buildApplicationCommands() {
           { name: 'List words', value: 'list' }
         ))
         .addStringOption(o => o.setName('word').setDescription('Word to add/remove').setRequired(false)))
-      .addSubcommand(s => s.setName('test').setDescription('Test AutoMod filter evaluation')),
+      .addSubcommand(s => s.setName('test').setDescription('Test AutoMod filter evaluation'))
+      .addSubcommand(s => s.setName('punishment').setDescription('Customize punishment action for AutoMod rules')
+        .addStringOption(o => o.setName('rule').setDescription('AutoMod rule to configure').setRequired(true).addChoices(
+          { name: 'Anti-Spam (Message Flood)', value: 'antiSpam' },
+          { name: 'Duplicate Messages', value: 'antiDuplicate' },
+          { name: 'Mention Spam', value: 'antiMentionSpam' },
+          { name: 'Unauthorized @everyone / @here', value: 'antiEveryone' },
+          { name: 'Discord Invite Links', value: 'antiInvites' },
+          { name: 'External / Suspicious Links', value: 'antiLinks' },
+          { name: 'NSFW / Adult Links', value: 'antiNsfwLinks' },
+          { name: 'Word Blacklist', value: 'wordFilter' },
+          { name: 'Caps Lock Filter', value: 'antiCaps' },
+          { name: 'Emoji Spam', value: 'antiEmojiSpam' },
+          { name: 'Alt Account Detection', value: 'altDetection' },
+          { name: 'Anti-Raid Join Flood', value: 'antiRaid' },
+          { name: 'ALL Rules (Bulk Update)', value: 'all' },
+        ))
+        .addStringOption(o => o.setName('action').setDescription('Punishment action to apply').setRequired(true).addChoices(
+          { name: '🗑️ Delete Message Only', value: 'delete' },
+          { name: '⚠️ Delete + Issue Warning Strike', value: 'warn' },
+          { name: '⏳ Delete + Timeout User', value: 'timeout' },
+          { name: '👢 Delete + Kick User', value: 'kick' },
+          { name: '🔨 Delete + Ban User', value: 'ban' },
+          { name: '📝 Log Only (No Punishment)', value: 'log' },
+        ))
+        .addStringOption(o => o.setName('timeout_duration').setDescription('Timeout duration if action is timeout (e.g. 60s, 5m, 10m, 1h)').setRequired(false))),
 
     // ── LOGGING ──
     new SlashCommandBuilder()
@@ -374,6 +399,35 @@ function buildApplicationCommands() {
       .setName('serverbanner')
       .setDescription('Display server banner and optionally apply it to welcome card')
       .addBooleanOption(o => o.setName('apply_welcome').setDescription('Apply as welcome card banner?').setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName('setpunishment')
+      .setDescription('Customize AutoMod punishment action for a rule')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addStringOption(o => o.setName('rule').setDescription('AutoMod rule to configure').setRequired(true).addChoices(
+        { name: 'Anti-Spam (Message Flood)', value: 'antiSpam' },
+        { name: 'Duplicate Messages', value: 'antiDuplicate' },
+        { name: 'Mention Spam', value: 'antiMentionSpam' },
+        { name: 'Unauthorized @everyone / @here', value: 'antiEveryone' },
+        { name: 'Discord Invite Links', value: 'antiInvites' },
+        { name: 'External / Suspicious Links', value: 'antiLinks' },
+        { name: 'NSFW / Adult Links', value: 'antiNsfwLinks' },
+        { name: 'Word Blacklist', value: 'wordFilter' },
+        { name: 'Caps Lock Filter', value: 'antiCaps' },
+        { name: 'Emoji Spam', value: 'antiEmojiSpam' },
+        { name: 'Alt Account Detection', value: 'altDetection' },
+        { name: 'Anti-Raid Join Flood', value: 'antiRaid' },
+        { name: 'ALL Rules (Bulk Update)', value: 'all' },
+      ))
+      .addStringOption(o => o.setName('action').setDescription('Punishment action to apply').setRequired(true).addChoices(
+        { name: '🗑️ Delete Message Only', value: 'delete' },
+        { name: '⚠️ Delete + Issue Warning Strike', value: 'warn' },
+        { name: '⏳ Delete + Timeout User', value: 'timeout' },
+        { name: '👢 Delete + Kick User', value: 'kick' },
+        { name: '🔨 Delete + Ban User', value: 'ban' },
+        { name: '📝 Log Only (No Punishment)', value: 'log' },
+      ))
+      .addStringOption(o => o.setName('timeout_duration').setDescription('Timeout duration if action is timeout (e.g. 60s, 5m, 10m, 1h)').setRequired(false)),
 
     new SlashCommandBuilder()
       .setName('setleavetext')

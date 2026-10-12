@@ -23,7 +23,7 @@ const {
   getQuarantinedCount, releaseAllQuarantine, releaseMember,
 } = require('../security/antiRaid');
 const {
-  redactSecrets, safeReply, isHex, formatDuration,
+  redactSecrets, safeReply, isHex, formatDuration, parseDuration,
 } = require('../utils/helpers');
 
 /**
@@ -516,6 +516,144 @@ async function dispatchCommand(interaction, context = {}) {
         return safeReply(interaction, `**Whitelisted Users:** ${config.automod.whitelistUsers.map(id => `<@${id}>`).join(', ') || 'None'}\n**Whitelisted Roles:** ${config.automod.whitelistRoles.map(id => `<@&${id}>`).join(', ') || 'None'}\n**Ignored Channels:** ${config.automod.ignoredChannels.map(id => `<#${id}>`).join(', ') || 'None'}`);
       }
     }
+
+    if (sub === 'punishment') {
+      const ruleKey = interaction.options.getString('rule', true);
+      const action = interaction.options.getString('action', true);
+      const durationInput = interaction.options.getString('timeout_duration');
+
+      const RULE_NAMES = {
+        antiSpam: 'Anti-Spam (Message Flood)',
+        antiDuplicate: 'Duplicate Messages',
+        antiMentionSpam: 'Mention Spam',
+        antiEveryone: 'Unauthorized @everyone / @here',
+        antiInvites: 'Discord Invite Links',
+        antiLinks: 'External / Suspicious Links',
+        antiNsfwLinks: 'NSFW / Adult Links',
+        wordFilter: 'Word Blacklist',
+        antiCaps: 'Caps Lock Filter',
+        antiEmojiSpam: 'Emoji Spam',
+        altDetection: 'Alt Account Detection',
+        antiRaid: 'Anti-Raid Join Flood',
+        all: 'ALL AutoMod Rules',
+      };
+
+      let timeoutSec = null;
+      if (durationInput) {
+        const ms = parseDuration(durationInput);
+        if (ms > 0) {
+          timeoutSec = Math.max(5, Math.min(86400 * 28, Math.round(ms / 1000)));
+        }
+      }
+
+      if (!config.automod) config.automod = {};
+
+      const targetRules = ruleKey === 'all'
+        ? ['antiSpam', 'antiDuplicate', 'antiMentionSpam', 'antiEveryone', 'antiInvites', 'antiLinks', 'antiNsfwLinks', 'wordFilter', 'antiCaps', 'antiEmojiSpam']
+        : [ruleKey];
+
+      for (const k of targetRules) {
+        if (!config.automod[k]) config.automod[k] = {};
+        config.automod[k].action = action;
+        if (timeoutSec !== null && action === 'timeout') {
+          config.automod[k].timeoutSec = timeoutSec;
+        }
+      }
+
+      saveGuildConfig(guild.id, config);
+
+      const actionBadge = {
+        delete: '🗑️ Delete Message Only',
+        warn: '⚠️ Delete + Issue Warning Strike',
+        timeout: `⏳ Delete + Timeout User${timeoutSec ? ` (${timeoutSec}s)` : ''}`,
+        kick: '👢 Delete + Kick User',
+        ban: '🔨 Delete + Ban User',
+        log: '📝 Log Only (No Punishment)',
+      }[action] || action;
+
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('⚖️ AutoMod Punishment Customized!')
+        .setDescription(
+          `• **Target Rule:** \`${RULE_NAMES[ruleKey] || ruleKey}\`\n` +
+          `• **Configured Punishment:** ${actionBadge}\n` +
+          `${timeoutSec && action === 'timeout' ? `• **Timeout Duration:** \`${timeoutSec} seconds\`\n` : ''}\n` +
+          `Use \`/automod status\` to inspect your complete active punishment matrix.`
+        )
+        .setFooter({ text: 'Changes apply immediately across all chat channels' })
+        .setTimestamp();
+
+      return safeReply(interaction, { embeds: [embed] });
+    }
+  }
+
+  if (commandName === 'setpunishment') {
+    const ruleKey = interaction.options.getString('rule', true);
+    const action = interaction.options.getString('action', true);
+    const durationInput = interaction.options.getString('timeout_duration');
+
+    const RULE_NAMES = {
+      antiSpam: 'Anti-Spam (Message Flood)',
+      antiDuplicate: 'Duplicate Messages',
+      antiMentionSpam: 'Mention Spam',
+      antiEveryone: 'Unauthorized @everyone / @here',
+      antiInvites: 'Discord Invite Links',
+      antiLinks: 'External / Suspicious Links',
+      antiNsfwLinks: 'NSFW / Adult Links',
+      wordFilter: 'Word Blacklist',
+      antiCaps: 'Caps Lock Filter',
+      antiEmojiSpam: 'Emoji Spam',
+      altDetection: 'Alt Account Detection',
+      antiRaid: 'Anti-Raid Join Flood',
+      all: 'ALL AutoMod Rules',
+    };
+
+    let timeoutSec = null;
+    if (durationInput) {
+      const ms = parseDuration(durationInput);
+      if (ms > 0) {
+        timeoutSec = Math.max(5, Math.min(86400 * 28, Math.round(ms / 1000)));
+      }
+    }
+
+    if (!config.automod) config.automod = {};
+
+    const targetRules = ruleKey === 'all'
+      ? ['antiSpam', 'antiDuplicate', 'antiMentionSpam', 'antiEveryone', 'antiInvites', 'antiLinks', 'antiNsfwLinks', 'wordFilter', 'antiCaps', 'antiEmojiSpam']
+      : [ruleKey];
+
+    for (const k of targetRules) {
+      if (!config.automod[k]) config.automod[k] = {};
+      config.automod[k].action = action;
+      if (timeoutSec !== null && action === 'timeout') {
+        config.automod[k].timeoutSec = timeoutSec;
+      }
+    }
+
+    saveGuildConfig(guild.id, config);
+
+    const actionBadge = {
+      delete: '🗑️ Delete Message Only',
+      warn: '⚠️ Delete + Issue Warning Strike',
+      timeout: `⏳ Delete + Timeout User${timeoutSec ? ` (${timeoutSec}s)` : ''}`,
+      kick: '👢 Delete + Kick User',
+      ban: '🔨 Delete + Ban User',
+      log: '📝 Log Only (No Punishment)',
+    }[action] || action;
+
+    const embed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle('⚖️ AutoMod Punishment Customized!')
+      .setDescription(
+        `• **Target Rule:** \`${RULE_NAMES[ruleKey] || ruleKey}\`\n` +
+        `• **Configured Punishment:** ${actionBadge}\n` +
+        `${timeoutSec && action === 'timeout' ? `• **Timeout Duration:** \`${timeoutSec} seconds\`\n` : ''}\n` +
+        `Use \`/automod status\` to inspect your complete active punishment matrix.`
+      )
+      .setFooter({ text: 'Changes apply immediately across all chat channels' })
+      .setTimestamp();
+
+    return safeReply(interaction, { embeds: [embed] });
   }
 
   // AutoMod Legacy Shortcuts

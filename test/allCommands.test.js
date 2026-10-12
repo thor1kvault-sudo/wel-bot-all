@@ -90,7 +90,12 @@ function createFullMockInteraction(commandName, subcommandName = null) {
     options: {
       getSubcommand: () => subcommandName,
       getString: (name) => {
-        if (name === 'action') return 'list';
+        if (name === 'rule') return 'antiSpam';
+        if (name === 'action') {
+          if (subcommandName === 'punishment' || commandName === 'setpunishment') return 'timeout';
+          return 'list';
+        }
+        if (name === 'timeout_duration') return '5m';
         if (name === 'toggle') return 'on';
         if (name === 'song') return 'lofi hip hop';
         if (name === 'category') return 'automod';
@@ -167,5 +172,5 @@ test('Group D: Every single declared command and subcommand executes and acknowl
     }
   }
 
-  assert.strictEqual(auditedEndpoints, 106, 'All 106 command and subcommand endpoints must be audited');
+  assert.strictEqual(auditedEndpoints, 108, 'All 108 command and subcommand endpoints must be audited');
 });

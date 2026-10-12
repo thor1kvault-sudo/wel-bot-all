@@ -621,3 +621,172 @@ test('F6.6: buildWelcomeMessage incorporates custom configured bannerUrl in welc
   assert.strictEqual(embed.data.image.url, 'https://cdn.discordapp.com/banners/thor_apex_banner_final.png', 'Embed must display custom configured banner');
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// FEATURE 7: AutoMod Custom Punishment System
+// ═══════════════════════════════════════════════════════════════════
+
+test('F7.1: /automod punishment updates antiSpam action and timeoutSec', async () => {
+  const guildId = 'guild_punish_test_1';
+  let responsePayload = null;
+
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'Punish Test Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'punishment',
+      getString: (name) => {
+        if (name === 'rule') return 'antiSpam';
+        if (name === 'action') return 'timeout';
+        if (name === 'timeout_duration') return '10m';
+        return null;
+      },
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responsePayload = payload;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.automod.antiSpam.action, 'timeout');
+  assert.strictEqual(cfg.automod.antiSpam.timeoutSec, 600); // 10m = 600s
+  assert.ok(responsePayload?.embeds?.length > 0, 'Must reply with confirmation embed');
+  assert.ok(responsePayload.embeds[0].data.description.includes('600 seconds'));
+});
+
+test('F7.2: /automod punishment updates wordFilter action to kick', async () => {
+  const guildId = 'guild_punish_test_2';
+  let responsePayload = null;
+
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'Punish Test Guild 2' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'punishment',
+      getString: (name) => {
+        if (name === 'rule') return 'wordFilter';
+        if (name === 'action') return 'kick';
+        return null;
+      },
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responsePayload = payload;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.automod.wordFilter.action, 'kick');
+  assert.ok(responsePayload?.embeds?.length > 0);
+  assert.ok(responsePayload.embeds[0].data.description.includes('Kick'));
+});
+
+test('F7.3: /automod punishment rule:all bulk-updates all message filters', async () => {
+  const guildId = 'guild_punish_test_3';
+
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'Punish Test Guild 3' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'punishment',
+      getString: (name) => {
+        if (name === 'rule') return 'all';
+        if (name === 'action') return 'warn';
+        return null;
+      },
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => { interaction.replied = true; },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.automod.antiSpam.action, 'warn');
+  assert.strictEqual(cfg.automod.antiDuplicate.action, 'warn');
+  assert.strictEqual(cfg.automod.antiMentionSpam.action, 'warn');
+  assert.strictEqual(cfg.automod.antiEveryone.action, 'warn');
+  assert.strictEqual(cfg.automod.antiInvites.action, 'warn');
+  assert.strictEqual(cfg.automod.wordFilter.action, 'warn');
+});
+
+test('F7.4: /setpunishment standalone command updates action correctly', async () => {
+  const guildId = 'guild_punish_test_4';
+  let responsePayload = null;
+
+  const interaction = {
+    commandName: 'setpunishment',
+    guild: { id: guildId, name: 'Punish Test Guild 4' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getString: (name) => {
+        if (name === 'rule') return 'antiInvites';
+        if (name === 'action') return 'ban';
+        return null;
+      },
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responsePayload = payload;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.automod.antiInvites.action, 'ban');
+  assert.ok(responsePayload?.embeds?.length > 0);
+  assert.ok(responsePayload.embeds[0].data.description.includes('Ban'));
+});
+
+test('F7.5: /automod status reflects customized punishments in output embed', async () => {
+  const guildId = 'guild_punish_test_5';
+  const cfg = getGuildConfig(guildId);
+  cfg.automod.antiSpam.action = 'ban';
+  cfg.automod.wordFilter.action = 'warn';
+  saveGuildConfig(guildId, cfg);
+
+  let responsePayload = null;
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'Status Check Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'status',
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responsePayload = payload;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  assert.ok(responsePayload?.embeds?.length > 0);
+  const desc = responsePayload.embeds[0].data.description;
+  assert.ok(desc.includes('`ban`'), 'Status embed must show custom ban action');
+  assert.ok(desc.includes('`warn`'), 'Status embed must show custom warn action');
+});
+
+
