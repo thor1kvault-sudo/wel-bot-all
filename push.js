@@ -4,9 +4,16 @@
  * Usage: node push.js [optional commit message]
  *        npm run push
  *        npm run push -- "your custom message"
+ *
+ * Reads GITHUB_PAT and GITHUB_USER from .env for silent authentication.
  */
 
+require('dotenv').config();
 const { execSync } = require('child_process');
+
+const GITHUB_PAT  = process.env.GITHUB_PAT;
+const GITHUB_USER = process.env.GITHUB_USER || 'thor1kvault-sudo';
+const REPO        = 'thor1kvault-sudo/wel-bot-all.git';
 
 // --- Helpers ---
 function run(cmd, opts = {}) {
@@ -35,6 +42,13 @@ function log(emoji, msg) {
   });
   const commitMsg = customMsg || `chore: auto-push [${timestamp} IST]`;
 
+  // Set authenticated remote URL if PAT is available
+  let remoteRestored = false;
+  if (GITHUB_PAT) {
+    run(`git remote set-url origin https://${GITHUB_USER}:${GITHUB_PAT}@github.com/${REPO}`);
+    remoteRestored = true;
+  }
+
   try {
     // 1. Check for changes
     const status = run('git status --porcelain');
@@ -56,25 +70,19 @@ function log(emoji, msg) {
     }
 
     // 5. Push
-    log('🚀', 'Pushing to GitHub (origin/main)...');
+    log('🚀', 'Pushing to GitHub...');
     const pushOut = run('git push origin main');
     if (pushOut) console.log(pushOut);
 
-    log('✅', 'Successfully pushed to https://github.com/thor1kvault-sudo/wel-bot-all.git');
+    log('✅', `Successfully pushed to https://github.com/${REPO}`);
   } catch (err) {
     console.error('\n❌  Push failed!\n');
     console.error(err.message);
-
-    // Helpful hint for auth errors
-    if (err.message.includes('Authentication') || err.message.includes('403') || err.message.includes('credential')) {
-      console.error('\n💡  Tip: GitHub no longer accepts passwords for HTTPS pushes.');
-      console.error('    You need a Personal Access Token (PAT).');
-      console.error('    Steps:');
-      console.error('    1. Go to https://github.com/settings/tokens/new');
-      console.error('    2. Create a token with "repo" scope');
-      console.error('    3. When git asks for a password, paste your PAT instead');
-      console.error('    4. Windows Credential Manager will save it for future pushes\n');
-    }
     process.exit(1);
+  } finally {
+    // Always restore clean remote URL (no token exposed)
+    if (remoteRestored) {
+      run(`git remote set-url origin https://github.com/${REPO}`);
+    }
   }
 })();
