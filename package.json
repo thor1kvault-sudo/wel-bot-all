@@ -7,7 +7,8 @@
     "start": "node index.js",
     "test": "node --test test/bot.test.js test/interactions.test.js test/automod.test.js test/antinuke.test.js test/allCommands.test.js test/features.test.js",
     "push": "node push.js",
-    "push:msg": "node push.js"
+    "push:msg": "node push.js",
+    "deploy": "node deploy.js"
   },
   "engines": {
     "node": ">=18.0.0"

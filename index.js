@@ -433,10 +433,10 @@ async function startBot() {
       const cmds = buildApplicationCommands();
       try {
         for (const guild of client.guilds.cache.values()) {
-          await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: [] }).catch(() => {});
+          await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: cmds }).catch(() => {});
         }
         await rest.put(Routes.applicationCommands(client.user.id), { body: cmds });
-        console.log(`✅ Global Application Commands registered successfully (${cmds.length} commands).`);
+        console.log(`✅ Application Commands registered instantly to ${client.guilds.cache.size} guilds and globally (${cmds.length} commands).`);
       } catch (err) {
         console.error('Command registration error:', err.message);
       }
