@@ -168,8 +168,40 @@ function buildApplicationCommands() {
       .setName('automod')
       .setDescription('Manage AutoMod system and filters')
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addSubcommand(s => s.setName('enable').setDescription('Enable AutoMod engine'))
-      .addSubcommand(s => s.setName('disable').setDescription('Disable AutoMod engine'))
+      .addSubcommand(s => s.setName('enable').setDescription('Enable AutoMod engine or a specific rule')
+        .addStringOption(o => o.setName('rule').setDescription('Select specific rule or select all').setRequired(false).addChoices(
+          { name: '✨ Select All / Enable All Rules', value: 'all' },
+          { name: 'Anti-Spam (Message Flood)', value: 'antiSpam' },
+          { name: 'Duplicate Messages', value: 'antiDuplicate' },
+          { name: 'Mention Spam', value: 'antiMentionSpam' },
+          { name: 'Unauthorized @everyone / @here', value: 'antiEveryone' },
+          { name: 'Discord Invite Links', value: 'antiInvites' },
+          { name: 'External / Suspicious Links', value: 'antiLinks' },
+          { name: 'NSFW / Adult Links', value: 'antiNsfwLinks' },
+          { name: 'Word Blacklist', value: 'wordFilter' },
+          { name: 'Caps Lock Filter', value: 'antiCaps' },
+          { name: 'Emoji Spam', value: 'antiEmojiSpam' },
+          { name: 'Alt Account Detection', value: 'altDetection' },
+          { name: 'Anti-Raid Join Flood', value: 'antiRaid' },
+        )))
+      .addSubcommand(s => s.setName('disable').setDescription('Disable AutoMod engine or a specific rule')
+        .addStringOption(o => o.setName('rule').setDescription('Select specific rule or select all').setRequired(false).addChoices(
+          { name: '⚠️ Select All / Disable All Rules', value: 'all' },
+          { name: 'Anti-Spam (Message Flood)', value: 'antiSpam' },
+          { name: 'Duplicate Messages', value: 'antiDuplicate' },
+          { name: 'Mention Spam', value: 'antiMentionSpam' },
+          { name: 'Unauthorized @everyone / @here', value: 'antiEveryone' },
+          { name: 'Discord Invite Links', value: 'antiInvites' },
+          { name: 'External / Suspicious Links', value: 'antiLinks' },
+          { name: 'NSFW / Adult Links', value: 'antiNsfwLinks' },
+          { name: 'Word Blacklist', value: 'wordFilter' },
+          { name: 'Caps Lock Filter', value: 'antiCaps' },
+          { name: 'Emoji Spam', value: 'antiEmojiSpam' },
+          { name: 'Alt Account Detection', value: 'altDetection' },
+          { name: 'Anti-Raid Join Flood', value: 'antiRaid' },
+        )))
+      .addSubcommand(s => s.setName('enableall').setDescription('Enable all AutoMod rules at once'))
+      .addSubcommand(s => s.setName('disableall').setDescription('Disable all AutoMod rules at once'))
       .addSubcommand(s => s.setName('status').setDescription('View AutoMod active rules'))
       .addSubcommand(s => s.setName('config').setDescription('Interactive AutoMod dashboard'))
       .addSubcommand(s => s.setName('whitelist').setDescription('Manage AutoMod exemptions')
@@ -203,7 +235,7 @@ function buildApplicationCommands() {
           { name: 'Emoji Spam', value: 'antiEmojiSpam' },
           { name: 'Alt Account Detection', value: 'altDetection' },
           { name: 'Anti-Raid Join Flood', value: 'antiRaid' },
-          { name: 'ALL Rules (Bulk Update)', value: 'all' },
+          { name: '✨ Select All / Enable All Rules (Bulk Update)', value: 'all' },
         ))
         .addStringOption(o => o.setName('action').setDescription('Punishment action to apply').setRequired(true).addChoices(
           { name: '🗑️ Delete Message Only', value: 'delete' },
@@ -212,6 +244,8 @@ function buildApplicationCommands() {
           { name: '👢 Delete + Kick User', value: 'kick' },
           { name: '🔨 Delete + Ban User', value: 'ban' },
           { name: '📝 Log Only (No Punishment)', value: 'log' },
+          { name: '🟢 Enable Rule(s)', value: 'enable' },
+          { name: '🔴 Disable Rule(s)', value: 'disable' },
         ))
         .addStringOption(o => o.setName('timeout_duration').setDescription('Timeout duration if action is timeout (e.g. 60s, 5m, 10m, 1h)').setRequired(false))),
 
@@ -417,7 +451,7 @@ function buildApplicationCommands() {
         { name: 'Emoji Spam', value: 'antiEmojiSpam' },
         { name: 'Alt Account Detection', value: 'altDetection' },
         { name: 'Anti-Raid Join Flood', value: 'antiRaid' },
-        { name: 'ALL Rules (Bulk Update)', value: 'all' },
+        { name: '✨ Select All / Enable All Rules (Bulk Update)', value: 'all' },
       ))
       .addStringOption(o => o.setName('action').setDescription('Punishment action to apply').setRequired(true).addChoices(
         { name: '🗑️ Delete Message Only', value: 'delete' },
@@ -426,6 +460,8 @@ function buildApplicationCommands() {
         { name: '👢 Delete + Kick User', value: 'kick' },
         { name: '🔨 Delete + Ban User', value: 'ban' },
         { name: '📝 Log Only (No Punishment)', value: 'log' },
+        { name: '🟢 Enable Rule(s)', value: 'enable' },
+        { name: '🔴 Disable Rule(s)', value: 'disable' },
       ))
       .addStringOption(o => o.setName('timeout_duration').setDescription('Timeout duration if action is timeout (e.g. 60s, 5m, 10m, 1h)').setRequired(false)),
 

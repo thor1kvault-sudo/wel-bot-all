@@ -383,15 +383,85 @@ async function dispatchCommand(interaction, context = {}) {
   if (commandName === 'automod') {
     const sub = interaction.options.getSubcommand();
     const am = config.automod || {};
+    const ALL_AUTOMOD_RULES = [
+      'antiSpam', 'antiDuplicate', 'antiMentionSpam', 'antiEveryone',
+      'antiInvites', 'antiLinks', 'antiNsfwLinks', 'wordFilter',
+      'antiCaps', 'antiEmojiSpam', 'altDetection', 'antiRaid',
+    ];
+
+    const RULE_NAMES = {
+      antiSpam: 'Anti-Spam (Message Flood)',
+      antiDuplicate: 'Duplicate Messages',
+      antiMentionSpam: 'Mention Spam',
+      antiEveryone: 'Unauthorized @everyone / @here',
+      antiInvites: 'Discord Invite Links',
+      antiLinks: 'External / Suspicious Links',
+      antiNsfwLinks: 'NSFW / Adult Links',
+      wordFilter: 'Word Blacklist',
+      antiCaps: 'Caps Lock Filter',
+      antiEmojiSpam: 'Emoji Spam',
+      altDetection: 'Alt Account Detection',
+      antiRaid: 'Anti-Raid Join Flood',
+      all: 'ALL AutoMod Rules',
+    };
 
     if (sub === 'enable') {
-      config.automod.enabled = true; saveGuildConfig(guild.id, config);
-      return safeReply(interaction, '🤖 **AutoMod Engine ENABLED.** All configured spam, link, mention, and word filters are active.');
+      const rule = interaction.options.getString('rule');
+      if (!rule || rule === 'all') {
+        config.automod.enabled = true;
+        for (const r of ALL_AUTOMOD_RULES) {
+          if (!config.automod[r]) config.automod[r] = {};
+          config.automod[r].enabled = true;
+        }
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, '🟢 **AutoMod Engine & ALL 12 Detection Rules ENABLED!** Every filter (Spam, Links, Invites, Blacklist, Alts, Mentions, Caps, Emojis, Raid, etc.) is now active.');
+      } else {
+        config.automod.enabled = true;
+        if (!config.automod[rule]) config.automod[rule] = {};
+        config.automod[rule].enabled = true;
+        saveGuildConfig(guild.id, config);
+        const name = RULE_NAMES[rule] || rule;
+        return safeReply(interaction, `🟢 **${name}** filter is now **ENABLED**.`);
+      }
     }
 
     if (sub === 'disable') {
-      config.automod.enabled = false; saveGuildConfig(guild.id, config);
-      return safeReply(interaction, '⚠️ **AutoMod Engine DISABLED.**');
+      const rule = interaction.options.getString('rule');
+      if (!rule || rule === 'all') {
+        config.automod.enabled = false;
+        for (const r of ALL_AUTOMOD_RULES) {
+          if (!config.automod[r]) config.automod[r] = {};
+          config.automod[r].enabled = false;
+        }
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, '🔴 **AutoMod Engine & ALL Rules DISABLED.** All detection filters have been turned off.');
+      } else {
+        if (!config.automod[rule]) config.automod[rule] = {};
+        config.automod[rule].enabled = false;
+        saveGuildConfig(guild.id, config);
+        const name = RULE_NAMES[rule] || rule;
+        return safeReply(interaction, `🔴 **${name}** filter is now **DISABLED**.`);
+      }
+    }
+
+    if (sub === 'enableall') {
+      config.automod.enabled = true;
+      for (const r of ALL_AUTOMOD_RULES) {
+        if (!config.automod[r]) config.automod[r] = {};
+        config.automod[r].enabled = true;
+      }
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, '🟢 **ALL AutoMod rules have been ENABLED!** All 12 detection filters are now active.');
+    }
+
+    if (sub === 'disableall') {
+      config.automod.enabled = false;
+      for (const r of ALL_AUTOMOD_RULES) {
+        if (!config.automod[r]) config.automod[r] = {};
+        config.automod[r].enabled = false;
+      }
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, '🔴 **ALL AutoMod rules have been DISABLED.**');
     }
 
     if (sub === 'status') {
@@ -522,21 +592,30 @@ async function dispatchCommand(interaction, context = {}) {
       const action = interaction.options.getString('action', true);
       const durationInput = interaction.options.getString('timeout_duration');
 
-      const RULE_NAMES = {
-        antiSpam: 'Anti-Spam (Message Flood)',
-        antiDuplicate: 'Duplicate Messages',
-        antiMentionSpam: 'Mention Spam',
-        antiEveryone: 'Unauthorized @everyone / @here',
-        antiInvites: 'Discord Invite Links',
-        antiLinks: 'External / Suspicious Links',
-        antiNsfwLinks: 'NSFW / Adult Links',
-        wordFilter: 'Word Blacklist',
-        antiCaps: 'Caps Lock Filter',
-        antiEmojiSpam: 'Emoji Spam',
-        altDetection: 'Alt Account Detection',
-        antiRaid: 'Anti-Raid Join Flood',
-        all: 'ALL AutoMod Rules',
-      };
+      if (!config.automod) config.automod = {};
+
+      const targetRules = ruleKey === 'all'
+        ? ALL_AUTOMOD_RULES
+        : [ruleKey];
+
+      if (action === 'enable') {
+        config.automod.enabled = true;
+        for (const k of targetRules) {
+          if (!config.automod[k]) config.automod[k] = {};
+          config.automod[k].enabled = true;
+        }
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `🟢 **${ruleKey === 'all' ? 'ALL AutoMod Rules' : (RULE_NAMES[ruleKey] || ruleKey)}** have been **ENABLED**.`);
+      }
+
+      if (action === 'disable') {
+        for (const k of targetRules) {
+          if (!config.automod[k]) config.automod[k] = {};
+          config.automod[k].enabled = false;
+        }
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `🔴 **${ruleKey === 'all' ? 'ALL AutoMod Rules' : (RULE_NAMES[ruleKey] || ruleKey)}** have been **DISABLED**.`);
+      }
 
       let timeoutSec = null;
       if (durationInput) {
@@ -545,12 +624,6 @@ async function dispatchCommand(interaction, context = {}) {
           timeoutSec = Math.max(5, Math.min(86400 * 28, Math.round(ms / 1000)));
         }
       }
-
-      if (!config.automod) config.automod = {};
-
-      const targetRules = ruleKey === 'all'
-        ? ['antiSpam', 'antiDuplicate', 'antiMentionSpam', 'antiEveryone', 'antiInvites', 'antiLinks', 'antiNsfwLinks', 'wordFilter', 'antiCaps', 'antiEmojiSpam']
-        : [ruleKey];
 
       for (const k of targetRules) {
         if (!config.automod[k]) config.automod[k] = {};
@@ -592,6 +665,12 @@ async function dispatchCommand(interaction, context = {}) {
     const action = interaction.options.getString('action', true);
     const durationInput = interaction.options.getString('timeout_duration');
 
+    const ALL_AUTOMOD_RULES = [
+      'antiSpam', 'antiDuplicate', 'antiMentionSpam', 'antiEveryone',
+      'antiInvites', 'antiLinks', 'antiNsfwLinks', 'wordFilter',
+      'antiCaps', 'antiEmojiSpam', 'altDetection', 'antiRaid',
+    ];
+
     const RULE_NAMES = {
       antiSpam: 'Anti-Spam (Message Flood)',
       antiDuplicate: 'Duplicate Messages',
@@ -608,6 +687,31 @@ async function dispatchCommand(interaction, context = {}) {
       all: 'ALL AutoMod Rules',
     };
 
+    if (!config.automod) config.automod = {};
+
+    const targetRules = ruleKey === 'all'
+      ? ALL_AUTOMOD_RULES
+      : [ruleKey];
+
+    if (action === 'enable') {
+      config.automod.enabled = true;
+      for (const k of targetRules) {
+        if (!config.automod[k]) config.automod[k] = {};
+        config.automod[k].enabled = true;
+      }
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🟢 **${ruleKey === 'all' ? 'ALL AutoMod Rules' : (RULE_NAMES[ruleKey] || ruleKey)}** have been **ENABLED**.`);
+    }
+
+    if (action === 'disable') {
+      for (const k of targetRules) {
+        if (!config.automod[k]) config.automod[k] = {};
+        config.automod[k].enabled = false;
+      }
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🔴 **${ruleKey === 'all' ? 'ALL AutoMod Rules' : (RULE_NAMES[ruleKey] || ruleKey)}** have been **DISABLED**.`);
+    }
+
     let timeoutSec = null;
     if (durationInput) {
       const ms = parseDuration(durationInput);
@@ -615,12 +719,6 @@ async function dispatchCommand(interaction, context = {}) {
         timeoutSec = Math.max(5, Math.min(86400 * 28, Math.round(ms / 1000)));
       }
     }
-
-    if (!config.automod) config.automod = {};
-
-    const targetRules = ruleKey === 'all'
-      ? ['antiSpam', 'antiDuplicate', 'antiMentionSpam', 'antiEveryone', 'antiInvites', 'antiLinks', 'antiNsfwLinks', 'wordFilter', 'antiCaps', 'antiEmojiSpam']
-      : [ruleKey];
 
     for (const k of targetRules) {
       if (!config.automod[k]) config.automod[k] = {};

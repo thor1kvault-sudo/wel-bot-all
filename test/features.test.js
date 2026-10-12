@@ -789,4 +789,156 @@ test('F7.5: /automod status reflects customized punishments in output embed', as
   assert.ok(desc.includes('`warn`'), 'Status embed must show custom warn action');
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// FEATURE 8: AutoMod Enable All / Select All Management
+// ═══════════════════════════════════════════════════════════════════
+
+test('F8.1: /automod enable with rule:all enables master engine and all 12 filters', async () => {
+  const guildId = 'guild_enable_all_1';
+  const cfg = getGuildConfig(guildId);
+  cfg.automod.enabled = false;
+  cfg.automod.antiSpam.enabled = false;
+  cfg.automod.antiInvites.enabled = false;
+  saveGuildConfig(guildId, cfg);
+
+  let responseText = null;
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'Enable All Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'enable',
+      getString: (name) => name === 'rule' ? 'all' : null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responseText = typeof payload === 'string' ? payload : payload.content;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const updatedCfg = getGuildConfig(guildId);
+  assert.strictEqual(updatedCfg.automod.enabled, true);
+  assert.strictEqual(updatedCfg.automod.antiSpam.enabled, true);
+  assert.strictEqual(updatedCfg.automod.antiInvites.enabled, true);
+  assert.strictEqual(updatedCfg.automod.wordFilter.enabled, true);
+  assert.ok(responseText.includes('ALL 12 Detection Rules ENABLED'));
+});
+
+test('F8.2: /automod disable with rule:all disables master engine and all 12 filters', async () => {
+  const guildId = 'guild_disable_all_1';
+
+  let responseText = null;
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'Disable All Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'disable',
+      getString: (name) => name === 'rule' ? 'all' : null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (payload) => {
+      responseText = typeof payload === 'string' ? payload : payload.content;
+      interaction.replied = true;
+    },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const updatedCfg = getGuildConfig(guildId);
+  assert.strictEqual(updatedCfg.automod.enabled, false);
+  assert.strictEqual(updatedCfg.automod.antiSpam.enabled, false);
+  assert.strictEqual(updatedCfg.automod.antiInvites.enabled, false);
+  assert.ok(responseText.includes('ALL Rules DISABLED'));
+});
+
+test('F8.3: /automod enableall subcommand enables all rules', async () => {
+  const guildId = 'guild_enableall_sub';
+  const cfg = getGuildConfig(guildId);
+  cfg.automod.antiCaps.enabled = false;
+  saveGuildConfig(guildId, cfg);
+
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'EnableAll Sub Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'enableall',
+      getString: () => null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => { interaction.replied = true; },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const updatedCfg = getGuildConfig(guildId);
+  assert.strictEqual(updatedCfg.automod.enabled, true);
+  assert.strictEqual(updatedCfg.automod.antiCaps.enabled, true);
+});
+
+test('F8.4: /automod disableall subcommand disables all rules', async () => {
+  const guildId = 'guild_disableall_sub';
+
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'DisableAll Sub Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'disableall',
+      getString: () => null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => { interaction.replied = true; },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const updatedCfg = getGuildConfig(guildId);
+  assert.strictEqual(updatedCfg.automod.enabled, false);
+  assert.strictEqual(updatedCfg.automod.antiSpam.enabled, false);
+});
+
+test('F8.5: /automod punishment with action:enable enables selected rules', async () => {
+  const guildId = 'guild_punish_enable';
+  const cfg = getGuildConfig(guildId);
+  cfg.automod.antiLinks.enabled = false;
+  saveGuildConfig(guildId, cfg);
+
+  const interaction = {
+    commandName: 'automod',
+    guild: { id: guildId, name: 'Punish Enable Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'punishment',
+      getString: (name) => {
+        if (name === 'rule') return 'antiLinks';
+        if (name === 'action') return 'enable';
+        return null;
+      },
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => { interaction.replied = true; },
+  };
+
+  await dispatchCommand(interaction, {});
+
+  const updatedCfg = getGuildConfig(guildId);
+  assert.strictEqual(updatedCfg.automod.antiLinks.enabled, true);
+});
+
+
 
