@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test test/bot.test.js"
+    "test": "node --test test/bot.test.js",
+    "push": "node push.js",
+    "push:msg": "node push.js"
   },
   "engines": {
     "node": ">=18.0.0"
