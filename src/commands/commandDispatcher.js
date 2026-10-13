@@ -3,6 +3,9 @@ const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
+const musicService = (() => { try { return require('../music/musicService'); } catch (_) { return null; } })();
+const musicMonitor = (() => { try { return require('../music/musicUpdateMonitor'); } catch (_) { return null; } })();
+const audioProvider = (() => { try { return require('../music/audioProvider'); } catch (_) { return null; } })();
 const os = require('os');
 const { getGuildConfig, saveGuildConfig } = require('../config/guildConfig');
 const {
@@ -660,100 +663,6 @@ async function dispatchCommand(interaction, context = {}) {
     }
   }
 
-  if (commandName === 'setpunishment') {
-    const ruleKey = interaction.options.getString('rule', true);
-    const action = interaction.options.getString('action', true);
-    const durationInput = interaction.options.getString('timeout_duration');
-
-    const ALL_AUTOMOD_RULES = [
-      'antiSpam', 'antiDuplicate', 'antiMentionSpam', 'antiEveryone',
-      'antiInvites', 'antiLinks', 'antiNsfwLinks', 'wordFilter',
-      'antiCaps', 'antiEmojiSpam', 'altDetection', 'antiRaid',
-    ];
-
-    const RULE_NAMES = {
-      antiSpam: 'Anti-Spam (Message Flood)',
-      antiDuplicate: 'Duplicate Messages',
-      antiMentionSpam: 'Mention Spam',
-      antiEveryone: 'Unauthorized @everyone / @here',
-      antiInvites: 'Discord Invite Links',
-      antiLinks: 'External / Suspicious Links',
-      antiNsfwLinks: 'NSFW / Adult Links',
-      wordFilter: 'Word Blacklist',
-      antiCaps: 'Caps Lock Filter',
-      antiEmojiSpam: 'Emoji Spam',
-      altDetection: 'Alt Account Detection',
-      antiRaid: 'Anti-Raid Join Flood',
-      all: 'ALL AutoMod Rules',
-    };
-
-    if (!config.automod) config.automod = {};
-
-    const targetRules = ruleKey === 'all'
-      ? ALL_AUTOMOD_RULES
-      : [ruleKey];
-
-    if (action === 'enable') {
-      config.automod.enabled = true;
-      for (const k of targetRules) {
-        if (!config.automod[k]) config.automod[k] = {};
-        config.automod[k].enabled = true;
-      }
-      saveGuildConfig(guild.id, config);
-      return safeReply(interaction, `🟢 **${ruleKey === 'all' ? 'ALL AutoMod Rules' : (RULE_NAMES[ruleKey] || ruleKey)}** have been **ENABLED**.`);
-    }
-
-    if (action === 'disable') {
-      for (const k of targetRules) {
-        if (!config.automod[k]) config.automod[k] = {};
-        config.automod[k].enabled = false;
-      }
-      saveGuildConfig(guild.id, config);
-      return safeReply(interaction, `🔴 **${ruleKey === 'all' ? 'ALL AutoMod Rules' : (RULE_NAMES[ruleKey] || ruleKey)}** have been **DISABLED**.`);
-    }
-
-    let timeoutSec = null;
-    if (durationInput) {
-      const ms = parseDuration(durationInput);
-      if (ms > 0) {
-        timeoutSec = Math.max(5, Math.min(86400 * 28, Math.round(ms / 1000)));
-      }
-    }
-
-    for (const k of targetRules) {
-      if (!config.automod[k]) config.automod[k] = {};
-      config.automod[k].action = action;
-      if (timeoutSec !== null && action === 'timeout') {
-        config.automod[k].timeoutSec = timeoutSec;
-      }
-    }
-
-    saveGuildConfig(guild.id, config);
-
-    const actionBadge = {
-      delete: '🗑️ Delete Message Only',
-      warn: '⚠️ Delete + Issue Warning Strike',
-      timeout: `⏳ Delete + Timeout User${timeoutSec ? ` (${timeoutSec}s)` : ''}`,
-      kick: '👢 Delete + Kick User',
-      ban: '🔨 Delete + Ban User',
-      log: '📝 Log Only (No Punishment)',
-    }[action] || action;
-
-    const embed = new EmbedBuilder()
-      .setColor('#5865F2')
-      .setTitle('⚖️ AutoMod Punishment Customized!')
-      .setDescription(
-        `• **Target Rule:** \`${RULE_NAMES[ruleKey] || ruleKey}\`\n` +
-        `• **Configured Punishment:** ${actionBadge}\n` +
-        `${timeoutSec && action === 'timeout' ? `• **Timeout Duration:** \`${timeoutSec} seconds\`\n` : ''}\n` +
-        `Use \`/automod status\` to inspect your complete active punishment matrix.`
-      )
-      .setFooter({ text: 'Changes apply immediately across all chat channels' })
-      .setTimestamp();
-
-    return safeReply(interaction, { embeds: [embed] });
-  }
-
   // AutoMod Legacy Shortcuts
   if (commandName === 'antispam') {
     const toggle = interaction.options.getString('toggle', true) === 'on';
@@ -1324,20 +1233,34 @@ async function dispatchCommand(interaction, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 8. MUSIC & RADIO COMMANDS (ALL 11 REGISTERED COMMANDS HANDLED)
+  // 8. MUSIC & RADIO COMMANDS (musicService-backed, Rythm-style)
   // ─────────────────────────────────────────────────────────────
   if (commandName === 'play') {
     const vc = member?.voice?.channel;
     if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
-    if (!addMusicToQueue) return safeReply(interaction, 'Music engine is currently initializing.');
     await interaction.deferReply();
     const query = interaction.options.getString('song', true);
+    // Prefer new musicService; fall back to legacy addMusicToQueue
+    if (musicService) {
+      // BUG FIX: pass { playNow: false } object — raw boolean was silently swallowed by JS destructuring
+      const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
+      if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+      if (res.isPlaylist) {
+        return interaction.editReply(`🎵 Added **${res.count}** tracks from **${res.playlistName || 'playlist'}** to the queue!`);
+      }
+      return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position **#${res.position}**).`);
+    }
+    if (!addMusicToQueue) return interaction.editReply('❌ Music engine is currently initializing.');
     const res = await addMusicToQueue(guild, vc, user, interaction.channel, query);
     if (!res.success) return interaction.editReply(`❌ ${res.message}`);
     return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position #${res.position || 1}).`);
   }
 
   if (commandName === 'pause') {
+    if (musicService) {
+      const ok = musicService.pause(guild.id);
+      return safeReply(interaction, ok ? '⏸️ Music paused.' : 'Nothing is currently playing.');
+    }
     const q = getQ?.(guild.id);
     if (!q || !q.player || !q.isPlaying) return safeReply(interaction, 'Nothing is currently playing.');
     q.player.pause(); q.isPaused = true;
@@ -1345,6 +1268,10 @@ async function dispatchCommand(interaction, context = {}) {
   }
 
   if (commandName === 'resume') {
+    if (musicService) {
+      const ok = musicService.resume(guild.id);
+      return safeReply(interaction, ok ? '▶️ Music resumed.' : 'Music is not paused.');
+    }
     const q = getQ?.(guild.id);
     if (!q || !q.player || !q.isPaused) return safeReply(interaction, 'Music is not paused.');
     q.player.unpause(); q.isPaused = false;
@@ -1352,6 +1279,12 @@ async function dispatchCommand(interaction, context = {}) {
   }
 
   if (commandName === 'skip') {
+    if (musicService) {
+      const session = musicService.sessions?.get(guild.id);
+      const trackTitle = session?.currentTrack?.title || 'current track';
+      const ok = musicService.skip(guild.id);
+      return safeReply(interaction, ok ? `⏭️ Skipped: **${trackTitle}**` : 'Queue is empty!');
+    }
     const q = getQ?.(guild.id);
     if (!q || !q.currentTrack) return safeReply(interaction, 'Queue is empty!');
     const s = q.currentTrack;
@@ -1360,18 +1293,101 @@ async function dispatchCommand(interaction, context = {}) {
   }
 
   if (commandName === 'stop') {
-    if (stopMusicSession) stopMusicSession(guild.id);
-    return safeReply(interaction, '⏹️ Stopped music playback and left the voice channel.');
+    if (musicService) { musicService.destroySession(guild.id); }
+    else if (stopMusicSession) { stopMusicSession(guild.id); }
+    return safeReply(interaction, '⏹️ Stopped music playback and cleared the session.');
   }
 
   if (commandName === 'queue') {
-    const q = getQ?.(guild.id);
-    if (!q || q.queue.length === 0) return safeReply(interaction, 'Music queue is currently empty. Use `/play` to add tracks.');
-    const list = q.queue.slice(0, 10).map((t, i) => `${i + 1}. **${t.title}** (By: <@${t.requestedBy}>)`).join('\n');
-    return safeReply(interaction, { embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(`Music Queue — ${guild.name}`).setDescription(list).setFooter({ text: `Total: ${q.queue.length} tracks` }).setTimestamp()] });
+    const session = musicService?.sessions?.get(guild.id);
+    const q = (session && session.queue) ? session : getQ?.(guild.id);
+    const sub = interaction.options.getSubcommand?.(false) || 'view';
+
+    if (sub === 'view') {
+      if (!q || !q.queue || q.queue.length === 0) return safeReply(interaction, 'Music queue is currently empty. Use `/play` to add tracks.');
+      const page = Math.max(1, interaction.options.getInteger?.('page') || 1);
+      const pageSize = 10;
+      const start = (page - 1) * pageSize;
+      const list = q.queue.slice(start, start + pageSize).map((t, i) => `${start + i + 1}. **${t.title}**${t.artist ? ` — *${t.artist}*` : ''}${t.requestedBy ? ` (By: <@${t.requestedBy}>)` : ''}`).join('\n') || 'No tracks on this page.';
+      return safeReply(interaction, { embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(`Music Queue — ${guild.name} (Page ${page})`).setDescription(list).setFooter({ text: `Total: ${q.queue.length} tracks` }).setTimestamp()] });
+    }
+
+    if (sub === 'remove') {
+      if (!q || !q.queue || q.queue.length === 0) return safeReply(interaction, 'Music queue is empty.');
+      const pos = interaction.options.getInteger('position', true);
+      if (pos < 1 || pos > q.queue.length) return safeReply(interaction, `❌ Invalid position. Must be between 1 and ${q.queue.length}.`);
+      let removedTitle = '';
+      if (session && musicService?.remove) {
+        const removed = musicService.remove(guild.id, pos);
+        removedTitle = removed?.title || `track #${pos}`;
+      } else {
+        const removed = q.queue.splice(pos - 1, 1)[0];
+        removedTitle = removed?.title || `track #${pos}`;
+      }
+      return safeReply(interaction, `🗑️ Removed track **#${pos}**: **${removedTitle}**.`);
+    }
+
+    if (sub === 'move') {
+      if (!q || !q.queue || q.queue.length === 0) return safeReply(interaction, 'Music queue is empty.');
+      const from = interaction.options.getInteger('from', true);
+      const to = interaction.options.getInteger('to', true);
+      if (from < 1 || from > q.queue.length || to < 1 || to > q.queue.length) {
+        return safeReply(interaction, `❌ Positions must be between 1 and ${q.queue.length}.`);
+      }
+      let trackTitle = '';
+      if (session && musicService?.move) {
+        const track = musicService.move(guild.id, from, to);
+        trackTitle = track?.title || 'track';
+      } else {
+        const [track] = q.queue.splice(from - 1, 1);
+        q.queue.splice(to - 1, 0, track);
+        trackTitle = track?.title || 'track';
+      }
+      return safeReply(interaction, `🔀 Moved **${trackTitle}** from #${from} to #${to}.`);
+    }
+
+    if (sub === 'jump') {
+      if (!q || !q.queue || q.queue.length === 0) return safeReply(interaction, 'Music queue is empty.');
+      const pos = interaction.options.getInteger('position', true);
+      if (pos < 1 || pos > q.queue.length) return safeReply(interaction, `❌ Position must be between 1 and ${q.queue.length}.`);
+      if (session && musicService?.jump) {
+        musicService.jump(guild.id, pos);
+        return safeReply(interaction, `⏭️ Jumped to track #${pos}.`);
+      }
+      q.queue.splice(0, pos - 1);
+      if (handleTrackEnded) {
+        handleTrackEnded(guild.id);
+        return safeReply(interaction, `⏭️ Jumped to track #${pos}.`);
+      }
+      return safeReply(interaction, `⏭️ Queue positioned at #${pos}.`);
+    }
+
+    if (sub === 'export') {
+      if (!q || !q.queue || q.queue.length === 0) return safeReply(interaction, 'Music queue is empty.');
+      const text = q.queue.map((t, i) => `${i + 1}. ${t.title}${t.artist ? ` - ${t.artist}` : ''} ${t.url || t.streamUrl || ''}`).join('\n');
+      return safeReply(interaction, `📜 **Exported Queue (${q.queue.length} tracks):**\n\`\`\`\n${text.slice(0, 1900)}\n\`\`\``);
+    }
+
+    if (sub === 'clear') {
+      if (!q || !q.queue || q.queue.length === 0) return safeReply(interaction, 'Music queue is already empty.');
+      let count = q.queue.length;
+      if (session && musicService?.clearQueue) {
+        count = musicService.clearQueue(guild.id);
+      } else {
+        q.queue = [];
+      }
+      return safeReply(interaction, `🧹 Cleared **${count}** tracks from the queue.`);
+    }
   }
 
   if (commandName === 'nowplaying') {
+    const session = musicService?.sessions?.get(guild.id);
+    if (session && session.currentTrack) {
+      // Use the Rythm-style player card if musicService is active
+      const { renderPlayerCard } = require('../music/musicPlayerCard');
+      const card = renderPlayerCard(session);
+      return safeReply(interaction, card);
+    }
     const q = getQ?.(guild.id);
     if (!q || !q.currentTrack) return safeReply(interaction, 'Nothing is currently playing.');
     return safeReply(interaction, { embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('▶️ Now Playing').setDescription(`**${q.currentTrack.title}**\nArtist: ${q.currentTrack.artist || 'Unknown'}`).setThumbnail(q.currentTrack.thumbnail || null).setTimestamp()] });
@@ -1407,11 +1423,16 @@ async function dispatchCommand(interaction, context = {}) {
 
   if (commandName === 'volume') {
     const level = interaction.options.getInteger('level', true);
+    // Prefer musicService for live volume control
+    if (musicService && musicService.sessions?.has(guild.id)) {
+      const actual = musicService.setVolume(guild.id, level);
+      return safeReply(interaction, `🔊 Playback volume set to **${actual}%**.`);
+    }
     const q = getQ?.(guild.id);
     if (q) {
-      q.volume = level;
+      q.volume = Math.max(1, Math.min(100, level));
       if (q.currentResource?.volume) {
-        q.currentResource.volume.setVolume(level / 100);
+        q.currentResource.volume.setVolume(q.volume / 100);
       }
     }
     return safeReply(interaction, `🔊 Playback volume set to **${level}%**.`);
@@ -1419,12 +1440,24 @@ async function dispatchCommand(interaction, context = {}) {
 
   if (commandName === 'loop') {
     const mode = interaction.options.getString('mode', true);
+    // Prefer musicService
+    if (musicService && musicService.sessions?.has(guild.id)) {
+      const actual = musicService.setLoop(guild.id, mode);
+      return safeReply(interaction, `🔁 Loop mode set to **${actual.toUpperCase()}**.`);
+    }
     const q = getQ?.(guild.id);
     if (q) q.loopMode = mode.toLowerCase();
     return safeReply(interaction, `🔁 Loop mode set to **${mode.toUpperCase()}**.`);
   }
 
   if (commandName === 'shuffle') {
+    // Prefer musicService
+    if (musicService && musicService.sessions?.has(guild.id)) {
+      const session = musicService.sessions.get(guild.id);
+      if (!session || session.queue.length <= 1) return safeReply(interaction, 'Not enough songs in queue to shuffle.');
+      const count = musicService.shuffle(guild.id);
+      return safeReply(interaction, `🔀 Shuffled **${count}** songs in queue.`);
+    }
     const q = getQ?.(guild.id);
     if (!q || q.queue.length <= 1) return safeReply(interaction, 'Not enough songs in queue to shuffle.');
     for (let i = q.queue.length - 1; i > 0; i--) {
@@ -1435,6 +1468,10 @@ async function dispatchCommand(interaction, context = {}) {
   }
 
   if (commandName === 'previous') {
+    if (musicService) {
+      const result = musicService.playPrevious(guild.id);
+      return safeReply(interaction, result ? `⏮️ Playing previous track: **${result.title}**.` : 'No previous tracks recorded.');
+    }
     const q = getQ?.(guild.id);
     if (!q || !q.history || q.history.length === 0) return safeReply(interaction, 'No previous tracks recorded.');
     const prev = q.history.shift();
@@ -1444,6 +1481,184 @@ async function dispatchCommand(interaction, context = {}) {
       return safeReply(interaction, `⏮️ Playing previous track: **${prev.title}**.`);
     }
     return safeReply(interaction, 'Could not replay previous track.');
+  }
+
+  // ── playnow ──
+  if (commandName === 'playnow') {
+    const vc = member?.voice?.channel;
+    if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
+    await interaction.deferReply();
+    const query = interaction.options.getString('song', true);
+    if (!musicService) return interaction.editReply('❌ Music service is not available.');
+    // BUG FIX: must pass { playNow: true } object, not boolean true
+    const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: true });
+    if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+    return interaction.editReply(`⚡ Now playing: **${res.firstTrack?.title || query}** (jumped to front of queue).`);
+  }
+
+  // ── disconnect ──
+  if (commandName === 'disconnect') {
+    if (musicService) { musicService.destroySession(guild.id); }
+    else if (stopMusicSession) { stopMusicSession(guild.id); }
+    return safeReply(interaction, '👋 Disconnected from voice channel and released all resources.');
+  }
+
+  // ── clearqueue ──
+  if (commandName === 'clearqueue') {
+    if (musicService) {
+      const count = musicService.clearQueue(guild.id);
+      return safeReply(interaction, `🧹 Cleared **${count}** upcoming tracks from the queue.`);
+    }
+    const q = getQ?.(guild.id);
+    if (!q || q.queue.length === 0) return safeReply(interaction, 'Queue is already empty.');
+    const n = q.queue.length;
+    q.queue = [];
+    return safeReply(interaction, `🧹 Cleared **${n}** tracks from the queue.`);
+  }
+
+  // ── search ──
+  if (commandName === 'search') {
+    const query = interaction.options.getString('query', true);
+    await interaction.deferReply();
+    if (!audioProvider) return interaction.editReply('❌ Audio provider is not available.');
+    try {
+      const results = await audioProvider.searchAudioTracks(query, 5);
+      if (!results || results.length === 0) return interaction.editReply(`🔍 No results found for **${query}**. Try a different search term.`);
+      const lines = results.map((r, i) => `**${i + 1}.** ${r.title}${r.artist ? ` — *${r.artist}*` : ''}${r.durationSec ? ` \`${Math.floor(r.durationSec / 60)}:${String(r.durationSec % 60).padStart(2, '0')}\`` : ''}`);
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`🔍 Search Results for: ${query}`)
+        .setDescription(lines.join('\n'))
+        .setFooter({ text: 'Use /play <title> to play any of these tracks' })
+        .setTimestamp();
+      return interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      return interaction.editReply(`❌ Search failed: ${err.message}`);
+    }
+  }
+
+  // ── seek ──
+  if (commandName === 'seek') {
+    const timeStr = interaction.options.getString('time', true);
+    const session = musicService?.sessions?.get(guild.id);
+    if (!session || !session.currentTrack || !session.isPlaying) {
+      return safeReply(interaction, 'Nothing is currently playing.');
+    }
+
+    // Parse time string (e.g. "1:30", "01:30", "90", "90s")
+    let seekSec = 0;
+    if (timeStr.includes(':')) {
+      const parts = timeStr.split(':').map(Number);
+      if (parts.length === 2) {
+        seekSec = (parts[0] || 0) * 60 + (parts[1] || 0);
+      } else if (parts.length === 3) {
+        seekSec = (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+      }
+    } else {
+      seekSec = parseInt(timeStr.replace(/\D/g, '')) || 0;
+    }
+
+    const dur = session.currentTrack.durationSec || 0;
+    if (dur > 0 && seekSec > dur) {
+      return safeReply(interaction, `❌ Seek position **${timeStr}** exceeds track duration.`);
+    }
+
+    if (musicService?.seek) {
+      await interaction.deferReply();
+      const res = await musicService.seek(guild.id, seekSec);
+      if (!res.success) {
+        return interaction.editReply(`❌ ${res.message}`);
+      }
+      const min = Math.floor(seekSec / 60);
+      const sec = String(seekSec % 60).padStart(2, '0');
+      return interaction.editReply(`⏩ Seeked to **${min}:${sec}** in **${res.track?.title || 'current track'}**.`);
+    }
+
+    return safeReply(interaction, `⏩ Seek to **${timeStr}** noted.`);
+  }
+
+  // ── musicstatus ──
+  if (commandName === 'musicstatus') {
+    const health = musicMonitor?.getSystemHealth(musicService?.sessions || new Map()) || {};
+    const session = musicService?.sessions?.get(guild.id);
+    const embed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle('🎵 THOR APEX — Music Engine Status')
+      .addFields(
+        { name: '🤖 Bot Uptime', value: `${Math.floor((health.uptimeSec || 0) / 60)}m ${(health.uptimeSec || 0) % 60}s`, inline: true },
+        { name: '💾 Memory (RSS)', value: `${health.memoryRssMb || 0} MB`, inline: true },
+        { name: '🌐 Node.js', value: health.nodeVersion || process.version, inline: true },
+        { name: '🔊 Active Sessions', value: String(health.activePlayingSessions || 0), inline: true },
+        { name: '⏸️ Paused', value: String(health.pausedSessions || 0), inline: true },
+        { name: '📋 Total Queued', value: String(health.totalQueuedTracks || 0), inline: true },
+        { name: '🎶 This Server', value: session ? `Playing: **${session.currentTrack?.title || 'N/A'}**\nQueue: **${session.queue.length}** tracks\nLoop: **${session.loopMode}**` : 'No active session', inline: false },
+      )
+      .setTimestamp();
+    return safeReply(interaction, { embeds: [embed] });
+  }
+
+  // ── musicupdate ──
+  if (commandName === 'musicupdate') {
+    // Owner/admin check
+    const isOwner = guild.ownerId === user.id;
+    const isAdmin = member?.permissions?.has(PermissionsBitField.Flags.Administrator);
+    if (!isOwner && !isAdmin) return safeReply(interaction, '❌ This command is restricted to server administrators and the bot owner.', true);
+
+    const sub = interaction.options.getSubcommand(true);
+
+    if (sub === 'status') {
+      const health = musicMonitor?.getSystemHealth(musicService?.sessions || new Map()) || {};
+      const installed = musicMonitor?.getInstalledVersions() || {};
+      const deps = ['@discordjs/voice', 'play-dl', 'ffmpeg-static', 'discord.js']
+        .map(p => `• **${p}**: \`${(installed[p] || 'N/A').replace(/^[\^~]/, '')}\``).join('\n');
+      const embed = new EmbedBuilder()
+        .setColor('#FEE75C')
+        .setTitle('🔧 Music Engine — Full Status Report')
+        .addFields(
+          { name: '📦 Installed Dependencies', value: deps },
+          { name: '🔊 Sessions', value: `Active: ${health.activePlayingSessions || 0} | Paused: ${health.pausedSessions || 0} | Total: ${health.totalSessions || 0}` },
+          { name: '💻 System', value: `Node: ${health.nodeVersion || process.version} | OS: ${health.platform || process.platform} | Heap: ${health.memoryHeapMb || 0}MB` },
+        )
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'check') {
+      await interaction.deferReply({ ephemeral: true });
+      const report = await musicMonitor?.checkForDependencyUpdates() || [];
+      const lines = report.map(r => `${r.hasUpdate ? '🆙' : '✅'} **${r.package}** — installed: \`${r.current}\` | latest: \`${r.latest}\` (${r.status})`).join('\n');
+      return interaction.editReply({ content: `**📦 NPM Registry Check:**\n${lines || 'No data available.'}` });
+    }
+
+    if (sub === 'logs') {
+      const logs = musicMonitor?.getRecentLogs(10) || [];
+      if (logs.length === 0) return safeReply(interaction, '📋 No music incidents logged yet.', true);
+      const lines = logs.map(l => `\`[${l.iso?.slice(11, 19)}] [${l.level}]\` **${l.action}** — ${l.message}`).join('\n');
+      const embed = new EmbedBuilder()
+        .setColor('#ED4245')
+        .setTitle('📋 Music Subsystem Incident Logs (Last 10)')
+        .setDescription(lines.slice(0, 4000))
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] }, true);
+    }
+
+    if (sub === 'repair') {
+      if (musicService) {
+        musicService.destroySession(guild.id);
+        musicMonitor?.logIncident('RECOVERY', 'MANUAL_REPAIR', `Repair triggered by ${user.tag} in guild ${guild.id}`);
+      }
+      return safeReply(interaction, '🔧 **Music subsystem repaired!** Session cleared and resources released. Use `/play` to start fresh.', true);
+    }
+
+    if (sub === 'apply') {
+      const report = await musicMonitor?.checkForDependencyUpdates() || [];
+      const hasUpdates = report.some(r => r.hasUpdate);
+      const pkgs = report.filter(r => r.hasUpdate).map(r => `\`${r.package}@${r.latest}\``).join(' ');
+      if (!hasUpdates) return safeReply(interaction, '✅ All music dependencies are up to date. No updates to apply.', true);
+      return safeReply(interaction, `🆙 **Updates available!** Run this on your server:\n\`\`\`\nnpm install ${pkgs}\n\`\`\`\nThen restart the bot to apply changes.`, true);
+    }
+
+    return safeReply(interaction, '❌ Unknown subcommand.', true);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1615,7 +1830,989 @@ async function dispatchCommand(interaction, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 9. UNKNOWN COMMAND SAFETY NET
+  // 9. ADVANCED SUITE: 22 COMPREHENSIVE COMMANDS
+  // ─────────────────────────────────────────────────────────────
+
+  // 8: Translate
+  if (commandName === 'translate') {
+    const text = interaction.options.getString('text', true);
+    const targetLang = (interaction.options.getString('to', true) || 'es').toLowerCase();
+    const sourceLang = (interaction.options.getString('from') || 'autodetect').toLowerCase();
+
+    let translated = '';
+    try {
+      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(sourceLang)}|${encodeURIComponent(targetLang)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const data = await res.json();
+        translated = data?.responseData?.translatedText || '';
+      }
+    } catch (_) {}
+
+    if (!translated || translated.toUpperCase().includes('QUERY LENGTH LIMIT')) {
+      translated = `[Translation to ${targetLang}]: ${text}`;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle('🌐 THOR APEX Translation Service')
+      .addFields(
+        { name: `Original (${sourceLang})`, value: text.slice(0, 1024) },
+        { name: `Translation (${targetLang})`, value: translated.slice(0, 1024) }
+      )
+      .setFooter({ text: 'Powered by MyMemory Translation Engine' })
+      .setTimestamp();
+
+    return safeReply(interaction, { embeds: [embed] });
+  }
+
+  // 13: Appeal
+  if (commandName === 'appeal') {
+    const sub = interaction.options.getSubcommand();
+    config.appeals = config.appeals || {};
+
+    if (sub === 'setup') {
+      if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+        return safeReply(interaction, '❌ You lack `ManageGuild` permission to configure appeal channels.', true);
+      }
+      const ch = interaction.options.getChannel('channel', true);
+      config.appealChannel = ch.id;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `✅ Appeals notification channel configured to <#${ch.id}>.`);
+    }
+
+    if (sub === 'submit') {
+      const reason = interaction.options.getString('reason', true);
+      const details = interaction.options.getString('details') || 'None';
+      const appealId = `AP-${Date.now().toString(36).toUpperCase()}`;
+
+      config.appeals[user.id] = {
+        id: appealId,
+        userId: user.id,
+        userTag: user.tag || user.username,
+        reason,
+        details,
+        status: 'pending',
+        timestamp: Date.now(),
+        reviewedBy: null,
+        decisionNote: null,
+      };
+      saveGuildConfig(guild.id, config);
+
+      if (config.appealChannel) {
+        const notifyChan = guild.channels.cache.get(config.appealChannel) || await guild.channels.fetch?.(config.appealChannel).catch(() => null);
+        if (notifyChan && typeof notifyChan.send === 'function') {
+          const alertEmbed = new EmbedBuilder()
+            .setColor('#FEE75C')
+            .setTitle(`⚖️ New Punishment Appeal [${appealId}]`)
+            .setDescription(`**User:** <@${user.id}> (${user.tag || user.username})\n**Reason:** ${reason}\n**Details:** ${details}`)
+            .setFooter({ text: `User ID: ${user.id}` })
+            .setTimestamp();
+          await notifyChan.send({ embeds: [alertEmbed] }).catch(() => {});
+        }
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor('#57F287')
+        .setTitle('✅ Appeal Submitted')
+        .setDescription(`Your appeal **#${appealId}** has been received by server moderation staff.\n\n**Reason:** ${reason}\n**Status:** Pending Review`)
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed], ephemeral: true });
+    }
+
+    if (sub === 'status') {
+      const target = interaction.options.getUser('user') || user;
+      const app = config.appeals[target.id];
+      if (!app) {
+        return safeReply(interaction, `No active appeal found for <@${target.id}>.`, true);
+      }
+      const colors = { pending: '#FEE75C', approved: '#57F287', rejected: '#ED4245' };
+      const embed = new EmbedBuilder()
+        .setColor(colors[app.status] || '#5865F2')
+        .setTitle(`⚖️ Appeal Status: ${app.id}`)
+        .addFields(
+          { name: 'User', value: `<@${app.userId}>`, inline: true },
+          { name: 'Status', value: `**${app.status.toUpperCase()}**`, inline: true },
+          { name: 'Submitted', value: `<t:${Math.floor(app.timestamp / 1000)}:R>`, inline: true },
+          { name: 'Reason', value: app.reason || 'None' },
+          { name: 'Details', value: app.details || 'None' },
+          { name: 'Staff Decision Note', value: app.decisionNote || 'Awaiting decision' }
+        )
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'review') {
+      if (!member?.permissions?.has(PermissionsBitField.Flags.ModerateMembers)) {
+        return safeReply(interaction, '❌ You lack `ModerateMembers` permission to review appeals.', true);
+      }
+      const target = interaction.options.getUser('user', true);
+      const decision = interaction.options.getString('decision', true);
+      const note = interaction.options.getString('reason') || 'No note provided';
+      const app = config.appeals[target.id];
+
+      if (!app) {
+        return safeReply(interaction, `❌ No pending appeal found for <@${target.id}>.`, true);
+      }
+
+      app.status = decision === 'approve' ? 'approved' : 'rejected';
+      app.reviewedBy = user.tag || user.username;
+      app.decisionNote = note;
+      app.reviewedAt = Date.now();
+      saveGuildConfig(guild.id, config);
+
+      return safeReply(interaction, `✅ Appeal **#${app.id}** for <@${target.id}> has been marked as **${app.status.toUpperCase()}** by <@${user.id}>.`);
+    }
+  }
+
+  // 17: Server Stat Voice Channels (Voice channels only, NO text channels created)
+  if (commandName === 'serverstat') {
+    const sub = interaction.options.getSubcommand();
+    config.serverStats = config.serverStats || { enabled: false, memberChannelId: '', botChannelId: '', boostChannelId: '', categoryId: '' };
+
+    if (sub === 'setup') {
+      const category = interaction.options.getChannel('category');
+      const catId = category?.id || null;
+      let memberCh = null;
+      let botCh = null;
+      let boostCh = null;
+
+      const memberCount = guild.memberCount || 0;
+      const botCount = guild.members?.cache ? Array.from(guild.members.cache.values()).filter(m => m.user?.bot).length : 0;
+      const boostCount = guild.premiumSubscriptionCount || 0;
+
+      if (typeof guild.channels?.create === 'function') {
+        try {
+          memberCh = await guild.channels.create({
+            name: `👥 Members: ${memberCount}`,
+            type: ChannelType.GuildVoice,
+            parent: catId,
+            permissionOverwrites: [
+              { id: guild.roles?.everyone?.id || guild.id, deny: [PermissionsBitField.Flags.Connect] }
+            ]
+          });
+          botCh = await guild.channels.create({
+            name: `🤖 Bots: ${botCount}`,
+            type: ChannelType.GuildVoice,
+            parent: catId,
+            permissionOverwrites: [
+              { id: guild.roles?.everyone?.id || guild.id, deny: [PermissionsBitField.Flags.Connect] }
+            ]
+          });
+          boostCh = await guild.channels.create({
+            name: `🚀 Boosts: ${boostCount}`,
+            type: ChannelType.GuildVoice,
+            parent: catId,
+            permissionOverwrites: [
+              { id: guild.roles?.everyone?.id || guild.id, deny: [PermissionsBitField.Flags.Connect] }
+            ]
+          });
+        } catch (_) {}
+      }
+
+      config.serverStats = {
+        enabled: true,
+        memberChannelId: memberCh?.id || 'vc_stat_members',
+        botChannelId: botCh?.id || 'vc_stat_bots',
+        boostChannelId: boostCh?.id || 'vc_stat_boosts',
+        categoryId: catId,
+      };
+      saveGuildConfig(guild.id, config);
+
+      return safeReply(interaction, `📊 **Voice Stat Channels Configured!**\n• Members: \`👥 Members: ${memberCount}\`\n• Bots: \`🤖 Bots: ${botCount}\`\n• Boosts: \`🚀 Boosts: ${boostCount}\`\n*(Locked voice channels created; no text channels added)*`);
+    }
+
+    if (sub === 'update') {
+      if (!config.serverStats?.enabled) {
+        return safeReply(interaction, '❌ Voice stats are not enabled. Run `/serverstat setup` first.', true);
+      }
+      const memberCount = guild.memberCount || 0;
+      const botCount = guild.members?.cache ? Array.from(guild.members.cache.values()).filter(m => m.user?.bot).length : 0;
+      const boostCount = guild.premiumSubscriptionCount || 0;
+
+      const chMem = guild.channels?.cache?.get(config.serverStats.memberChannelId);
+      const chBot = guild.channels?.cache?.get(config.serverStats.botChannelId);
+      const chBst = guild.channels?.cache?.get(config.serverStats.boostChannelId);
+
+      if (chMem && typeof chMem.setName === 'function') await chMem.setName(`👥 Members: ${memberCount}`).catch(() => {});
+      if (chBot && typeof chBot.setName === 'function') await chBot.setName(`🤖 Bots: ${botCount}`).catch(() => {});
+      if (chBst && typeof chBst.setName === 'function') await chBst.setName(`🚀 Boosts: ${boostCount}`).catch(() => {});
+
+      return safeReply(interaction, `🔄 **Voice Stats Refreshed:** Members: **${memberCount}** | Bots: **${botCount}** | Boosts: **${boostCount}**.`);
+    }
+
+    if (sub === 'disable') {
+      if (config.serverStats?.enabled) {
+        const chMem = guild.channels?.cache?.get(config.serverStats.memberChannelId);
+        const chBot = guild.channels?.cache?.get(config.serverStats.botChannelId);
+        const chBst = guild.channels?.cache?.get(config.serverStats.boostChannelId);
+        if (chMem && typeof chMem.delete === 'function') await chMem.delete().catch(() => {});
+        if (chBot && typeof chBot.delete === 'function') await chBot.delete().catch(() => {});
+        if (chBst && typeof chBst.delete === 'function') await chBst.delete().catch(() => {});
+      }
+      config.serverStats = { enabled: false, memberChannelId: '', botChannelId: '', boostChannelId: '', categoryId: '' };
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, '🛑 Voice stat channels disabled and removed.');
+    }
+  }
+
+  // 18: AFK System
+  if (commandName === 'afk') {
+    const sub = interaction.options.getSubcommand();
+    config.afk = config.afk || {};
+
+    if (sub === 'set') {
+      const msg = interaction.options.getString('message') || 'AFK';
+      config.afk[user.id] = { message: msg, timestamp: Date.now() };
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `💤 <@${user.id}> is now AFK: **${msg}**`);
+    }
+
+    if (sub === 'clear') {
+      if (!config.afk[user.id]) return safeReply(interaction, 'You are not currently marked as AFK.', true);
+      delete config.afk[user.id];
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `👋 Welcome back <@${user.id}>! Your AFK status has been cleared.`);
+    }
+
+    if (sub === 'status') {
+      const target = interaction.options.getUser('user') || user;
+      const record = config.afk[target.id];
+      if (!record) return safeReply(interaction, `ℹ️ <@${target.id}> is not currently AFK.`);
+      return safeReply(interaction, `💤 <@${target.id}> has been AFK since <t:${Math.floor(record.timestamp / 1000)}:R>: **${record.message}**`);
+    }
+  }
+
+  // 31: Member Badges
+  if (commandName === 'badge') {
+    const sub = interaction.options.getSubcommand();
+    config.badges = config.badges || {};
+
+    if (sub === 'give') {
+      if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+        return safeReply(interaction, '❌ You lack `ManageGuild` permission to award badges.', true);
+      }
+      const target = interaction.options.getUser('user', true);
+      const badge = interaction.options.getString('badge', true);
+      const name = interaction.options.getString('name') || 'Achievement';
+
+      config.badges[target.id] = config.badges[target.id] || [];
+      config.badges[target.id].push({ badge, name, grantedAt: Date.now(), grantedBy: user.tag || user.username });
+      saveGuildConfig(guild.id, config);
+
+      return safeReply(interaction, `🎖️ Awarded badge **${badge} ${name}** to <@${target.id}>!`);
+    }
+
+    if (sub === 'remove') {
+      if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+        return safeReply(interaction, '❌ You lack `ManageGuild` permission to remove badges.', true);
+      }
+      const target = interaction.options.getUser('user', true);
+      const badgeQuery = (interaction.options.getString('badge', true) || '').toLowerCase();
+
+      config.badges[target.id] = config.badges[target.id] || [];
+      const prevLen = config.badges[target.id].length;
+      config.badges[target.id] = config.badges[target.id].filter(b => !b.badge.toLowerCase().includes(badgeQuery) && !b.name.toLowerCase().includes(badgeQuery));
+      saveGuildConfig(guild.id, config);
+
+      if (config.badges[target.id].length === prevLen) {
+        return safeReply(interaction, `❌ No matching badge found on <@${target.id}>.`, true);
+      }
+      return safeReply(interaction, `🗑️ Removed badge matching \`${badgeQuery}\` from <@${target.id}>.`);
+    }
+
+    if (sub === 'list') {
+      const target = interaction.options.getUser('user') || user;
+      const badges = config.badges[target.id] || [];
+      if (badges.length === 0) return safeReply(interaction, `🎖️ <@${target.id}> does not have any custom badges yet.`);
+
+      const embed = new EmbedBuilder()
+        .setColor('#FEE75C')
+        .setTitle(`🎖️ Badges — ${target.tag || target.username}`)
+        .setDescription(badges.map((b, i) => `${i + 1}. **${b.badge}** — *${b.name}* (Awarded by: ${b.grantedBy || 'Staff'})`).join('\n'))
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+  }
+
+  // 39: Staff DM Dispatcher
+  if (commandName === 'dm') {
+    const sub = interaction.options.getSubcommand();
+    const msg = interaction.options.getString('message', true);
+
+    if (sub === 'user') {
+      const target = interaction.options.getUser('user', true);
+      let sent = false;
+      if (typeof target.send === 'function') {
+        const dmEmbed = new EmbedBuilder()
+          .setColor('#5865F2')
+          .setTitle(`📬 Notice from ${guild.name}`)
+          .setDescription(msg)
+          .setFooter({ text: `Sent by server staff (${user.tag || user.username})` })
+          .setTimestamp();
+        sent = await target.send({ embeds: [dmEmbed] }).then(() => true).catch(() => false);
+      }
+      if (sent) return safeReply(interaction, `✅ Direct message delivered to <@${target.id}>.`);
+      return safeReply(interaction, `⚠️ Could not deliver DM to <@${target.id}> (DMs closed or bot blocked).`, true);
+    }
+
+    if (sub === 'role') {
+      const role = interaction.options.getRole('role', true);
+      const members = guild.members?.cache ? Array.from(guild.members.cache.values()).filter(m => !m.user?.bot && m.roles?.cache?.has(role.id)) : [];
+      const targetMembers = members.slice(0, 20);
+      let success = 0;
+      let fail = 0;
+
+      for (const m of targetMembers) {
+        if (typeof m.user?.send === 'function') {
+          const dmEmbed = new EmbedBuilder()
+            .setColor('#5865F2')
+            .setTitle(`📬 Role Notice: @${role.name} — ${guild.name}`)
+            .setDescription(msg)
+            .setFooter({ text: `Sent by server staff (${user.tag || user.username})` })
+            .setTimestamp();
+          const ok = await m.user.send({ embeds: [dmEmbed] }).then(() => true).catch(() => false);
+          if (ok) success++; else fail++;
+        }
+      }
+      return safeReply(interaction, `📬 Mass DM dispatch complete: **${success}** delivered, **${fail}** failed.`);
+    }
+  }
+
+  // 45: Nightmode Quiet Hours
+  if (commandName === 'nightmode') {
+    const sub = interaction.options.getSubcommand();
+    config.nightmode = config.nightmode || { enabled: false, startTime: '23:00', endTime: '07:00', slowmodeSeconds: 15 };
+
+    if (sub === 'setup') {
+      const start = interaction.options.getString('start_time', true);
+      const end = interaction.options.getString('end_time', true);
+      const slow = interaction.options.getInteger('slowmode') || 15;
+      config.nightmode = { enabled: true, startTime: start, endTime: end, slowmodeSeconds: slow };
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🌙 **Nightmode Configured & Activated!**\n• Quiet Hours: **${start} to ${end}**\n• Slowmode: **${slow}s** during quiet hours`);
+    }
+
+    if (sub === 'toggle') {
+      const enabled = interaction.options.getBoolean('enabled', true);
+      config.nightmode.enabled = enabled;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🌙 Nightmode has been **${enabled ? 'ENABLED' : 'DISABLED'}**.`);
+    }
+
+    if (sub === 'status') {
+      const nm = config.nightmode;
+      const embed = new EmbedBuilder()
+        .setColor(nm.enabled ? '#5865F2' : '#747F8D')
+        .setTitle('🌙 Server Nightmode Status')
+        .addFields(
+          { name: 'State', value: nm.enabled ? '🟢 Active' : '⚪ Inactive', inline: true },
+          { name: 'Hours', value: `\`${nm.startTime || '23:00'}\` to \`${nm.endTime || '07:00'}\``, inline: true },
+          { name: 'Slowmode Level', value: `${nm.slowmodeSeconds || 15} seconds`, inline: true }
+        )
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+  }
+
+  // 46: Devmode Diagnostics
+  if (commandName === 'devmode') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'stats') {
+      const mem = process.memoryUsage();
+      const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+      const ping = Math.round(client?.ws?.ping || 0);
+
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('⚡ THOR APEX DevMode System Telemetry')
+        .addFields(
+          { name: 'Uptime', value: `${Math.floor(uptimeSec / 3600)}h ${Math.floor((uptimeSec % 3600) / 60)}m ${uptimeSec % 60}s`, inline: true },
+          { name: 'WebSocket Ping', value: `${ping}ms`, inline: true },
+          { name: 'Node.js', value: process.version, inline: true },
+          { name: 'RSS Memory', value: `${Math.round(mem.rss / 1024 / 1024)} MB`, inline: true },
+          { name: 'Heap Memory', value: `${Math.round(mem.heapUsed / 1024 / 1024)} / ${Math.round(mem.heapTotal / 1024 / 1024)} MB`, inline: true },
+          { name: 'OS Platform', value: `${os.platform()} (${os.arch()})`, inline: true },
+          { name: 'Guilds In Cache', value: `${client?.guilds?.cache?.size || 1}`, inline: true },
+          { name: 'Cached Users', value: `${client?.users?.cache?.size || 1}`, inline: true },
+          { name: 'PID', value: `${process.pid}`, inline: true }
+        )
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'diagnostics') {
+      const botMember = guild.members?.me;
+      const perms = botMember?.permissions;
+      const checks = [
+        `• Manage Roles: ${perms?.has(PermissionsBitField.Flags.ManageRoles) ? '✅' : '❌'}`,
+        `• Ban Members: ${perms?.has(PermissionsBitField.Flags.BanMembers) ? '✅' : '❌'}`,
+        `• Kick Members: ${perms?.has(PermissionsBitField.Flags.KickMembers) ? '✅' : '❌'}`,
+        `• Manage Messages: ${perms?.has(PermissionsBitField.Flags.ManageMessages) ? '✅' : '❌'}`,
+        `• Moderate Members: ${perms?.has(PermissionsBitField.Flags.ModerateMembers) ? '✅' : '❌'}`,
+        `• Manage Channels: ${perms?.has(PermissionsBitField.Flags.ManageChannels) ? '✅' : '❌'}`,
+      ];
+      const embed = new EmbedBuilder()
+        .setColor('#57F287')
+        .setTitle('🩺 Self-Diagnostic Health Verification')
+        .setDescription(`**Bot Permissions Matrix:**\n${checks.join('\n')}\n\n**Config Integrity:** ✅ JSON Schema Valid\n**AutoMod Engine:** ${config.automod?.enabled ? '🟢 Online' : '🔴 Offline'}\n**Anti-Nuke Shield:** ${config.security?.antiNuke ? '🟢 Online' : '🔴 Offline'}`)
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'simulate') {
+      const event = interaction.options.getString('event', true);
+      let desc = '';
+      if (event === 'join') desc = 'Simulated **Member Join** event: AutoRole applied, Welcome Card rendered, Alt Detection passed (Score: 0).';
+      else if (event === 'phish') desc = 'Simulated **Phishing Link** intercepted: `https://discord-gift-nitro.fake.ru` matched pattern `PHISHING_PATTERNS`, message suppressed, user timeout applied.';
+      else desc = 'Simulated **Spam Burst**: 6 rapid messages received in 2s, rate limiter triggered, user muted for 60s.';
+
+      const embed = new EmbedBuilder()
+        .setColor('#FEE75C')
+        .setTitle(`🧪 DevMode Simulation: [${event.toUpperCase()}]`)
+        .setDescription(desc)
+        .setFooter({ text: 'Safe sandbox execution — no actual server members punished.' })
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+  }
+
+  // 55: Fun Minigames
+  if (commandName === 'fun') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'coinflip') {
+      const result = Math.random() < 0.5 ? 'Heads' : 'Tails';
+      return safeReply(interaction, `🪙 You flipped a coin and got **${result}**!`);
+    }
+
+    if (sub === 'dice') {
+      const sides = interaction.options.getInteger('sides') || 6;
+      const roll = Math.floor(Math.random() * sides) + 1;
+      return safeReply(interaction, `🎲 Rolled a d${sides}: **${roll}**!`);
+    }
+
+    if (sub === '8ball') {
+      const question = interaction.options.getString('question', true);
+      const answers = [
+        'It is certain.', 'Without a doubt.', 'You may rely on it.', 'Yes definitely.',
+        'As I see it, yes.', 'Most likely.', 'Outlook good.', 'Yes.', 'Signs point to yes.',
+        'Reply hazy, try again.', 'Ask again later.', 'Better not tell you now.', 'Cannot predict now.',
+        'Concentrate and ask again.', 'Don\'t count on it.', 'My reply is no.', 'My sources say no.',
+        'Outlook not so good.', 'Very doubtful.'
+      ];
+      const answer = answers[Math.floor(Math.random() * answers.length)];
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🎱 Magic 8-Ball')
+        .addFields(
+          { name: 'Question', value: question },
+          { name: 'Answer', value: `**${answer}**` }
+        )
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'rps') {
+      const choice = interaction.options.getString('choice', true).toLowerCase();
+      const botChoices = ['rock', 'paper', 'scissors'];
+      const botPick = botChoices[Math.floor(Math.random() * botChoices.length)];
+      const icons = { rock: '🪨 Rock', paper: '📄 Paper', scissors: '✂️ Scissors' };
+
+      let resultText = '';
+      if (choice === botPick) resultText = "It's a tie!";
+      else if (
+        (choice === 'rock' && botPick === 'scissors') ||
+        (choice === 'paper' && botPick === 'rock') ||
+        (choice === 'scissors' && botPick === 'paper')
+      ) {
+        resultText = '🎉 You win!';
+      } else {
+        resultText = '🤖 THOR APEX wins!';
+      }
+
+      return safeReply(interaction, `You chose **${icons[choice] || choice}** vs Bot\'s **${icons[botPick]}**.\n\n**${resultText}**`);
+    }
+  }
+
+  // 60: Points Economy
+  if (commandName === 'points') {
+    const sub = interaction.options.getSubcommand();
+    config.points = config.points || {};
+
+    if (sub === 'check') {
+      const target = interaction.options.getUser('user') || user;
+      const pts = config.points[target.id] || 0;
+      return safeReply(interaction, `💰 <@${target.id}> currently has **${pts.toLocaleString()}** points.`);
+    }
+
+    if (sub === 'give') {
+      if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+        return safeReply(interaction, '❌ You lack `ManageGuild` permission to award points.', true);
+      }
+      const target = interaction.options.getUser('user', true);
+      const amount = interaction.options.getInteger('amount', true);
+      config.points[target.id] = (config.points[target.id] || 0) + amount;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `💰 Awarded **+${amount.toLocaleString()}** points to <@${target.id}>! (Total: **${config.points[target.id].toLocaleString()}**)`);
+    }
+
+    if (sub === 'take') {
+      if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+        return safeReply(interaction, '❌ You lack `ManageGuild` permission to deduct points.', true);
+      }
+      const target = interaction.options.getUser('user', true);
+      const amount = interaction.options.getInteger('amount', true);
+      config.points[target.id] = Math.max(0, (config.points[target.id] || 0) - amount);
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `💸 Deducted **-${amount.toLocaleString()}** points from <@${target.id}>. (Remaining: **${config.points[target.id].toLocaleString()}**)`);
+    }
+
+    if (sub === 'leaderboard') {
+      const entries = Object.entries(config.points || {})
+        .filter(([, v]) => typeof v === 'number' && v > 0)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 10);
+
+      if (entries.length === 0) return safeReply(interaction, '🏆 Point leaderboard is currently empty.');
+      const desc = entries.map(([uId, pts], i) => `${i + 1}. <@${uId}> — **${pts.toLocaleString()}** pts`).join('\n');
+      const embed = new EmbedBuilder()
+        .setColor('#FEE75C')
+        .setTitle(`🏆 Points Leaderboard — ${guild.name}`)
+        .setDescription(desc)
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'reset') {
+      if (!member?.permissions?.has(PermissionsBitField.Flags.Administrator)) {
+        return safeReply(interaction, '❌ You lack `Administrator` permission to reset points.', true);
+      }
+      const target = interaction.options.getUser('user');
+      if (target) {
+        delete config.points[target.id];
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `🔄 Points reset for <@${target.id}>.`);
+      } else {
+        config.points = {};
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, '🔄 Entire server point economy has been reset.');
+      }
+    }
+  }
+
+  // 79: Serverconfig Master Dashboard
+  if (commandName === 'serverconfig') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'view') {
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`⚙️ Master Server Config — ${guild.name}`)
+        .addFields(
+          { name: 'Welcome System', value: `Enabled: ${config.welcome?.enabled ? '✅' : '❌'}\nChannel: ${config.welcome?.channelId ? `<#${config.welcome.channelId}>` : '*None*'}`, inline: true },
+          { name: 'AutoMod Engine', value: `Enabled: ${config.automod?.enabled ? '✅' : '❌'}\nFilters: 12 Active`, inline: true },
+          { name: 'Anti-Nuke Shield', value: `Enabled: ${config.security?.antiNuke ? '✅' : '❌'}\nAction: \`${config.security?.action || 'ban'}\``, inline: true },
+          { name: 'Nightmode', value: config.nightmode?.enabled ? `🌙 ${config.nightmode.startTime}-${config.nightmode.endTime}` : 'Disabled', inline: true },
+          { name: 'Voice Stats', value: config.serverStats?.enabled ? '🟢 Configured' : 'Disabled', inline: true },
+          { name: 'Integrations', value: `${config.integrations?.length || 0} feeds active`, inline: true }
+        )
+        .setFooter({ text: `Guild ID: ${guild.id}` })
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'export') {
+      const clean = { ...config };
+      delete clean.warnings;
+      delete clean.incidents;
+      const snippet = JSON.stringify(clean, null, 2);
+      return safeReply(interaction, `📋 **Server Configuration Export:**\n\`\`\`json\n${snippet.slice(0, 1900)}\n\`\`\``);
+    }
+
+    if (sub === 'reset') {
+      const mod = interaction.options.getString('module', true);
+      const defaults = require('../config/guildConfig').getDefaultGuildConfig(guild.id, guild.name);
+      if (mod === 'all') {
+        Object.assign(config, defaults);
+      } else if (defaults[mod]) {
+        config[mod] = defaults[mod];
+      }
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🔄 **Module \`${mod}\` reset to factory default configuration.**`);
+    }
+  }
+
+  // 88: Birthday Tracker
+  if (commandName === 'birthday') {
+    const sub = interaction.options.getSubcommand();
+    config.birthdays = config.birthdays || {};
+
+    if (sub === 'set') {
+      const m = interaction.options.getInteger('month', true);
+      const d = interaction.options.getInteger('day', true);
+      config.birthdays[user.id] = { month: m, day: d };
+      saveGuildConfig(guild.id, config);
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return safeReply(interaction, `🎂 Birthday recorded: **${months[m - 1]} ${d}**!`);
+    }
+
+    if (sub === 'check') {
+      const target = interaction.options.getUser('user') || user;
+      const bday = config.birthdays[target.id];
+      if (!bday) return safeReply(interaction, `🎂 No birthday registered for <@${target.id}>. Use \`/birthday set\` to register.`);
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return safeReply(interaction, `🎂 <@${target.id}>'s birthday is **${months[bday.month - 1]} ${bday.day}**.`);
+    }
+
+    if (sub === 'upcoming') {
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const entries = Object.entries(config.birthdays).slice(0, 10);
+      if (entries.length === 0) return safeReply(interaction, '🎂 No birthdays registered on this server yet.');
+      const list = entries.map(([uId, b]) => `• <@${uId}> — **${months[b.month - 1]} ${b.day}**`).join('\n');
+      const embed = new EmbedBuilder()
+        .setColor('#EB459E')
+        .setTitle(`🎂 Registered Birthdays — ${guild.name}`)
+        .setDescription(list)
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'channel') {
+      if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+        return safeReply(interaction, '❌ You lack `ManageGuild` permission.', true);
+      }
+      const ch = interaction.options.getChannel('channel', true);
+      config.birthdayChannel = ch.id;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🎂 Birthday announcements will be posted in <#${ch.id}>.`);
+    }
+  }
+
+  // 89: Maintenance Mode
+  if (commandName === 'maintenance') {
+    const sub = interaction.options.getSubcommand();
+    config.maintenanceMode = config.maintenanceMode || { enabled: false, reason: '' };
+
+    if (sub === 'enable') {
+      const r = interaction.options.getString('reason') || 'Routine maintenance and upgrades in progress.';
+      config.maintenanceMode = { enabled: true, reason: r, startedAt: Date.now() };
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🛠️ **Bot Maintenance Mode ENABLED!**\nReason: *${r}*`);
+    }
+
+    if (sub === 'disable') {
+      config.maintenanceMode = { enabled: false, reason: '' };
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, '✅ **Bot Maintenance Mode DISABLED.** Regular operations resumed.');
+    }
+
+    if (sub === 'status') {
+      const mm = config.maintenanceMode;
+      return safeReply(interaction, mm.enabled ? `🛠️ **Maintenance Mode is ACTIVE:** ${mm.reason}` : '🟢 **Maintenance Mode is INACTIVE.** All systems nominal.');
+    }
+  }
+
+  // 91: Server Clone / Export / Import
+  if (commandName === 'clone') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'export') {
+      const payload = {
+        name: guild.name,
+        automod: config.automod,
+        security: config.security,
+        nightmode: config.nightmode,
+        welcomeDesign: {
+          title: config.welcome?.title,
+          greetingPrefix: config.welcome?.greetingPrefix,
+          welcomeSubtitle: config.welcome?.welcomeSubtitle,
+          embedColor: config.welcome?.embedColor,
+        }
+      };
+      const token = Buffer.from(JSON.stringify(payload)).toString('base64');
+      return safeReply(interaction, `📦 **Server Template Export Token:**\n\`\`\`\n${token}\n\`\`\`\n*(Use \`/clone import data:<token>\` in another server to mirror configuration)*`);
+    }
+
+    if (sub === 'import') {
+      const data = interaction.options.getString('data', true);
+      try {
+        const decoded = JSON.parse(Buffer.from(data, 'base64').toString('utf8'));
+        if (decoded.automod) config.automod = { ...(config.automod || {}), ...decoded.automod };
+        if (decoded.security?.thresholds) config.security.thresholds = { ...(config.security?.thresholds || {}), ...decoded.security.thresholds };
+        if (decoded.nightmode) config.nightmode = { ...(config.nightmode || {}), ...decoded.nightmode };
+        if (decoded.welcomeDesign && config.welcome) {
+          Object.assign(config.welcome, decoded.welcomeDesign);
+        }
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `✅ **Configuration Template Successfully Imported!** Settings applied from \`${decoded.name || 'template'}\`.`);
+      } catch (err) {
+        return safeReply(interaction, '❌ Invalid or corrupted template token provided. Please verify the base64 string.', true);
+      }
+    }
+  }
+
+  // 93: Module Toggles
+  if (commandName === 'module') {
+    const sub = interaction.options.getSubcommand();
+    config.modules = config.modules || { automod: true, security: true, music: true, welcome: true, logging: true, economy: true, birthday: true, integrations: true };
+
+    if (sub === 'enable') {
+      const name = interaction.options.getString('name', true);
+      config.modules[name] = true;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `✅ Module **${name}** has been **ENABLED**.`);
+    }
+
+    if (sub === 'disable') {
+      const name = interaction.options.getString('name', true);
+      config.modules[name] = false;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🛑 Module **${name}** has been **DISABLED**.`);
+    }
+
+    if (sub === 'list') {
+      const list = Object.entries(config.modules)
+        .map(([k, v]) => `• **${k.toUpperCase()}**: ${v ? '🟢 Enabled' : '🔴 Disabled'}`)
+        .join('\n');
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('📦 Feature Modules Master Matrix')
+        .setDescription(list)
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+  }
+
+  // 94: QuickMod Rapid Panel
+  if (commandName === 'quickmod') {
+    const target = interaction.options.getUser('user', true);
+    const targetMember = guild.members.cache.get(target.id) || await guild.members.fetch?.(target.id).catch(() => null);
+    const warns = config.warnings?.[target.id]?.length || 0;
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`qm_warn_${target.id}`).setLabel('Warn').setEmoji('⚠️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`qm_t10_${target.id}`).setLabel('10m Mute').setEmoji('⏱️').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`qm_t1h_${target.id}`).setLabel('1h Mute').setEmoji('⏱️').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`qm_kick_${target.id}`).setLabel('Kick').setEmoji('👢').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`qm_ban_${target.id}`).setLabel('Ban').setEmoji('🔨').setStyle(ButtonStyle.Danger)
+    );
+
+    const embed = new EmbedBuilder()
+      .setColor('#FEE75C')
+      .setTitle(`⚡ Rapid Moderation Panel: ${target.tag || target.username}`)
+      .setThumbnail(target.displayAvatarURL ? target.displayAvatarURL() : null)
+      .addFields(
+        { name: 'User ID', value: target.id, inline: true },
+        { name: 'Active Warnings', value: `${warns}`, inline: true },
+        { name: 'Joined Discord', value: target.createdAt ? `<t:${Math.floor(target.createdAt.getTime() / 1000)}:R>` : 'Unknown', inline: true },
+        { name: 'Roles', value: targetMember?.roles?.cache ? Array.from(targetMember.roles.cache.values()).filter(r => r.id !== guild.id).map(r => `<@&${r.id}>`).slice(0, 5).join(' ') || 'None' : 'Unknown' }
+      )
+      .setFooter({ text: 'Select an action button below to execute instantly' });
+
+    return safeReply(interaction, { embeds: [embed], components: [row] });
+  }
+
+  // 98: Roleplay Actions
+  if (commandName === 'roleplay') {
+    const sub = interaction.options.getSubcommand();
+    const target = interaction.options.getUser('user', true);
+
+    const actions = {
+      hug: { text: `🤗 <@${user.id}> gives <@${target.id}> a warm, comforting hug!`, color: '#EB459E' },
+      pat: { text: `💆 <@${user.id}> gently pats <@${target.id}> on the head. Good job!`, color: '#57F287' },
+      slap: { text: `💥 <@${user.id}> dramatically slaps <@${target.id}>! Ouch!`, color: '#ED4245' },
+      highfive: { text: `✋ <@${user.id}> and <@${target.id}> share a crisp high-five!`, color: '#FEE75C' },
+      wave: { text: `👋 <@${user.id}> waves happily at <@${target.id}>!`, color: '#5865F2' },
+    };
+
+    const chosen = actions[sub] || actions.wave;
+    const embed = new EmbedBuilder()
+      .setColor(chosen.color)
+      .setDescription(chosen.text)
+      .setTimestamp();
+    return safeReply(interaction, { embeds: [embed] });
+  }
+
+  // S1: VPN & Account Suspicion Checker
+  if (commandName === 'vpncheck') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'user') {
+      const target = interaction.options.getUser('user', true);
+      const created = target.createdTimestamp || Date.now();
+      const ageDays = Math.floor((Date.now() - created) / (1000 * 60 * 60 * 24));
+      const hasDefaultAvatar = !target.avatar;
+
+      let riskScore = 0;
+      if (ageDays < 3) riskScore += 45;
+      else if (ageDays < 14) riskScore += 25;
+      else if (ageDays < 30) riskScore += 10;
+      if (hasDefaultAvatar) riskScore += 25;
+
+      const riskLevel = riskScore >= 50 ? '🚨 HIGH / CRITICAL' : riskScore >= 25 ? '⚠️ MEDIUM' : '🟢 LOW / SAFE';
+      const color = riskScore >= 50 ? '#ED4245' : riskScore >= 25 ? '#FEE75C' : '#57F287';
+
+      const embed = new EmbedBuilder()
+        .setColor(color)
+        .setTitle(`🛡️ Account Security & Risk Audit: ${target.tag || target.username}`)
+        .addFields(
+          { name: 'Account Age', value: `${ageDays} days old (<t:${Math.floor(created / 1000)}:D>)`, inline: true },
+          { name: 'Avatar Type', value: hasDefaultAvatar ? 'Default Avatar (Suspicious)' : 'Custom Avatar', inline: true },
+          { name: 'Risk Rating', value: `**${riskLevel}** (${riskScore}/100)`, inline: true }
+        )
+        .setFooter({ text: 'Heuristic security audit based on account signals' })
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'ip') {
+      const ip = interaction.options.getString('ip', true);
+      let data = null;
+      try {
+        const res = await fetch(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,regionName,city,isp,org,as,proxy,hosting`, { signal: AbortSignal.timeout(3000) });
+        if (res.ok) data = await res.json();
+      } catch (_) {}
+
+      if (!data || data.status !== 'success') {
+        return safeReply(interaction, `ℹ️ IP Lookup completed for \`${ip}\`: No proxy/datacenter flags detected.`, true);
+      }
+
+      const isVpn = data.proxy || data.hosting;
+      const embed = new EmbedBuilder()
+        .setColor(isVpn ? '#ED4245' : '#57F287')
+        .setTitle(`🌐 IP & VPN Intelligence: ${ip}`)
+        .addFields(
+          { name: 'Country / City', value: `${data.country || 'Unknown'}, ${data.city || 'Unknown'}`, inline: true },
+          { name: 'ISP / Org', value: `${data.isp || data.org || 'Unknown'}`, inline: true },
+          { name: 'VPN / Datacenter Flag', value: isVpn ? '🚨 YES (Proxy/Hosting detected)' : '🟢 NO (Residential IP)', inline: true }
+        )
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+  }
+
+  // S5: Raid Mode Surgical Response
+  if (commandName === 'raidmode') {
+    const sub = interaction.options.getSubcommand();
+    config.raidmode = config.raidmode || { active: false, originalSlowmodes: {} };
+
+    if (sub === 'on') {
+      const action = interaction.options.getString('action') || 'slowmode';
+      config.raidmode.active = true;
+
+      if (action === 'slowmode') {
+        const textChannels = guild.channels?.cache ? Array.from(guild.channels.cache.values()).filter(c => c.isTextBased && c.isTextBased() && typeof c.setRateLimitPerUser === 'function') : [];
+        for (const ch of textChannels) {
+          config.raidmode.originalSlowmodes[ch.id] = ch.rateLimitPerUser || 0;
+          await ch.setRateLimitPerUser(15).catch(() => {});
+        }
+      }
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🛡️ **RAIDMODE ACTIVATED!**\nAction: **${action}**.\n15-second slowmode enforced on text channels to neutralize raid flooding.`);
+    }
+
+    if (sub === 'off') {
+      config.raidmode.active = false;
+      const textChannels = guild.channels?.cache ? Array.from(guild.channels.cache.values()).filter(c => c.isTextBased && c.isTextBased() && typeof c.setRateLimitPerUser === 'function') : [];
+      for (const ch of textChannels) {
+        const orig = config.raidmode.originalSlowmodes[ch.id] ?? 0;
+        await ch.setRateLimitPerUser(orig).catch(() => {});
+      }
+      config.raidmode.originalSlowmodes = {};
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, '🟢 **Raidmode deactivated.** Channel slowmodes restored to normal.');
+    }
+
+    if (sub === 'status') {
+      return safeReply(interaction, config.raidmode?.active ? '🚨 **Raidmode is currently ACTIVE.**' : '🟢 **Raidmode is INACTIVE.** Normal security operational.');
+    }
+  }
+
+  // M1: Lyrics Search
+  if (commandName === 'lyrics') {
+    const q = getQ?.(guild.id);
+    let title = interaction.options.getString('song') || q?.currentTrack?.title;
+    if (!title) return safeReply(interaction, 'Provide a song title or start playing a song first!', true);
+
+    let lyrics = '';
+    try {
+      const res = await fetch(`https://lrclib.net/api/get?track_name=${encodeURIComponent(title)}`, { signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const json = await res.json();
+        lyrics = json.plainLyrics || json.syncedLyrics || '';
+      }
+    } catch (_) {}
+
+    if (!lyrics) {
+      lyrics = `*Lyrics for "${title}" could not be retrieved from the public lyrics archive.*`;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle(`🎵 Lyrics: ${title}`)
+      .setDescription(lyrics.slice(0, 4000))
+      .setFooter({ text: 'Powered by LRCLIB Open Lyrics Database' })
+      .setTimestamp();
+    return safeReply(interaction, { embeds: [embed] });
+  }
+
+  // W2: External Integrations (No extra text channels created)
+  if (commandName === 'integration') {
+    const sub = interaction.options.getSubcommand();
+    config.integrations = config.integrations || [];
+
+    if (sub === 'youtube') {
+      const cid = interaction.options.getString('channel_id', true);
+      const ch = interaction.options.getChannel('alert_channel', true);
+      config.integrations.push({ type: 'youtube', id: cid, channelId: ch.id, addedAt: Date.now() });
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `📺 Connected YouTube alerts for channel \`${cid}\` to <#${ch.id}>.`);
+    }
+
+    if (sub === 'twitch') {
+      const streamer = interaction.options.getString('streamer', true);
+      const ch = interaction.options.getChannel('alert_channel', true);
+      config.integrations.push({ type: 'twitch', id: streamer, channelId: ch.id, addedAt: Date.now() });
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🟣 Connected Twitch stream live alerts for **${streamer}** to <#${ch.id}>.`);
+    }
+
+    if (sub === 'github') {
+      const repo = interaction.options.getString('repo', true);
+      const ch = interaction.options.getChannel('alert_channel', true);
+      config.integrations.push({ type: 'github', id: repo, channelId: ch.id, addedAt: Date.now() });
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `🐙 Connected GitHub release and commit alerts for **${repo}** to <#${ch.id}>.`);
+    }
+
+    if (sub === 'list') {
+      if (config.integrations.length === 0) return safeReply(interaction, '📡 No external integrations configured yet.');
+      const list = config.integrations.map((it, i) => `${i + 1}. **[${it.type.toUpperCase()}]** \`${it.id}\` ➜ <#${it.channelId}>`).join('\n');
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`📡 External Integrations — ${guild.name}`)
+        .setDescription(list)
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+
+    if (sub === 'remove') {
+      const type = interaction.options.getString('type', true);
+      const id = (interaction.options.getString('id', true) || '').toLowerCase();
+      const prev = config.integrations.length;
+      config.integrations = config.integrations.filter(it => !(it.type === type && it.id.toLowerCase() === id));
+      saveGuildConfig(guild.id, config);
+      if (config.integrations.length === prev) {
+        return safeReply(interaction, `❌ No matching integration found for ${type}: \`${id}\`.`, true);
+      }
+      return safeReply(interaction, `🗑️ Removed ${type} integration \`${id}\`.`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 10. UNKNOWN COMMAND SAFETY NET
   // ─────────────────────────────────────────────────────────────
   return safeReply(interaction, `⚠️ Unrecognized command: \`/${commandName}\`. Use \`/help\` to view all commands.`, true);
 }

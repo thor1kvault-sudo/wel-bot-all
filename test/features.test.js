@@ -725,38 +725,6 @@ test('F7.3: /automod punishment rule:all bulk-updates all message filters', asyn
   assert.strictEqual(cfg.automod.wordFilter.action, 'warn');
 });
 
-test('F7.4: /setpunishment standalone command updates action correctly', async () => {
-  const guildId = 'guild_punish_test_4';
-  let responsePayload = null;
-
-  const interaction = {
-    commandName: 'setpunishment',
-    guild: { id: guildId, name: 'Punish Test Guild 4' },
-    member: { id: 'admin_1', permissions: { has: () => true } },
-    user: { id: 'admin_1', tag: 'Admin#0001' },
-    options: {
-      getString: (name) => {
-        if (name === 'rule') return 'antiInvites';
-        if (name === 'action') return 'ban';
-        return null;
-      },
-    },
-    replied: false,
-    deferred: false,
-    reply: async (payload) => {
-      responsePayload = payload;
-      interaction.replied = true;
-    },
-  };
-
-  await dispatchCommand(interaction, {});
-
-  const cfg = getGuildConfig(guildId);
-  assert.strictEqual(cfg.automod.antiInvites.action, 'ban');
-  assert.ok(responsePayload?.embeds?.length > 0);
-  assert.ok(responsePayload.embeds[0].data.description.includes('Ban'));
-});
-
 test('F7.5: /automod status reflects customized punishments in output embed', async () => {
   const guildId = 'guild_punish_test_5';
   const cfg = getGuildConfig(guildId);
@@ -938,6 +906,337 @@ test('F8.5: /automod punishment with action:enable enables selected rules', asyn
 
   const updatedCfg = getGuildConfig(guildId);
   assert.strictEqual(updatedCfg.automod.antiLinks.enabled, true);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// FEATURE 9: 22 New Advanced Commands Test Suite
+// ═══════════════════════════════════════════════════════════════════
+
+test('F9.1: /afk set & clear updates guildConfig.afk correctly', async () => {
+  const guildId = 'guild_afk_test';
+  let replyText = '';
+
+  const mockInteraction = (sub, msg = null) => ({
+    commandName: 'afk',
+    guild: { id: guildId, name: 'AFK Guild' },
+    member: { id: 'user_afk_1', permissions: { has: () => true } },
+    user: { id: 'user_afk_1', tag: 'AfkUser#0001' },
+    options: {
+      getSubcommand: () => sub,
+      getString: (n) => n === 'message' ? msg : null,
+      getUser: () => null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (p) => { replyText = typeof p === 'string' ? p : p.content; },
+  });
+
+  await dispatchCommand(mockInteraction('set', 'Eating lunch'), {});
+  let cfg = getGuildConfig(guildId);
+  assert.ok(cfg.afk['user_afk_1'], 'AFK record must be created');
+  assert.strictEqual(cfg.afk['user_afk_1'].message, 'Eating lunch');
+
+  await dispatchCommand(mockInteraction('clear'), {});
+  cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.afk['user_afk_1'], undefined, 'AFK record must be cleared');
+});
+
+test('F9.2: /points give & check updates member points balance', async () => {
+  const guildId = 'guild_points_test';
+  const initCfg = getGuildConfig(guildId);
+  initCfg.points = {};
+  saveGuildConfig(guildId, initCfg);
+  let replyText = '';
+
+  const mockInteraction = (sub, amount = 0) => ({
+    commandName: 'points',
+    guild: { id: guildId, name: 'Points Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => sub,
+      getUser: () => ({ id: 'target_u1', tag: 'Target#0001' }),
+      getInteger: () => amount,
+    },
+    replied: false,
+    deferred: false,
+    reply: async (p) => { replyText = typeof p === 'string' ? p : p.content; },
+  });
+
+  await dispatchCommand(mockInteraction('give', 250), {});
+  let cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.points['target_u1'], 250);
+
+  await dispatchCommand(mockInteraction('take', 50), {});
+  cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.points['target_u1'], 200);
+});
+
+test('F9.3: /badge give & remove manages custom recognition badges', async () => {
+  const guildId = 'guild_badge_test';
+
+  const mockInteraction = (sub, badge = '', name = '') => ({
+    commandName: 'badge',
+    guild: { id: guildId, name: 'Badge Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => sub,
+      getUser: () => ({ id: 'member_b1', tag: 'Member#0001' }),
+      getString: (n) => n === 'badge' ? badge : name,
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => {},
+  });
+
+  await dispatchCommand(mockInteraction('give', '🏆', 'Champion'), {});
+  let cfg = getGuildConfig(guildId);
+  assert.ok(cfg.badges['member_b1']?.length > 0);
+  assert.strictEqual(cfg.badges['member_b1'][0].badge, '🏆');
+
+  await dispatchCommand(mockInteraction('remove', '🏆'), {});
+  cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.badges['member_b1']?.length, 0);
+});
+
+test('F9.4: /nightmode setup & toggle configures quiet hours', async () => {
+  const guildId = 'guild_nightmode_test';
+
+  const interaction = {
+    commandName: 'nightmode',
+    guild: { id: guildId, name: 'Nightmode Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'setup',
+      getString: (n) => n === 'start_time' ? '22:00' : '08:00',
+      getInteger: () => 30,
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => {},
+  };
+
+  await dispatchCommand(interaction, {});
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.nightmode.enabled, true);
+  assert.strictEqual(cfg.nightmode.startTime, '22:00');
+  assert.strictEqual(cfg.nightmode.endTime, '08:00');
+  assert.strictEqual(cfg.nightmode.slowmodeSeconds, 30);
+});
+
+test('F9.5: /serverstat setup creates voice channels ONLY without text channels', async () => {
+  const guildId = 'guild_stat_test';
+  const createdChannels = [];
+
+  const mockGuild = {
+    id: guildId,
+    name: 'Stat Server',
+    memberCount: 150,
+    premiumSubscriptionCount: 5,
+    members: { cache: new Map([['b1', { user: { bot: true } }]]) },
+    channels: {
+      create: async (opts) => {
+        createdChannels.push(opts);
+        return { id: `vc_${opts.name.slice(0, 5)}`, name: opts.name };
+      },
+    },
+    roles: { everyone: { id: 'role_everyone' } },
+  };
+
+  const interaction = {
+    commandName: 'serverstat',
+    guild: mockGuild,
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'setup',
+      getChannel: () => null,
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => {},
+  };
+
+  await dispatchCommand(interaction, {});
+
+  assert.strictEqual(createdChannels.length, 3, 'Must create 3 stat channels');
+  for (const c of createdChannels) {
+    // ChannelType.GuildVoice is 2 in discord.js
+    assert.strictEqual(c.type, 2, 'All stat channels must be Voice channels (type 2)');
+  }
+  const cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.serverStats.enabled, true);
+});
+
+test('F9.6: /clone export & import clones server settings safely', async () => {
+  const g1 = 'guild_source_clone';
+  const g2 = 'guild_target_clone';
+
+  const cfg1 = getGuildConfig(g1);
+  cfg1.automod.antiCaps.maxPercentage = 42;
+  saveGuildConfig(g1, cfg1);
+
+  let exportMsg = '';
+  const exportInteraction = {
+    commandName: 'clone',
+    guild: { id: g1, name: 'Source Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: { getSubcommand: () => 'export' },
+    replied: false,
+    deferred: false,
+    reply: async (p) => { exportMsg = typeof p === 'string' ? p : p.content; },
+  };
+
+  await dispatchCommand(exportInteraction, {});
+  const token = exportMsg.match(/```\n([\s\S]+?)\n```/)?.[1]?.trim();
+  assert.ok(token, 'Must produce export token');
+
+  const importInteraction = {
+    commandName: 'clone',
+    guild: { id: g2, name: 'Target Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'import',
+      getString: () => token,
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => {},
+  };
+
+  await dispatchCommand(importInteraction, {});
+  const cfg2 = getGuildConfig(g2);
+  assert.strictEqual(cfg2.automod.antiCaps.maxPercentage, 42, 'Cloned setting must match source');
+});
+
+test('F9.7: /appeal submit records pending appeal', async () => {
+  const guildId = 'guild_appeal_test';
+
+  const interaction = {
+    commandName: 'appeal',
+    guild: { id: guildId, name: 'Appeal Guild', channels: { cache: new Map() } },
+    member: { id: 'user_banned_1', permissions: { has: () => false } },
+    user: { id: 'user_banned_1', tag: 'BannedUser#0001' },
+    options: {
+      getSubcommand: () => 'submit',
+      getString: (n) => n === 'reason' ? 'Mistaken warning' : 'Apologetic',
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => {},
+  };
+
+  await dispatchCommand(interaction, {});
+  const cfg = getGuildConfig(guildId);
+  assert.ok(cfg.appeals['user_banned_1']);
+  assert.strictEqual(cfg.appeals['user_banned_1'].reason, 'Mistaken warning');
+  assert.strictEqual(cfg.appeals['user_banned_1'].status, 'pending');
+});
+
+test('F9.8: /queue subcommands (view, remove, move, clear) manage playlist properly', async () => {
+  const guildId = 'guild_queue_test';
+  const mockQueue = {
+    queue: [
+      { title: 'Track 1', requestedBy: 'u1' },
+      { title: 'Track 2', requestedBy: 'u2' },
+      { title: 'Track 3', requestedBy: 'u3' },
+    ]
+  };
+
+  const mockInteraction = (sub, opts = {}) => ({
+    commandName: 'queue',
+    guild: { id: guildId, name: 'Queue Guild' },
+    member: { id: 'user_1' },
+    user: { id: 'user_1' },
+    options: {
+      getSubcommand: () => sub,
+      getInteger: (n) => opts[n] || 1,
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => {},
+  });
+
+  // Move Track 1 to pos 3
+  await dispatchCommand(mockInteraction('move', { from: 1, to: 3 }), { getQ: () => mockQueue });
+  assert.strictEqual(mockQueue.queue[2].title, 'Track 1');
+
+  // Remove pos 1
+  await dispatchCommand(mockInteraction('remove', { position: 1 }), { getQ: () => mockQueue });
+  assert.strictEqual(mockQueue.queue.length, 2);
+
+  // Clear queue
+  await dispatchCommand(mockInteraction('clear'), { getQ: () => mockQueue });
+  assert.strictEqual(mockQueue.queue.length, 0);
+});
+
+test('F9.9: /integration adds and removes external feeds without creating text channels', async () => {
+  const guildId = 'guild_integ_test';
+
+  const addInteraction = {
+    commandName: 'integration',
+    guild: { id: guildId, name: 'Integ Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'youtube',
+      getString: () => 'UC123456789',
+      getChannel: () => ({ id: 'chan_existing_news' }),
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => {},
+  };
+
+  await dispatchCommand(addInteraction, {});
+  let cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.integrations.length, 1);
+  assert.strictEqual(cfg.integrations[0].type, 'youtube');
+  assert.strictEqual(cfg.integrations[0].channelId, 'chan_existing_news');
+
+  const removeInteraction = {
+    commandName: 'integration',
+    guild: { id: guildId, name: 'Integ Guild' },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getSubcommand: () => 'remove',
+      getString: (n) => n === 'type' ? 'youtube' : 'UC123456789',
+    },
+    replied: false,
+    deferred: false,
+    reply: async () => {},
+  };
+
+  await dispatchCommand(removeInteraction, {});
+  cfg = getGuildConfig(guildId);
+  assert.strictEqual(cfg.integrations.length, 0);
+});
+
+test('F9.10: /quickmod produces moderation card with buttons', async () => {
+  let response = null;
+
+  const interaction = {
+    commandName: 'quickmod',
+    guild: { id: 'g_qm', name: 'QM Guild', members: { cache: new Map() } },
+    member: { id: 'admin_1', permissions: { has: () => true } },
+    user: { id: 'admin_1', tag: 'Admin#0001' },
+    options: {
+      getUser: () => ({ id: 'bad_user', tag: 'BadUser#0001', createdAt: new Date() }),
+    },
+    replied: false,
+    deferred: false,
+    reply: async (p) => { response = p; },
+  };
+
+  await dispatchCommand(interaction, {});
+  assert.ok(response?.components?.length > 0, 'Must include action row buttons');
+  const buttons = response.components[0].components;
+  assert.strictEqual(buttons.length, 5, 'Must contain 5 rapid mod buttons (Warn, Mute10m, Mute1h, Kick, Ban)');
 });
 
 

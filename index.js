@@ -64,6 +64,10 @@ let voiceLib = null; try { voiceLib = require('@discordjs/voice'); } catch (e) {
 let playdl   = null; try { playdl   = require('play-dl');          } catch (e) { console.log('play-dl:', e.message); }
 let isPlayDlReady = false;
 
+// ── New musicService (multi-guild isolated, Rythm-style) ──
+let musicService = null;
+try { musicService = require('./src/music/musicService'); } catch (e) { console.log('musicService:', e.message); }
+
 async function ensurePlayDlReady() {
   if (!playdl || isPlayDlReady) return;
   try {
@@ -441,6 +445,34 @@ async function startBot() {
         console.error('Command registration error:', err.message);
       }
     }
+
+    // ── Automated Background Tickers ──
+    const announcedBirthdays = new Set();
+    setInterval(async () => {
+      const now = new Date();
+      const currentMonth = now.getUTCMonth() + 1;
+      const currentDay = now.getUTCDate();
+      const todayKey = `${now.getUTCFullYear()}-${currentMonth}-${currentDay}`;
+
+      for (const guild of client.guilds.cache.values()) {
+        const conf = getGuildConfig(guild.id, guild.name);
+        if (!conf.birthdayChannel || !conf.birthdays) continue;
+        const ch = guild.channels.cache.get(conf.birthdayChannel);
+        if (!ch || typeof ch.send !== 'function') continue;
+
+        for (const [userId, bday] of Object.entries(conf.birthdays)) {
+          if (bday.month === currentMonth && bday.day === currentDay) {
+            const announceId = `${guild.id}-${userId}-${todayKey}`;
+            if (!announcedBirthdays.has(announceId)) {
+              announcedBirthdays.add(announceId);
+              await ch.send({
+                content: `🎉🎂 **Happy Birthday <@${userId}>!** 🎈 Everyone in **${guild.name}** wishes you an amazing day filled with joy! 🥳✨`
+              }).catch(() => {});
+            }
+          }
+        }
+      }
+    }, 60 * 60 * 1000); // Check hourly
   });
 
   client.on('guildCreate', async (guild) => {
@@ -552,6 +584,25 @@ async function startBot() {
 
     // Evaluate AutoMod filters
     await processMessage(message);
+
+    // ── AFK System Interceptor ──
+    const guildConfig = getGuildConfig(message.guild.id, message.guild.name);
+    if (guildConfig.afk && guildConfig.afk[message.author.id]) {
+      delete guildConfig.afk[message.author.id];
+      saveGuildConfig(message.guild.id, guildConfig);
+      await message.reply(`👋 Welcome back <@${message.author.id}>! I've removed your AFK status.`).catch(() => {});
+    }
+
+    if (message.mentions?.users?.size > 0 && guildConfig.afk) {
+      for (const [uId] of message.mentions.users) {
+        if (guildConfig.afk[uId] && uId !== message.author.id) {
+          const rec = guildConfig.afk[uId];
+          const timeAgo = formatDuration(Math.floor((Date.now() - rec.timestamp) / 1000));
+          await message.reply(`💤 <@${uId}> is currently AFK: **${rec.message}** (${timeAgo} ago)`).catch(() => {});
+          break;
+        }
+      }
+    }
 
     // Legacy prefix commands support (!play, !stop, !warn, etc.)
     const content = message.content.trim();
@@ -793,16 +844,32 @@ async function startBot() {
         if (id.startsWith('btn_m_')) {
           const vc = interaction.member?.voice?.channel;
           if (!vc) return safeReply(interaction, 'You must be in a Voice Channel to use music controls!');
+          const session = musicService?.sessions?.get(interaction.guildId);
+          if (session?.voiceChannel && session.voiceChannel.id !== vc.id) {
+            return safeReply(interaction, '❌ You must be in the same Voice Channel as the bot to use music controls!');
+          }
           const q = getQ(interaction.guildId);
 
+        // ——— Music Button Handlers (× 7 Rythm-style controls) ———
           if (id === 'btn_m_play_pause') {
-            if (q.player) {
+            if (musicService) {
+              const session = musicService.sessions?.get(interaction.guildId);
+              if (!session) return safeReply(interaction, 'No active music session.');
+              if (session.isPaused) { musicService.resume(interaction.guildId); await safeReply(interaction, '▶️ Playback resumed.'); }
+              else { musicService.pause(interaction.guildId); await safeReply(interaction, '⏸️ Playback paused.'); }
+            } else if (q.player) {
               if (q.isPaused) { q.player.unpause(); q.isPaused = false; await safeReply(interaction, '▶️ Playback resumed.'); }
               else { q.player.pause(); q.isPaused = true; await safeReply(interaction, '⏸️ Playback paused.'); }
             } else { await safeReply(interaction, 'No active music player found.'); }
             return;
           }
           if (id === 'btn_m_skip') {
+            if (musicService) {
+              const session = musicService.sessions?.get(interaction.guildId);
+              const title = session?.currentTrack?.title || 'current track';
+              const ok = musicService.skip(interaction.guildId);
+              return safeReply(interaction, ok ? `⏭️ Skipped: **${title}**` : 'Queue is empty!');
+            }
             if (q.currentTrack) {
               await safeReply(interaction, `⏭️ Skipped: **${q.currentTrack.title}**`);
               handleTrackEnded(interaction.guildId);
@@ -810,19 +877,96 @@ async function startBot() {
             return;
           }
           if (id === 'btn_m_stop') {
-            stopMusicSession(interaction.guildId);
+            if (musicService) musicService.destroySession(interaction.guildId);
+            else stopMusicSession(interaction.guildId);
             await safeReply(interaction, '⏹️ Music stopped and session cleared.');
             return;
           }
-        }
+          if (id === 'btn_m_prev') {
+            if (musicService) {
+              const prev = musicService.playPrevious(interaction.guildId);
+              return safeReply(interaction, prev ? `⏮️ Replaying: **${prev.title}**` : 'No previous tracks in history.');
+            }
+            return safeReply(interaction, '⏮️ Previous track not available.');
+          }
+          if (id === 'btn_m_loop') {
+            if (musicService) {
+              const session = musicService.sessions?.get(interaction.guildId);
+              const current = session?.loopMode || 'off';
+              const next = current === 'off' ? 'track' : current === 'track' ? 'queue' : 'off';
+              musicService.setLoop(interaction.guildId, next);
+              const icons = { off: '⏹️ Off', track: '🔁 Track', queue: '🔀 Queue' };
+              return safeReply(interaction, `🔁 Loop mode → **${icons[next]}**`);
+            }
+            return safeReply(interaction, 'Loop toggle is only supported with the new music engine.');
+          }
+          if (id === 'btn_m_shuffle') {
+            if (musicService) {
+              const session = musicService.sessions?.get(interaction.guildId);
+              if (!session || session.queue.length < 2) return safeReply(interaction, 'Not enough tracks in queue to shuffle.');
+              musicService.shuffle(interaction.guildId);
+              return safeReply(interaction, `🔀 Shuffled **${session.queue.length}** tracks in queue!`);
+            }
+            return safeReply(interaction, 'Shuffle is only supported with the new music engine.');
+          }
+          if (id === 'btn_m_queue') {
+            const session = musicService?.sessions?.get(interaction.guildId);
+            const qData = session?.queue || q?.queue || [];
+            if (qData.length === 0) return safeReply(interaction, '📋 The queue is currently empty.');
+            const lines = qData.slice(0, 10).map((t, i) => `**${i + 1}.** ${t.title}${t.artist ? ` — *${t.artist}*` : ''}`);
+            const { EmbedBuilder: EB } = require('discord.js');
+            const embed = new EB()
+              .setColor('#5865F2')
+              .setTitle('📋 Current Music Queue')
+              .setDescription(lines.join('\n'))
+              .setFooter({ text: `${qData.length} total tracks` })
+              .setTimestamp();
+            return safeReply(interaction, { embeds: [embed] });
+          }
       }
 
-      // ── Panel Button Handlers ──
+      // ── Panel & QuickMod Button Handlers ──
       if (interaction.isButton()) {
         const id = interaction.customId;
         const guild = interaction.guild;
         if (!guild) return;
         const config = getGuildConfig(guild.id, guild.name);
+
+        // QuickMod Rapid Action Buttons
+        if (id.startsWith('qm_')) {
+          if (!interaction.member?.permissions?.has(PermissionsBitField.Flags.ModerateMembers)) {
+            return interaction.reply({ content: '❌ You lack `ModerateMembers` permission to use QuickMod buttons.', ephemeral: true });
+          }
+          const [, action, targetId] = id.split('_');
+          const targetUser = await client.users.fetch(targetId).catch(() => null);
+          const targetMember = guild.members.cache.get(targetId) || await guild.members.fetch(targetId).catch(() => null);
+
+          if (!targetUser) return interaction.reply({ content: '❌ Target user not found.', ephemeral: true });
+
+          if (action === 'warn') {
+            await warnMember(guild, interaction.user, targetUser, 'QuickMod Warning');
+            return interaction.reply({ content: `⚠️ Warned **${targetUser.tag || targetUser.username}** via QuickMod.`, ephemeral: true });
+          }
+          if (action === 't10') {
+            if (!targetMember) return interaction.reply({ content: '❌ Target member not in server.', ephemeral: true });
+            await timeoutMember(targetMember, 10 * 60 * 1000, 'QuickMod 10m Timeout');
+            return interaction.reply({ content: `⏱️ Timed out **${targetUser.tag}** for 10 minutes.`, ephemeral: true });
+          }
+          if (action === 't1h') {
+            if (!targetMember) return interaction.reply({ content: '❌ Target member not in server.', ephemeral: true });
+            await timeoutMember(targetMember, 60 * 60 * 1000, 'QuickMod 1h Timeout');
+            return interaction.reply({ content: `⏱️ Timed out **${targetUser.tag}** for 1 hour.`, ephemeral: true });
+          }
+          if (action === 'kick') {
+            if (!targetMember) return interaction.reply({ content: '❌ Target member not in server.', ephemeral: true });
+            await kickMember(targetMember, 'QuickMod Kick');
+            return interaction.reply({ content: `👢 Kicked **${targetUser.tag}** from server.`, ephemeral: true });
+          }
+          if (action === 'ban') {
+            await banMember(guild, targetId, 'QuickMod Ban', 1);
+            return interaction.reply({ content: `🔨 Banned **${targetUser.tag}** from server.`, ephemeral: true });
+          }
+        }
 
         // /panel toggle AutoMod
         if (id === 'panel_toggle_automod') {
@@ -1020,6 +1164,11 @@ async function startBot() {
   // ── Graceful Shutdown Handler ──
   const shutdown = async (signal) => {
     console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+    if (musicService?.sessions) {
+      for (const [gId] of musicService.sessions) {
+        try { musicService.destroySession(gId); } catch (_) {}
+      }
+    }
     for (const [gId] of musicQueues) {
       stopMusicSession(gId);
     }

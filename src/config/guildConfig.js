@@ -118,6 +118,28 @@ function getDefaultGuildConfig(guildId, guildName = 'Server') {
     },
     warnings: {},
     incidents: [],
+    afk: {},
+    badges: {},
+    birthdays: {},
+    birthdayChannel: '',
+    points: {},
+    nightmode: { enabled: false, startTime: '23:00', endTime: '07:00', slowmodeSeconds: 15 },
+    modules: {
+      automod: true,
+      security: true,
+      music: true,
+      welcome: true,
+      logging: true,
+      economy: true,
+      birthday: true,
+      integrations: true,
+    },
+    maintenanceMode: { enabled: false, reason: '' },
+    appeals: {},
+    appealChannel: '',
+    serverStats: { enabled: false, memberChannelId: '', botChannelId: '', boostChannelId: '', categoryId: '' },
+    integrations: [],
+    raidmode: { active: false, originalSlowmodes: {} },
   };
 }
 

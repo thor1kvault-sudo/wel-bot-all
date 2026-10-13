@@ -65,16 +65,28 @@
 
 
 --------------------------------------------------------------------------------
-4. MUSIC & 24/7 RADIO COMMANDS
+4. MUSIC & 24/7 RADIO COMMANDS (RYTHM-INSPIRED ENGINE)
 --------------------------------------------------------------------------------
 /play            - Plays music in your voice channel using YouTube link, Spotify link, or song name.
+/playnow         - Plays a song immediately at the front of the queue.
 /pause           - Pauses current music playback.
 /resume          - Resumes paused music playback.
 /skip            - Skips the current song playing in the queue.
+/previous        - Replays the previous song from playback history.
 /stop            - Stops music playback, clears the queue, and disconnects from voice.
-/queue           - Views the current music queue or adds a new song to it.
-/nowplaying      - Displays details about the song currently playing.
+/disconnect      - Disconnects bot from voice and cleans up player resources.
+/seek            - True audio position seeking (e.g. 1:30 or 90s) using ffmpeg streaming offset.
+/search          - Searches audio platforms for top track matches.
+/queue           - Subcommands to manage playlist: view, remove, move, jump, export, clear.
+/clearqueue      - Clears all upcoming tracks from queue.
+/nowplaying      - Displays details about the song currently playing with interactive progress bar.
+/volume          - Adjusts playback volume (1-100%).
+/loop            - Sets repeat mode (off, track, or queue).
+/shuffle         - Randomizes order of upcoming songs in queue.
 /radio           - Plays 24/7 radio streams (Lofi Chill, Gaming Beats, Pop Hits, Chill Hop).
+/musicstatus     - Displays real-time music engine status and active sessions.
+/musicupdate     - Admin/owner diagnostic and self-healing subsystem (status, check, logs, repair, apply).
+[Player Card]    - Interactive embed with 7 control buttons: Prev, Pause/Resume, Skip, Stop, Loop, Shuffle, Queue.
 
 
 --------------------------------------------------------------------------------

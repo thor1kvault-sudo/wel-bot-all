@@ -435,37 +435,6 @@ function buildApplicationCommands() {
       .addBooleanOption(o => o.setName('apply_welcome').setDescription('Apply as welcome card banner?').setRequired(false)),
 
     new SlashCommandBuilder()
-      .setName('setpunishment')
-      .setDescription('Customize AutoMod punishment action for a rule')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addStringOption(o => o.setName('rule').setDescription('AutoMod rule to configure').setRequired(true).addChoices(
-        { name: 'Anti-Spam (Message Flood)', value: 'antiSpam' },
-        { name: 'Duplicate Messages', value: 'antiDuplicate' },
-        { name: 'Mention Spam', value: 'antiMentionSpam' },
-        { name: 'Unauthorized @everyone / @here', value: 'antiEveryone' },
-        { name: 'Discord Invite Links', value: 'antiInvites' },
-        { name: 'External / Suspicious Links', value: 'antiLinks' },
-        { name: 'NSFW / Adult Links', value: 'antiNsfwLinks' },
-        { name: 'Word Blacklist', value: 'wordFilter' },
-        { name: 'Caps Lock Filter', value: 'antiCaps' },
-        { name: 'Emoji Spam', value: 'antiEmojiSpam' },
-        { name: 'Alt Account Detection', value: 'altDetection' },
-        { name: 'Anti-Raid Join Flood', value: 'antiRaid' },
-        { name: '✨ Select All / Enable All Rules (Bulk Update)', value: 'all' },
-      ))
-      .addStringOption(o => o.setName('action').setDescription('Punishment action to apply').setRequired(true).addChoices(
-        { name: '🗑️ Delete Message Only', value: 'delete' },
-        { name: '⚠️ Delete + Issue Warning Strike', value: 'warn' },
-        { name: '⏳ Delete + Timeout User', value: 'timeout' },
-        { name: '👢 Delete + Kick User', value: 'kick' },
-        { name: '🔨 Delete + Ban User', value: 'ban' },
-        { name: '📝 Log Only (No Punishment)', value: 'log' },
-        { name: '🟢 Enable Rule(s)', value: 'enable' },
-        { name: '🔴 Disable Rule(s)', value: 'disable' },
-      ))
-      .addStringOption(o => o.setName('timeout_duration').setDescription('Timeout duration if action is timeout (e.g. 60s, 5m, 10m, 1h)').setRequired(false)),
-
-    new SlashCommandBuilder()
       .setName('setleavetext')
       .setDescription('Customize leave message')
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
@@ -596,8 +565,18 @@ function buildApplicationCommands() {
 
     new SlashCommandBuilder()
       .setName('queue')
-      .setDescription('View current music queue')
-      .addStringOption(o => o.setName('song').setDescription('Song to add').setRequired(false)),
+      .setDescription('Manage and view the music queue')
+      .addSubcommand(s => s.setName('view').setDescription('View current music queue')
+        .addIntegerOption(o => o.setName('page').setDescription('Page number').setRequired(false)))
+      .addSubcommand(s => s.setName('remove').setDescription('Remove a track from queue')
+        .addIntegerOption(o => o.setName('position').setDescription('Track number in queue').setRequired(true).setMinValue(1)))
+      .addSubcommand(s => s.setName('move').setDescription('Move a track position in queue')
+        .addIntegerOption(o => o.setName('from').setDescription('Current position').setRequired(true).setMinValue(1))
+        .addIntegerOption(o => o.setName('to').setDescription('New destination position').setRequired(true).setMinValue(1)))
+      .addSubcommand(s => s.setName('jump').setDescription('Skip directly to a position in queue')
+        .addIntegerOption(o => o.setName('position').setDescription('Track number').setRequired(true).setMinValue(1)))
+      .addSubcommand(s => s.setName('export').setDescription('Export current queue playlist to text'))
+      .addSubcommand(s => s.setName('clear').setDescription('Clear all upcoming tracks from queue')),
 
     new SlashCommandBuilder()
       .setName('nowplaying')
@@ -635,6 +614,43 @@ function buildApplicationCommands() {
       .setName('previous')
       .setDescription('Play the previous track in history'),
 
+    new SlashCommandBuilder()
+      .setName('playnow')
+      .setDescription('Play a track immediately at the front of the queue')
+      .addStringOption(o => o.setName('song').setDescription('Song name, Spotify link, or audio URL').setRequired(true)),
+
+    new SlashCommandBuilder()
+      .setName('disconnect')
+      .setDescription('Leave the voice channel and release player resources'),
+
+    new SlashCommandBuilder()
+      .setName('clearqueue')
+      .setDescription('Clear all upcoming tracks from the queue'),
+
+    new SlashCommandBuilder()
+      .setName('search')
+      .setDescription('Search supported sources for music tracks')
+      .addStringOption(o => o.setName('query').setDescription('Song title or artist to search').setRequired(true)),
+
+    new SlashCommandBuilder()
+      .setName('seek')
+      .setDescription('Seek to a playback position in the current track')
+      .addStringOption(o => o.setName('time').setDescription('Timestamp (e.g. 1:30 or 90s)').setRequired(true)),
+
+    new SlashCommandBuilder()
+      .setName('musicstatus')
+      .setDescription('Display real-time music engine, voice connection, and queue diagnostics'),
+
+    new SlashCommandBuilder()
+      .setName('musicupdate')
+      .setDescription('Owner-only music auto-update and self-healing system')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+      .addSubcommand(s => s.setName('status').setDescription('Current music engine health and installed dependency versions'))
+      .addSubcommand(s => s.setName('check').setDescription('Check NPM registry for compatible music library updates'))
+      .addSubcommand(s => s.setName('logs').setDescription('View recent music playback incidents and self-healing logs'))
+      .addSubcommand(s => s.setName('repair').setDescription('Safely reinitialize and repair the music subsystem'))
+      .addSubcommand(s => s.setName('apply').setDescription('Review verified update status and deployment instructions')),
+
     // ── INTERACTIVE CONTROL CENTRE & DEFCON ──
     new SlashCommandBuilder()
       .setName('panel')
@@ -653,6 +669,292 @@ function buildApplicationCommands() {
       .addSubcommand(s => s.setName('status').setDescription('View current quarantine status'))
       .addSubcommand(s => s.setName('release').setDescription('Release all quarantined members')
         .addUserOption(o => o.setName('user').setDescription('Specific user to release (leave blank for all)').setRequired(false))),
+
+    // ── 22 NEW ADVANCED SUITE COMMANDS ──
+    // 8: Translate
+    new SlashCommandBuilder()
+      .setName('translate')
+      .setDescription('Translate text into another language')
+      .addStringOption(o => o.setName('text').setDescription('The text to translate').setRequired(true))
+      .addStringOption(o => o.setName('to').setDescription('Target language code (e.g. es, fr, de, hi, ja, it, ru, zh)').setRequired(true))
+      .addStringOption(o => o.setName('from').setDescription('Source language code (default: auto)').setRequired(false)),
+
+    // 13: Appeal
+    new SlashCommandBuilder()
+      .setName('appeal')
+      .setDescription('Unban and punishment appeal system')
+      .addSubcommand(s => s.setName('submit').setDescription('Submit an unban or punishment appeal')
+        .addStringOption(o => o.setName('reason').setDescription('Why should your punishment be revoked?').setRequired(true))
+        .addStringOption(o => o.setName('details').setDescription('Additional context or evidence').setRequired(false)))
+      .addSubcommand(s => s.setName('status').setDescription('Check current appeal status')
+        .addUserOption(o => o.setName('user').setDescription('Target user to check appeal for (defaults to yourself)').setRequired(false)))
+      .addSubcommand(s => s.setName('review').setDescription('Staff decision on an appeal')
+        .addUserOption(o => o.setName('user').setDescription('User whose appeal to review').setRequired(true))
+        .addStringOption(o => o.setName('decision').setDescription('Approve or Reject the appeal').setRequired(true).addChoices(
+          { name: 'Approve', value: 'approve' },
+          { name: 'Reject', value: 'reject' }
+        ))
+        .addStringOption(o => o.setName('reason').setDescription('Decision note').setRequired(false)))
+      .addSubcommand(s => s.setName('setup').setDescription('Configure appeal notifications channel')
+        .addChannelOption(o => o.setName('channel').setDescription('Channel to receive appeals').setRequired(true))),
+
+    // 17: Server Stat Voice Channels (Voice channels only, NO text channels)
+    new SlashCommandBuilder()
+      .setName('serverstat')
+      .setDescription('Configure server voice stat channels (voice only, no text channels created)')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('setup').setDescription('Setup voice stat counter channels')
+        .addChannelOption(o => o.setName('category').setDescription('Category to place voice stat channels in').setRequired(false)))
+      .addSubcommand(s => s.setName('update').setDescription('Refresh voice stat counters now'))
+      .addSubcommand(s => s.setName('disable').setDescription('Disable and remove voice stat channels')),
+
+    // 18: AFK System
+    new SlashCommandBuilder()
+      .setName('afk')
+      .setDescription('Set or check your AFK status')
+      .addSubcommand(s => s.setName('set').setDescription('Set your AFK status')
+        .addStringOption(o => o.setName('message').setDescription('Reason for going AFK').setRequired(false)))
+      .addSubcommand(s => s.setName('clear').setDescription('Clear your AFK status'))
+      .addSubcommand(s => s.setName('status').setDescription('Check a member\'s AFK status')
+        .addUserOption(o => o.setName('user').setDescription('User to check (defaults to yourself)').setRequired(false))),
+
+    // 31: Member Badges
+    new SlashCommandBuilder()
+      .setName('badge')
+      .setDescription('Manage custom member recognition badges')
+      .addSubcommand(s => s.setName('give').setDescription('Award a badge to a member')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+        .addStringOption(o => o.setName('badge').setDescription('Badge icon or emoji (e.g. 🏆, ⭐, 🛡️, 💎)').setRequired(true))
+        .addStringOption(o => o.setName('name').setDescription('Badge title or reason').setRequired(false)))
+      .addSubcommand(s => s.setName('remove').setDescription('Remove a badge from a member')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+        .addStringOption(o => o.setName('badge').setDescription('Badge icon/name to remove').setRequired(true)))
+      .addSubcommand(s => s.setName('list').setDescription('View badges of a member')
+        .addUserOption(o => o.setName('user').setDescription('Target user (defaults to yourself)').setRequired(false))),
+
+    // 39: Staff DM Dispatcher
+    new SlashCommandBuilder()
+      .setName('dm')
+      .setDescription('Staff direct message dispatcher')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('user').setDescription('Send an official staff direct message to a user')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+        .addStringOption(o => o.setName('message').setDescription('Message to send').setRequired(true)))
+      .addSubcommand(s => s.setName('role').setDescription('Send an official direct message to members of a role')
+        .addRoleOption(o => o.setName('role').setDescription('Target role').setRequired(true))
+        .addStringOption(o => o.setName('message').setDescription('Message to send').setRequired(true))),
+
+    // 45: Nightmode Quiet Hours
+    new SlashCommandBuilder()
+      .setName('nightmode')
+      .setDescription('Scheduled server quiet hours')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('setup').setDescription('Configure nightmode quiet hours')
+        .addStringOption(o => o.setName('start_time').setDescription('Start time (HH:MM in 24h format, e.g. 23:00)').setRequired(true))
+        .addStringOption(o => o.setName('end_time').setDescription('End time (HH:MM in 24h format, e.g. 07:00)').setRequired(true))
+        .addIntegerOption(o => o.setName('slowmode').setDescription('Slowmode seconds during nightmode (e.g. 30)').setRequired(false)))
+      .addSubcommand(s => s.setName('toggle').setDescription('Enable or disable nightmode schedule')
+        .addBooleanOption(o => o.setName('enabled').setDescription('Toggle state').setRequired(true)))
+      .addSubcommand(s => s.setName('status').setDescription('View current nightmode configuration')),
+
+    // 46: Devmode Diagnostics
+    new SlashCommandBuilder()
+      .setName('devmode')
+      .setDescription('Bot performance diagnostics and health monitoring')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('stats').setDescription('Display CPU, memory, uptime, latency and cache metrics'))
+      .addSubcommand(s => s.setName('diagnostics').setDescription('Run system integrity and bot permission verification'))
+      .addSubcommand(s => s.setName('simulate').setDescription('Simulate security and event workflows safely')
+        .addStringOption(o => o.setName('event').setDescription('Event to simulate').setRequired(true).addChoices(
+          { name: 'Member Join', value: 'join' },
+          { name: 'Phishing Attack', value: 'phish' },
+          { name: 'Spam Burst', value: 'spam' }
+        ))),
+
+    // 55: Fun Minigames
+    new SlashCommandBuilder()
+      .setName('fun')
+      .setDescription('Fun minigames and entertainment pack')
+      .addSubcommand(s => s.setName('coinflip').setDescription('Flip a fair coin (Heads or Tails)'))
+      .addSubcommand(s => s.setName('dice').setDescription('Roll dice')
+        .addIntegerOption(o => o.setName('sides').setDescription('Number of dice sides (default: 6)').setRequired(false).setMinValue(2).setMaxValue(1000)))
+      .addSubcommand(s => s.setName('8ball').setDescription('Ask the Magic 8-Ball a question')
+        .addStringOption(o => o.setName('question').setDescription('Your question').setRequired(true)))
+      .addSubcommand(s => s.setName('rps').setDescription('Play Rock, Paper, Scissors')
+        .addStringOption(o => o.setName('choice').setDescription('Your play').setRequired(true).addChoices(
+          { name: 'Rock 🪨', value: 'rock' },
+          { name: 'Paper 📄', value: 'paper' },
+          { name: 'Scissors ✂️', value: 'scissors' }
+        ))),
+
+    // 60: Points Economy
+    new SlashCommandBuilder()
+      .setName('points')
+      .setDescription('Server points and economy system')
+      .addSubcommand(s => s.setName('check').setDescription('Check points balance')
+        .addUserOption(o => o.setName('user').setDescription('Target user (defaults to yourself)').setRequired(false)))
+      .addSubcommand(s => s.setName('give').setDescription('Award points to a member')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+        .addIntegerOption(o => o.setName('amount').setDescription('Amount of points').setRequired(true).setMinValue(1)))
+      .addSubcommand(s => s.setName('take').setDescription('Deduct points from a member')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+        .addIntegerOption(o => o.setName('amount').setDescription('Amount of points').setRequired(true).setMinValue(1)))
+      .addSubcommand(s => s.setName('leaderboard').setDescription('View top 10 members with highest points'))
+      .addSubcommand(s => s.setName('reset').setDescription('Reset points for a user or entire server')
+        .addUserOption(o => o.setName('user').setDescription('User to reset (leave blank for all)').setRequired(false))),
+
+    // 79: Serverconfig Master Dashboard
+    new SlashCommandBuilder()
+      .setName('serverconfig')
+      .setDescription('Master server configuration overview and management')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('view').setDescription('Comprehensive dashboard overview of all active modules'))
+      .addSubcommand(s => s.setName('export').setDescription('Export current server settings as clean JSON snippet'))
+      .addSubcommand(s => s.setName('reset').setDescription('Reset specific module configuration to factory defaults')
+        .addStringOption(o => o.setName('module').setDescription('Module to reset').setRequired(true).addChoices(
+          { name: 'All Modules', value: 'all' },
+          { name: 'AutoMod', value: 'automod' },
+          { name: 'Anti-Nuke / Security', value: 'security' },
+          { name: 'Welcome', value: 'welcome' },
+          { name: 'Goodbye', value: 'goodbye' },
+          { name: 'Logs', value: 'logs' }
+        ))),
+
+    // 88: Birthday Tracker
+    new SlashCommandBuilder()
+      .setName('birthday')
+      .setDescription('Member birthday tracker and celebration')
+      .addSubcommand(s => s.setName('set').setDescription('Set your birthday')
+        .addIntegerOption(o => o.setName('month').setDescription('Month (1-12)').setRequired(true).setMinValue(1).setMaxValue(12))
+        .addIntegerOption(o => o.setName('day').setDescription('Day (1-31)').setRequired(true).setMinValue(1).setMaxValue(31)))
+      .addSubcommand(s => s.setName('check').setDescription('Check a member\'s birthday')
+        .addUserOption(o => o.setName('user').setDescription('Target user (defaults to yourself)').setRequired(false)))
+      .addSubcommand(s => s.setName('upcoming').setDescription('View upcoming birthdays in the next 30 days'))
+      .addSubcommand(s => s.setName('channel').setDescription('Set birthday announcement channel')
+        .addChannelOption(o => o.setName('channel').setDescription('Announcement channel').setRequired(true))),
+
+    // 89: Maintenance Mode
+    new SlashCommandBuilder()
+      .setName('maintenance')
+      .setDescription('Toggle server bot maintenance mode')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('enable').setDescription('Enable maintenance mode')
+        .addStringOption(o => o.setName('reason').setDescription('Maintenance explanation').setRequired(false)))
+      .addSubcommand(s => s.setName('disable').setDescription('Disable maintenance mode'))
+      .addSubcommand(s => s.setName('status').setDescription('Check current maintenance mode status')),
+
+    // 91: Server Clone / Export / Import
+    new SlashCommandBuilder()
+      .setName('clone')
+      .setDescription('Export or import configuration template between servers')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+      .addSubcommand(s => s.setName('export').setDescription('Export server configuration as a portable template token'))
+      .addSubcommand(s => s.setName('import').setDescription('Import configuration template into this server')
+        .addStringOption(o => o.setName('data').setDescription('Paste template token / data string').setRequired(true))),
+
+    // 93: Module Toggles
+    new SlashCommandBuilder()
+      .setName('module')
+      .setDescription('Toggle server bot feature modules on or off')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('enable').setDescription('Enable a specific feature module')
+        .addStringOption(o => o.setName('name').setDescription('Module name').setRequired(true).addChoices(
+          { name: 'AutoMod', value: 'automod' },
+          { name: 'Security & Anti-Nuke', value: 'security' },
+          { name: 'Music', value: 'music' },
+          { name: 'Welcome', value: 'welcome' },
+          { name: 'Logging', value: 'logging' },
+          { name: 'Economy / Points', value: 'economy' },
+          { name: 'Birthday Tracker', value: 'birthday' },
+          { name: 'Integrations', value: 'integrations' }
+        )))
+      .addSubcommand(s => s.setName('disable').setDescription('Disable a specific feature module')
+        .addStringOption(o => o.setName('name').setDescription('Module name').setRequired(true).addChoices(
+          { name: 'AutoMod', value: 'automod' },
+          { name: 'Security & Anti-Nuke', value: 'security' },
+          { name: 'Music', value: 'music' },
+          { name: 'Welcome', value: 'welcome' },
+          { name: 'Logging', value: 'logging' },
+          { name: 'Economy / Points', value: 'economy' },
+          { name: 'Birthday Tracker', value: 'birthday' },
+          { name: 'Integrations', value: 'integrations' }
+        )))
+      .addSubcommand(s => s.setName('list').setDescription('Display status of all modules')),
+
+    // 94: QuickMod Rapid Panel
+    new SlashCommandBuilder()
+      .setName('quickmod')
+      .setDescription('Launch rapid one-click interactive moderation panel')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers)
+      .addUserOption(o => o.setName('user').setDescription('Target member to moderate').setRequired(true)),
+
+    // 98: Roleplay Actions
+    new SlashCommandBuilder()
+      .setName('roleplay')
+      .setDescription('Expressive roleplay and anime action interactions')
+      .addSubcommand(s => s.setName('hug').setDescription('Give a member a warm hug')
+        .addUserOption(o => o.setName('user').setDescription('Target member').setRequired(true)))
+      .addSubcommand(s => s.setName('pat').setDescription('Gently pat a member on the head')
+        .addUserOption(o => o.setName('user').setDescription('Target member').setRequired(true)))
+      .addSubcommand(s => s.setName('slap').setDescription('Playfully or dramatically slap a member')
+        .addUserOption(o => o.setName('user').setDescription('Target member').setRequired(true)))
+      .addSubcommand(s => s.setName('highfive').setDescription('High five a member')
+        .addUserOption(o => o.setName('user').setDescription('Target member').setRequired(true)))
+      .addSubcommand(s => s.setName('wave').setDescription('Wave friendly hello to a member')
+        .addUserOption(o => o.setName('user').setDescription('Target member').setRequired(true))),
+
+    // S1: VPN & Account Suspicion Checker
+    new SlashCommandBuilder()
+      .setName('vpncheck')
+      .setDescription('Detect suspicious accounts, alts, and lookup hosting/VPN IPs')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers)
+      .addSubcommand(s => s.setName('user').setDescription('Analyze account suspicion score, age, avatar, and risk rating')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true)))
+      .addSubcommand(s => s.setName('ip').setDescription('Check public IP address for datacenter, proxy or VPN flags')
+        .addStringOption(o => o.setName('ip').setDescription('IPv4 or IPv6 address').setRequired(true))),
+
+    // S5: Raid Mode Surgical Response
+    new SlashCommandBuilder()
+      .setName('raidmode')
+      .setDescription('Manual raid defense mode with rapid countermeasures')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('on').setDescription('Activate raid countermeasures')
+        .addStringOption(o => o.setName('action').setDescription('Action to take (default: slowmode)').setRequired(false).addChoices(
+          { name: 'Mass Channel Slowmode (15s)', value: 'slowmode' },
+          { name: 'Strict Verification Level', value: 'strict_verification' },
+          { name: 'Auto-Quarantine New Joins', value: 'quarantine' }
+        )))
+      .addSubcommand(s => s.setName('off').setDescription('Deactivate raidmode and restore previous channel states'))
+      .addSubcommand(s => s.setName('status').setDescription('View current raidmode active status')),
+
+    // M1: Lyrics Search
+    new SlashCommandBuilder()
+      .setName('lyrics')
+      .setDescription('Search real-time lyrics for the current song or any track')
+      .addStringOption(o => o.setName('song').setDescription('Song title to search (leave empty for current playing track)').setRequired(false)),
+
+    // W2: External Integrations (No extra text channels created)
+    new SlashCommandBuilder()
+      .setName('integration')
+      .setDescription('Connect YouTube, Twitch, and GitHub alerts (no extra text channels created)')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand(s => s.setName('youtube').setDescription('Add YouTube channel upload alerts')
+        .addStringOption(o => o.setName('channel_id').setDescription('YouTube Channel ID (e.g. UC...)').setRequired(true))
+        .addChannelOption(o => o.setName('alert_channel').setDescription('Existing text channel for alerts').setRequired(true)))
+      .addSubcommand(s => s.setName('twitch').setDescription('Add Twitch stream live alerts')
+        .addStringOption(o => o.setName('streamer').setDescription('Twitch streamer name').setRequired(true))
+        .addChannelOption(o => o.setName('alert_channel').setDescription('Existing text channel for alerts').setRequired(true)))
+      .addSubcommand(s => s.setName('github').setDescription('Add GitHub repository release/commit alerts')
+        .addStringOption(o => o.setName('repo').setDescription('GitHub repository (e.g. owner/repo)').setRequired(true))
+        .addChannelOption(o => o.setName('alert_channel').setDescription('Existing text channel for alerts').setRequired(true)))
+      .addSubcommand(s => s.setName('list').setDescription('List active external integrations'))
+      .addSubcommand(s => s.setName('remove').setDescription('Remove an external integration')
+        .addStringOption(o => o.setName('type').setDescription('Integration type').setRequired(true).addChoices(
+          { name: 'YouTube', value: 'youtube' },
+          { name: 'Twitch', value: 'twitch' },
+          { name: 'GitHub', value: 'github' }
+        ))
+        .addStringOption(o => o.setName('id').setDescription('Channel ID, streamer, or repo name to remove').setRequired(true))),
   ];
 
   return commands.map(c => c.toJSON());

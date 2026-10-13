@@ -100,19 +100,39 @@
 
 ---
 
-### 🎵 6. Music & 24/7 Radio Commands
-* **`/play song:<name or link>`** — Plays YouTube, Spotify, or Soundcloud tracks.
-* **`/pause`** — Pauses current track.
-* **`/resume`** — Resumes playback.
-* **`/skip`** — Skips to next track in queue.
+### 🎵 6. Professional Rythm-Style Music Engine & Audio Commands
+* **`/play song:<name or link>`** — Plays YouTube, Spotify (track, album, playlist metadata matching), or SoundCloud audio streams with multi-candidate auto-recovery.
+* **`/playnow song:<name or link>`** — Interrupts or jumps to the front of the queue to play a track immediately.
+* **`/pause`** — Pauses active playback.
+* **`/resume`** — Resumes paused playback.
+* **`/skip`** — Skips to the next track in queue.
+* **`/previous`** — Replays the previous track from session history (stores up to 25 tracks).
 * **`/stop`** — Stops playback, clears queue, and leaves voice.
-* **`/queue [song:<add>]`** — Views current track queue.
-* **`/nowplaying`** — Shows track info, duration, and artist.
-* **`/radio genre:<lofi|gaming|pop|chill>`** — Plays continuous 24/7 audio streams.
-* **`/volume level:<1-100>`** — Adjusts audio stream volume.
-* **`/loop mode:<off|track|queue>`** — Configures track or queue repetition.
-* **`/shuffle`** — Shuffles current music queue.
-* **`/previous`** — Replays the previous track from history.
+* **`/disconnect`** — Disconnects from voice channel and releases audio player resources.
+* **`/seek time:<timestamp>`** — Performs true audio position seeking (e.g. `1:30`, `0:45`, `90s`) using ffmpeg raw PCM streaming offset.
+* **`/search query:<text>`** — Searches audio platforms for top track matches.
+* **`/nowplaying`** — Shows track details, visual progress bar (`01:23 ▬▬🔘▬▬▬▬ 03:45`), requested by, and audio format.
+* **`/queue view|remove|move|jump|export|clear`** — Comprehensive playlist and music queue editor:
+  * `view`: Paginated view of upcoming tracks.
+  * `remove`: Removes track at specified position.
+  * `move`: Reorders track positions in queue.
+  * `jump`: Skips directly to a position in queue.
+  * `export`: Exports queue to text playlist.
+  * `clear`: Clears all upcoming tracks from queue.
+* **`/clearqueue`** — Instant shortcut to clear all upcoming tracks from queue.
+* **`/volume level:<1-100>`** — Real-time dynamic volume adjustment.
+* **`/loop mode:<off|track|queue>`** — Configures repetition mode (`off`, `track`, or `queue`).
+* **`/shuffle`** — Shuffles the upcoming music queue in place.
+* **`/radio genre:<lofi|gaming|pop|chill>`** — Plays continuous 24/7 internet radio streams.
+* **`/musicstatus`** — Displays real-time music engine status, active sessions, voice latency, and memory footprint.
+* **`/musicupdate status|check|logs|repair|apply`** — Administrator/Owner self-healing & maintenance system:
+  * `status`: Diagnostics on active sessions, installed library versions, and heap memory.
+  * `check`: Checks npm registry for compatible updates.
+  * `logs`: Inspects recent playback incident history.
+  * `repair`: Flushes corrupted audio sessions and reinitializes voice clients.
+  * `apply`: Reports available dependency upgrades.
+* **Interactive Player Card Controls** — Every played song displays an embed with 7 Rythm-style buttons:
+  * `⏮️ Prev` • `▶️/⏸️ Resume/Pause` • `⏭️ Skip` • `⏹️ Stop` • `🔁 Loop` • `🔀 Shuffle` • `📜 Queue`
 
 ---
 
@@ -124,3 +144,30 @@
 * **`/userinfo [user:@User]`** — Displays profile, account creation date, server join date, and roles.
 * **`/permissions [user:@User]`** — Inspects active Discord channel permissions.
 * **`/help`** — Opens comprehensive interactive command guide.
+
+---
+
+### 🚀 8. Advanced 22-Feature Suite (Security, Automation, Economy & Social)
+* **`/translate text:<text> to:<lang> [from:<lang>]`** — Real-time message translation across languages (powered by MyMemory Translation API).
+* **`/appeal submit|status|review|setup`** — Complete unban and punishment appeal processing system without creating clutter.
+* **`/serverstat setup|update|disable`** — Real-time server stat voice counter channels (`👥 Members`, `🤖 Bots`, `🚀 Boosts`) — creates voice channels only, NO extra text channels!
+* **`/afk set|clear|status`** — Dynamic AFK status system; automatically removes AFK on speaking and reminds members mentioning you.
+* **`/badge give|remove|list`** — Custom server recognition badges and achievements for standout members.
+* **`/dm user|role`** — Direct message announcement dispatcher for staff with safety caps to protect bot rate limits.
+* **`/nightmode setup|toggle|status`** — Scheduled server quiet hours with automated slowmode enforcement and daytime recovery.
+* **`/devmode stats|diagnostics|simulate`** — Deep bot performance metrics (heap, RSS, ping, uptime) and safe dry-run sandboxed event simulations.
+* **`/fun coinflip|dice|8ball|rps`** — Minigames and entertainment suite: coin flips, dice rolls, Magic 8-Ball, and Rock-Paper-Scissors.
+* **`/points check|give|take|leaderboard|reset`** — Built-in server points economy and high-score leaderboard.
+* **`/serverconfig view|export|reset`** — Master configuration dashboard with JSON export and factory default reset capabilities.
+* **`/birthday set|check|upcoming|channel`** — Server birthday tracker with automated hourly celebratory announcement dispatcher.
+* **`/maintenance enable|disable|status`** — Server-level bot maintenance mode with custom explanatory status notices.
+* **`/clone export|import`** — Server configuration template cloning using portable base64 tokens.
+* **`/module enable|disable|list`** — Granular feature toggle switchboard for all bot sub-systems.
+* **`/quickmod user:@User`** — Rapid 1-click interactive moderation panel with instant Warn, Timeout, Kick, and Ban buttons.
+* **`/roleplay hug|pat|slap|highfive|wave`** — Expressive anime and roleplay social interaction embeds.
+* **`/vpncheck user|ip`** — Suspicious account detector (evaluates account age, default avatars, alt scores) and public IP datacenter lookup.
+* **`/raidmode on|off|status`** — Rapid surgical raid response mode: immediately enforces mass channel slowmodes and restores previous values when disabled.
+* **`/lyrics [song:<query>]`** — Searches real-time song lyrics for the currently playing track or any song query.
+* **`/queue view|remove|move|jump|export|clear`** — Comprehensive playlist and music queue editor with drag-and-drop-style reordering and export.
+* **`/integration youtube|twitch|github|list|remove`** — External alert feeds for YouTube uploads, Twitch streams, and GitHub releases configured to existing server channels.
+

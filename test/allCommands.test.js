@@ -92,7 +92,7 @@ function createFullMockInteraction(commandName, subcommandName = null) {
       getString: (name) => {
         if (name === 'rule') return 'antiSpam';
         if (name === 'action') {
-          if (subcommandName === 'punishment' || commandName === 'setpunishment') return 'timeout';
+          if (subcommandName === 'punishment') return 'timeout';
           return 'list';
         }
         if (name === 'timeout_duration') return '5m';
@@ -135,8 +135,16 @@ function createFullMockInteraction(commandName, subcommandName = null) {
 
 const registeredCommands = buildApplicationCommands();
 
+// Auto-calculate expected endpoint count from the registry so this
+// test never needs a manual number update when commands are added/removed.
+const EXPECTED_ENDPOINTS = registeredCommands.reduce((total, cmd) => {
+  const subs = (cmd.options || []).filter(o => o.type === 1);
+  return total + (subs.length === 0 ? 1 : subs.length);
+}, 0);
+
 test('Group D: Every single declared command and subcommand executes and acknowledges without timing out', async () => {
   let auditedEndpoints = 0;
+  const failures = [];
 
   for (const cmd of registeredCommands) {
     const subcommands = (cmd.options || []).filter(o => o.type === 1);
@@ -150,10 +158,9 @@ test('Group D: Every single declared command and subcommand executes and acknowl
         stopMusicSession: () => {},
       });
       const state = getState();
-      assert.ok(
-        state.replied || state.deferred,
-        `Command /${cmd.name} was not acknowledged (would result in "The application did not respond")`
-      );
+      if (!state.replied && !state.deferred) {
+        failures.push(`/${cmd.name}`);
+      }
     } else {
       for (const sub of subcommands) {
         auditedEndpoints++;
@@ -164,13 +171,22 @@ test('Group D: Every single declared command and subcommand executes and acknowl
           stopMusicSession: () => {},
         });
         const state = getState();
-        assert.ok(
-          state.replied || state.deferred,
-          `Subcommand /${cmd.name} ${sub.name} was not acknowledged (would result in "The application did not respond")`
-        );
+        if (!state.replied && !state.deferred) {
+          failures.push(`/${cmd.name} ${sub.name}`);
+        }
       }
     }
   }
 
-  assert.strictEqual(auditedEndpoints, 110, 'All 110 command and subcommand endpoints must be audited');
+  assert.strictEqual(
+    auditedEndpoints,
+    EXPECTED_ENDPOINTS,
+    `Endpoint count mismatch: audited ${auditedEndpoints}, registry declares ${EXPECTED_ENDPOINTS}`
+  );
+
+  assert.deepStrictEqual(
+    failures,
+    [],
+    `These endpoints did NOT acknowledge (would show "Application did not respond"):\n${failures.map(f => `  • ${f}`).join('\n')}`
+  );
 });
