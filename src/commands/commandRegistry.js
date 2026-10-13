@@ -252,10 +252,10 @@ function buildApplicationCommands() {
     // ── LOGGING ──
     new SlashCommandBuilder()
       .setName('logs')
-      .setDescription('Configure 14 dedicated log channels under SERVER LOGS category')
+      .setDescription('Configure 15 dedicated log channels under SERVER LOGS category')
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addSubcommand(s => s.setName('setup').setDescription('Auto-create category and 14 separate log channels'))
-      .addSubcommand(s => s.setName('status').setDescription('View all 14 log channel destinations'))
+      .addSubcommand(s => s.setName('setup').setDescription('Auto-create category and 15 separate log channels'))
+      .addSubcommand(s => s.setName('status').setDescription('View all 15 log channel destinations'))
       .addSubcommand(s => s.setName('configure').setDescription('Set channel for a specific log category')
         .addStringOption(o => o.setName('category').setDescription('Log category').setRequired(true).addChoices(
           { name: 'Member Logs (#member-logs)', value: 'member' },
@@ -271,7 +271,8 @@ function buildApplicationCommands() {
           { name: 'Invite Logs (#invite-logs)', value: 'invite' },
           { name: 'Webhook Logs (#webhook-logs)', value: 'webhook' },
           { name: 'Bot Logs (#bot-logs)', value: 'bot' },
-          { name: 'Welcome Logs (#welcome-logs)', value: 'welcome' }
+          { name: 'Welcome Logs (#welcome-logs)', value: 'welcome' },
+          { name: 'Drag Logs (#drag-logs)', value: 'drag' }
         ))
         .addChannelOption(o => o.setName('channel').setDescription('Target text channel').setRequired(true)))
       .addSubcommand(s => s.setName('test').setDescription('Send test embeds to all configured log channels'))
@@ -280,7 +281,8 @@ function buildApplicationCommands() {
           { name: 'All Log Channels', value: 'all' },
           { name: 'Member Logs', value: 'member' },
           { name: 'Message Logs', value: 'message' },
-          { name: 'Voice Logs', value: 'voice' }
+          { name: 'Voice Logs', value: 'voice' },
+          { name: 'Drag Logs', value: 'drag' }
         ))),
 
     // ── WELCOME & GOODBYE ──

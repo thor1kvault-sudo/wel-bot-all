@@ -725,7 +725,7 @@ async function dispatchCommand(interaction, context = {}) {
       const embed = new EmbedBuilder()
         .setColor('#57F287')
         .setTitle('📁 Server Logs Setup Complete!')
-        .setDescription(`Created / verified Category **📁 SERVER LOGS** and 14 dedicated log channels:\n\n${res.details.join('\n')}`)
+        .setDescription(`Created / verified Category **📁 SERVER LOGS** and 15 dedicated log channels:\n\n${res.details.join('\n')}`)
         .setFooter({ text: 'All event logs will route to their dedicated channels' })
         .setTimestamp();
       return interaction.editReply({ embeds: [embed] });

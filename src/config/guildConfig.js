@@ -114,6 +114,7 @@ function getDefaultGuildConfig(guildId, guildName = 'Server') {
         webhook: '',
         bot: '',
         welcome: '',
+        drag: '',
       },
     },
     warnings: {},

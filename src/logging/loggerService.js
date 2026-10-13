@@ -17,6 +17,7 @@ const LOG_CATEGORIES = [
   { key: 'webhook', name: 'webhook-logs', topic: 'Webhook creations, deletions, and modifications' },
   { key: 'bot', name: 'bot-logs', topic: 'Bot additions, bot removals, and bot permission changes' },
   { key: 'welcome', name: 'welcome-logs', topic: 'Welcome and goodbye card delivery reports & diagnostics' },
+  { key: 'drag', name: 'drag-logs', topic: 'Voice channel member drag, move, and moderator transfer activity' },
 ];
 
 // Async bounded dispatch queue to ensure non-blocking log execution
@@ -261,4 +262,5 @@ module.exports = {
   logWebhook: (g, e) => enqueueLog(g, 'webhook', e),
   logBot: (g, e) => enqueueLog(g, 'bot', e),
   logWelcome: (g, e) => enqueueLog(g, 'welcome', e),
+  logDrag: (g, e) => enqueueLog(g, 'drag', e),
 };

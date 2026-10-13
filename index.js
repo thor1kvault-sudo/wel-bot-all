@@ -17,6 +17,7 @@ const {
   setupAllLogChannels, resolveLogChannel, logMember, logMessage,
   logModeration, logSecurity, logRole, logChannel, logVoice,
   logServerSettings, logInvite, logWebhook, logBot, logWelcome,
+  logDrag,
 } = require('./src/logging/loggerService');
 const {
   buildWelcomeMessage, buildGoodbyeMessage, handleMemberJoin,
@@ -853,12 +854,47 @@ async function startBot() {
           .setTimestamp();
         await logVoice(guild, embed);
       } else if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
-        const embed = new EmbedBuilder()
+        // Voice Channel Switch: Check if member was moved by a moderator (dragged)
+        let responsibleMod = null;
+        try {
+          const me = guild.members.me || (typeof guild.members.fetchMe === 'function' ? await guild.members.fetchMe().catch(() => null) : null);
+          if (me?.permissions?.has(PermissionsBitField.Flags.ViewAuditLog)) {
+            const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberMove, limit: 1 }).catch(() => null);
+            const entry = logs?.entries?.first();
+            if (entry && (Date.now() - entry.createdTimestamp) < 3500) {
+              // Ensure executor is not the member themselves (self-move doesn't trigger MemberMove audit log in Discord, but be safe)
+              if (entry.executor && entry.executor.id !== member.id) {
+                // If extra target or count is present, verify matching
+                const targetMatch = !entry.target || entry.target.id === member.id;
+                if (targetMatch) {
+                  responsibleMod = entry.executor;
+                }
+              }
+            }
+          }
+        } catch (_) {}
+
+        // 1. General Voice Switch Log
+        const switchEmbed = new EmbedBuilder()
           .setColor('#FEE75C')
           .setTitle('🔁 Voice Channel Switch')
-          .setDescription(`**User:** ${member.user.tag} (<@${member.id}>)\n**From:** <#${oldState.channelId}>\n**To:** <#${newState.channelId}>`)
+          .setDescription(`**User:** ${member.user.tag} (<@${member.id}>)\n**From:** <#${oldState.channelId}>\n**To:** <#${newState.channelId}>${responsibleMod ? `\n**Moved By:** ${responsibleMod.tag} (<@${responsibleMod.id}>)` : ''}`)
           .setTimestamp();
-        await logVoice(guild, embed);
+        await logVoice(guild, switchEmbed);
+
+        // 2. Dedicated #drag-logs channel dispatch
+        const dragEmbed = new EmbedBuilder()
+          .setColor(responsibleMod ? '#5865F2' : '#99AAB5')
+          .setTitle(responsibleMod ? '🎯 Member Dragged / Moved' : '↔️ Voice Channel Move')
+          .setDescription(
+            `**Member:** ${member.user.tag} (\`${member.id}\`) [<@${member.id}>]\n` +
+            `**Previous Channel:** <#${oldState.channelId}> (\`${oldState.channel?.name || oldState.channelId}\`)\n` +
+            `**Destination Channel:** <#${newState.channelId}> (\`${newState.channel?.name || newState.channelId}\`)\n` +
+            `**Responsible Moderator:** ${responsibleMod ? `${responsibleMod.tag} (\`${responsibleMod.id}\`) [<@${responsibleMod.id}>]` : '*Self-move or Unverified*'}`
+          )
+          .setFooter({ text: responsibleMod ? 'Verified via Discord Audit Logs' : 'Voice State Transition' })
+          .setTimestamp();
+        await logDrag(guild, dragEmbed);
       }
     } catch (_) {}
   });
