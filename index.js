@@ -923,6 +923,7 @@ async function startBot() {
               .setTimestamp();
             return safeReply(interaction, { embeds: [embed] });
           }
+        }
       }
 
       // ── Panel & QuickMod Button Handlers ──
