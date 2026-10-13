@@ -430,19 +430,28 @@ async function startBot() {
       await cacheInvites(g);
     }
 
-    // Register slash commands globally (and clean up old guild duplicate commands)
+    // Register application slash commands globally (and clean up any stale guild duplicate commands)
     const token = process.env.DISCORD_TOKEN;
     if (token) {
       const rest = new REST({ version: '10' }).setToken(token);
       const cmds = buildApplicationCommands();
       try {
+        console.log(`📡 Registering ${cmds.length} application commands globally (Discord limit: 100)...`);
+
+        // Clean up stale guild-scoped commands to prevent duplicate entries in Discord command picker
         for (const guild of client.guilds.cache.values()) {
-          await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: cmds }).catch(() => {});
+          try {
+            await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: [] });
+          } catch (_) {}
         }
-        await rest.put(Routes.applicationCommands(client.user.id), { body: cmds });
-        console.log(`✅ Application Commands registered instantly to ${client.guilds.cache.size} guilds and globally (${cmds.length} commands).`);
+
+        const registered = await rest.put(Routes.applicationCommands(client.user.id), { body: cmds });
+        console.log(`✅ Successfully registered ${registered?.length || cmds.length} global application commands across all ${client.guilds.cache.size} connected servers.`);
       } catch (err) {
-        console.error('Command registration error:', err.message);
+        console.error(`❌ Command registration error (${cmds.length} commands attempted):`, err.message);
+        if (err.rawError) {
+          console.error('Detailed Discord API response:', JSON.stringify(err.rawError));
+        }
       }
     }
 

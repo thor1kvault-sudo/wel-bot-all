@@ -415,12 +415,6 @@ function buildApplicationCommands() {
       .addAttachmentOption(o => o.setName('image').setDescription('Upload banner image file').setRequired(false))
       .addStringOption(o => o.setName('url').setDescription('Or paste banner image URL (or "server" / "reset")').setRequired(false)),
 
-    new SlashCommandBuilder()
-      .setName('setwelcomebanner')
-      .setDescription('Set or sync welcome banner image (upload file, paste URL, or use server banner)')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addAttachmentOption(o => o.setName('image').setDescription('Upload banner image file').setRequired(false))
-      .addStringOption(o => o.setName('url').setDescription('Or paste banner image URL (or "server" / "reset")').setRequired(false)),
 
     new SlashCommandBuilder()
       .setName('setlogo')
@@ -446,24 +440,6 @@ function buildApplicationCommands() {
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
       .addRoleOption(o => o.setName('role').setDescription('Role').setRequired(true)),
 
-    new SlashCommandBuilder()
-      .setName('testwelcome')
-      .setDescription('Preview welcome card & diagnostic check'),
-
-    new SlashCommandBuilder()
-      .setName('testleave')
-      .setDescription('Preview goodbye message'),
-
-    new SlashCommandBuilder()
-      .setName('welcomeconfig')
-      .setDescription('View current server welcome configuration')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
-
-    new SlashCommandBuilder()
-      .setName('clearwarns')
-      .setDescription('Clear all warnings for a member')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true)),
 
     new SlashCommandBuilder()
       .setName('antispam')
@@ -496,17 +472,6 @@ function buildApplicationCommands() {
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
       .addStringOption(o => o.setName('toggle').setDescription('on or off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
 
-    new SlashCommandBuilder()
-      .setName('addword')
-      .setDescription('Add word to blacklist')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addStringOption(o => o.setName('word').setDescription('Word').setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName('removeword')
-      .setDescription('Remove word from blacklist')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addStringOption(o => o.setName('word').setDescription('Word').setRequired(true)),
 
     new SlashCommandBuilder()
       .setName('lockdown')
@@ -623,9 +588,6 @@ function buildApplicationCommands() {
       .setName('disconnect')
       .setDescription('Leave the voice channel and release player resources'),
 
-    new SlashCommandBuilder()
-      .setName('clearqueue')
-      .setDescription('Clear all upcoming tracks from the queue'),
 
     new SlashCommandBuilder()
       .setName('search')
