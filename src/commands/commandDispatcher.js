@@ -1134,7 +1134,7 @@ async function dispatchCommand(interaction, context = {}) {
 
   if (commandName === 'uptime') {
     const ms = Date.now() - startTime;
-    return safeReply(interaction, `⏱️ **Bot Uptime:** **${formatDuration(ms)}** (Online since <t:${Math.floor(startTime / 1000)}:f>)`);
+    return safeReply(interaction, `⏱️ **Bot Uptime:** **${formatDuration(ms)}** (Online since <t:${Math.floor(startTime / 1000)}:f>)`, false);
   }
 
   if (commandName === 'botinfo') {
@@ -1145,7 +1145,7 @@ async function dispatchCommand(interaction, context = {}) {
       .setDescription(`**Name:** ${client?.user?.tag || 'THOR APEX Bot'}\n**Version:** 2.0.0 Production Enterprise\n**Total Guilds:** ${client?.guilds?.cache?.size || 1}\n**Total Cached Users:** ${client?.users?.cache?.size || 0}\n**Node.js Runtime:** \`${process.version}\`\n**Platform:** ${os.platform()} (${os.arch()})\n**RAM Usage:** **${memMB} MB**\n**Uptime:** ${formatDuration(Date.now() - startTime)}`)
       .setThumbnail(client?.user?.displayAvatarURL?.() || null)
       .setTimestamp();
-    return safeReply(interaction, { embeds: [embed] });
+    return safeReply(interaction, { embeds: [embed] }, false);
   }
 
   if (commandName === 'serverinfo') {
@@ -1155,7 +1155,7 @@ async function dispatchCommand(interaction, context = {}) {
       .setDescription(`**Owner:** <@${guild.ownerId}>\n**Total Members:** **${guild.memberCount}**\n**Channels:** ${guild.channels?.cache?.size || 0}\n**Roles:** ${guild.roles?.cache?.size || 0}\n**Created At:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>`)
       .setThumbnail(guild.iconURL?.({ size: 256 }) || null)
       .setTimestamp();
-    return safeReply(interaction, { embeds: [embed] });
+    return safeReply(interaction, { embeds: [embed] }, false);
   }
 
   if (commandName === 'userinfo') {
@@ -1172,7 +1172,7 @@ async function dispatchCommand(interaction, context = {}) {
       .setDescription(`**Mention:** <@${target.id}>\n**ID:** \`${target.id}\`\n**Created:** <t:${Math.floor(target.createdTimestamp / 1000)}:R>\n**Joined Server:** ${targetMember ? `<t:${Math.floor(targetMember.joinedTimestamp / 1000)}:R>` : 'Unknown'}\n**Roles:** ${rolesDisplay}`)
       .setThumbnail(target.displayAvatarURL?.({ size: 256 }) || null)
       .setTimestamp();
-    return safeReply(interaction, { embeds: [embed] });
+    return safeReply(interaction, { embeds: [embed] }, false);
   }
 
   if (commandName === 'permissions') {
@@ -2580,13 +2580,13 @@ async function dispatchCommand(interaction, context = {}) {
 
     if (sub === 'coinflip') {
       const result = Math.random() < 0.5 ? 'Heads' : 'Tails';
-      return safeReply(interaction, `🪙 You flipped a coin and got **${result}**!`);
+      return safeReply(interaction, `🪙 You flipped a coin and got **${result}**!`, false);
     }
 
     if (sub === 'dice') {
       const sides = interaction.options.getInteger('sides') || 6;
       const roll = Math.floor(Math.random() * sides) + 1;
-      return safeReply(interaction, `🎲 Rolled a d${sides}: **${roll}**!`);
+      return safeReply(interaction, `🎲 Rolled a d${sides}: **${roll}**!`, false);
     }
 
     if (sub === '8ball') {
@@ -2607,7 +2607,7 @@ async function dispatchCommand(interaction, context = {}) {
           { name: 'Answer', value: `**${answer}**` }
         )
         .setTimestamp();
-      return safeReply(interaction, { embeds: [embed] });
+      return safeReply(interaction, { embeds: [embed] }, false);
     }
 
     if (sub === 'rps') {
@@ -2628,7 +2628,7 @@ async function dispatchCommand(interaction, context = {}) {
         resultText = '🤖 THOR APEX wins!';
       }
 
-      return safeReply(interaction, `You chose **${icons[choice] || choice}** vs Bot\'s **${icons[botPick]}**.\n\n**${resultText}**`);
+      return safeReply(interaction, `You chose **${icons[choice] || choice}** vs Bot\'s **${icons[botPick]}**.\n\n**${resultText}**`, false);
     }
   }
 
@@ -2671,14 +2671,14 @@ async function dispatchCommand(interaction, context = {}) {
         .sort(([, a], [, b]) => b - a)
         .slice(0, 10);
 
-      if (entries.length === 0) return safeReply(interaction, '🏆 Point leaderboard is currently empty.');
+      if (entries.length === 0) return safeReply(interaction, '🏆 Point leaderboard is currently empty.', false);
       const desc = entries.map(([uId, pts], i) => `${i + 1}. <@${uId}> — **${pts.toLocaleString()}** pts`).join('\n');
       const embed = new EmbedBuilder()
         .setColor('#FEE75C')
         .setTitle(`🏆 Points Leaderboard — ${guild.name}`)
         .setDescription(desc)
         .setTimestamp();
-      return safeReply(interaction, { embeds: [embed] });
+      return safeReply(interaction, { embeds: [embed] }, false);
     }
 
     if (sub === 'reset') {

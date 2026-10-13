@@ -114,3 +114,117 @@ test('Group A.5: Thrown error in command is caught and does not crash process', 
     }
   });
 });
+
+test('Group B.1: /fun coinflip dispatches with public visibility (ephemeral === false)', async () => {
+  const { interaction, getState } = createMockInteraction({
+    commandName: 'fun',
+    options: {
+      getSubcommand: () => 'coinflip',
+      getString: () => null,
+      getInteger: () => null,
+      getUser: () => null,
+    },
+  });
+  await dispatchCommand(interaction, {});
+  const state = getState();
+  assert.strictEqual(state.replied, true);
+  assert.strictEqual(state.replyPayload.ephemeral, false);
+  assert.ok(state.replyPayload.content.includes('flipped a coin'));
+});
+
+test('Group B.2: /fun dice dispatches with public visibility (ephemeral === false)', async () => {
+  const { interaction, getState } = createMockInteraction({
+    commandName: 'fun',
+    options: {
+      getSubcommand: () => 'dice',
+      getInteger: (name) => name === 'sides' ? 20 : null,
+      getString: () => null,
+      getUser: () => null,
+    },
+  });
+  await dispatchCommand(interaction, {});
+  const state = getState();
+  assert.strictEqual(state.replied, true);
+  assert.strictEqual(state.replyPayload.ephemeral, false);
+  assert.ok(state.replyPayload.content.includes('Rolled a d20'));
+});
+
+test('Group B.3: /fun 8ball dispatches with public visibility (ephemeral === false)', async () => {
+  const { interaction, getState } = createMockInteraction({
+    commandName: 'fun',
+    options: {
+      getSubcommand: () => '8ball',
+      getString: (name) => name === 'question' ? 'Will it rain today?' : null,
+      getInteger: () => null,
+      getUser: () => null,
+    },
+  });
+  await dispatchCommand(interaction, {});
+  const state = getState();
+  assert.strictEqual(state.replied, true);
+  assert.strictEqual(state.replyPayload.ephemeral, false);
+  assert.ok(state.replyPayload.embeds && state.replyPayload.embeds.length > 0);
+});
+
+test('Group B.4: /fun rps dispatches with public visibility (ephemeral === false)', async () => {
+  const { interaction, getState } = createMockInteraction({
+    commandName: 'fun',
+    options: {
+      getSubcommand: () => 'rps',
+      getString: (name) => name === 'choice' ? 'rock' : null,
+      getInteger: () => null,
+      getUser: () => null,
+    },
+  });
+  await dispatchCommand(interaction, {});
+  const state = getState();
+  assert.strictEqual(state.replied, true);
+  assert.strictEqual(state.replyPayload.ephemeral, false);
+  assert.ok(state.replyPayload.content.includes('You chose'));
+});
+
+test('Group B.5: Utility commands (/uptime, /serverinfo, /points leaderboard) dispatch with ephemeral === false', async () => {
+  // /uptime
+  const { interaction: uptimeInt, getState: getUptimeState } = createMockInteraction({
+    commandName: 'uptime',
+  });
+  await dispatchCommand(uptimeInt, { startTime: Date.now() - 5000 });
+  assert.strictEqual(getUptimeState().replyPayload.ephemeral, false);
+  assert.ok(getUptimeState().replyPayload.content.includes('Bot Uptime'));
+
+  // /serverinfo
+  const { interaction: serverInt, getState: getServerState } = createMockInteraction({
+    commandName: 'serverinfo',
+  });
+  await dispatchCommand(serverInt, {});
+  assert.strictEqual(getServerState().replyPayload.ephemeral, false);
+  assert.ok(getServerState().replyPayload.embeds && getServerState().replyPayload.embeds.length > 0);
+
+  // /points leaderboard
+  const { interaction: leadInt, getState: getLeadState } = createMockInteraction({
+    commandName: 'points',
+    options: {
+      getSubcommand: () => 'leaderboard',
+      getUser: () => null,
+      getInteger: () => null,
+      getString: () => null,
+    },
+  });
+  await dispatchCommand(leadInt, {});
+  assert.strictEqual(getLeadState().replyPayload.ephemeral, false);
+});
+
+test('Group B.6: Moderation & Security commands remain strictly ephemeral (ephemeral === true)', async () => {
+  // Unknown command safety fallback remains ephemeral: true
+  const { interaction: unkInt, getState: getUnkState } = createMockInteraction({
+    commandName: 'unrecognized_cmd_xyz',
+  });
+  await dispatchCommand(unkInt, {});
+  assert.strictEqual(getUnkState().replyPayload.ephemeral, true);
+
+  // safeReply default remains ephemeral: true when 3rd arg is omitted
+  const { interaction: defaultInt, getState: getDefaultState } = createMockInteraction();
+  await safeReply(defaultInt, 'Private admin notice');
+  assert.strictEqual(getDefaultState().replyPayload.ephemeral, true);
+});
+
