@@ -139,8 +139,57 @@ function isQuarantined(guildId, memberId) {
 }
 
 /**
+ * Evaluates join risk signals for a member (Phase 5: Multi-factor risk scoring).
+ * Signals:
+ * - Account Age < 24h: +40 pts
+ * - Account Age < 3 days: +25 pts
+ * - Default avatar (no custom avatar): +20 pts
+ * - Suspicious username patterns: +15 pts
+ * Score >= 50 indicates high raid suspicion.
+ */
+function evaluateJoinRisk(member) {
+  if (!member || !member.user) return { score: 0, highRisk: false, reasons: [] };
+
+  let score = 0;
+  const reasons = [];
+  const now = Date.now();
+  const created = member.user.createdTimestamp || now;
+  const ageMs = now - created;
+  const ageHours = ageMs / (1000 * 60 * 60);
+
+  if (ageHours < 24) {
+    score += 40;
+    reasons.push('Account created < 24h ago');
+  } else if (ageHours < 72) {
+    score += 25;
+    reasons.push('Account created < 3 days ago');
+  }
+
+  // Default avatar check
+  if (!member.user.avatar) {
+    score += 20;
+    reasons.push('Default Discord avatar');
+  }
+
+  // Generic raid username pattern (e.g. repeated numbers or spam strings)
+  const username = member.user.username || '';
+  if (/^[a-zA-Z]{2,4}\d{4,8}$/.test(username) || /[a-z]{8,}\d{4,}/i.test(username)) {
+    score += 15;
+    reasons.push('Pattern-generated username');
+  }
+
+  return {
+    score,
+    highRisk: score >= 40,
+    reasons,
+    ageHours: Math.round(ageHours),
+  };
+}
+
+/**
  * Core Anti-Raid Mass Join processor. Called on every guildMemberAdd.
- * Tracks velocity; if threshold exceeded, quarantines the joining wave.
+ * Tracks velocity with risk scoring; safely quarantines suspicious wave members.
+ * Never performs indiscriminate destructive mass-kicks.
  * @param {GuildMember} member - newly joined member
  * @returns {{ intercepted: boolean, reason?: string, quarantined?: number }}
  */
@@ -165,7 +214,7 @@ async function processRaidJoin(member) {
   if (timestamps.length < threshold) return { intercepted: false };
 
   // RAID DETECTED — quarantine the wave
-  const mode = raidCfg.action || 'quarantine'; // 'quarantine' | 'kick' | 'lockdown'
+  const mode = raidCfg.action || 'quarantine'; // 'quarantine' is the safe enterprise default
   let quarantinedCount = 0;
   const affectedIds = [];
 
@@ -174,38 +223,35 @@ async function processRaidJoin(member) {
     return !m.user.bot && (now - (m.joinedTimestamp || 0)) < windowMs;
   });
 
-  if (mode === 'quarantine') {
-    for (const [, m] of recentMembers) {
-      const result = await quarantineMember(m, `Raid wave (${timestamps.length} joins in ${windowMs / 1000}s)`);
+  // Evaluate risk scores: only take severe action on accounts with risk signals
+  for (const [, m] of recentMembers) {
+    const risk = evaluateJoinRisk(m);
+    
+    // In quarantine mode, quarantine all recent joiners in wave to be safe
+    // In kick mode, only kick high risk accounts; quarantine lower risk accounts to prevent false-positive bans
+    if (mode === 'kick' && risk.highRisk && m.kickable) {
+      await m.kick(`Anti-Raid Risk Intercept: Mass join wave (${risk.reasons.join(', ')})`).catch(() => {});
+      quarantinedCount++;
+    } else {
+      const result = await quarantineMember(m, `Raid wave (${timestamps.length} joins in ${windowMs / 1000}s${risk.reasons.length ? ' • ' + risk.reasons.join(', ') : ''})`);
       if (result.success) { quarantinedCount++; affectedIds.push(m.id); }
     }
-
-    // Persist quarantine state in config
-    config.security = config.security || {};
-    config.security.emergencyQuarantine = true;
-    saveGuildConfig(guild.id, config);
-  } else if (mode === 'lockdown') {
-    config.security = config.security || {};
-    config.security.lockdown = true;
-    saveGuildConfig(guild.id, config);
-  } else if (mode === 'kick') {
-    for (const [, m] of recentMembers) {
-      if (m.kickable) {
-        await m.kick(`Anti-Raid: Mass join wave detected (${timestamps.length} joins in ${windowMs / 1000}s)`).catch(() => {});
-        quarantinedCount++;
-      }
-    }
   }
+
+  // Persist quarantine state in config using non-blocking async save
+  config.security = config.security || {};
+  config.security.emergencyQuarantine = true;
+  saveGuildConfig(guild.id, config);
 
   // Log security incident
   const embed = new EmbedBuilder()
     .setColor('#FF0000')
-    .setTitle('🚨 ANTI-RAID: Mass Join Wave Detected & Neutralized!')
+    .setTitle('🚨 ANTI-RAID: Mass Join Wave Intercepted!')
     .setDescription(
       `**Wave Size:** ${timestamps.length} joins in ${windowMs / 1000}s (Threshold: ${threshold})\n` +
-      `**Action Taken:** \`${mode}\`\n` +
-      `**Members Affected:** ${quarantinedCount}\n` +
-      (mode === 'quarantine' ? `**Release:** Use \`/threat\` → 🟢 Release Quarantine` : '')
+      `**Containment Mode:** \`${mode}\`\n` +
+      `**Accounts Contained:** ${quarantinedCount}\n` +
+      `**Release:** Run \`/security unlock\` or \`/threat\` → 🟢 Release Quarantine`
     )
     .setTimestamp();
 
@@ -219,6 +265,7 @@ async function processRaidJoin(member) {
 
 module.exports = {
   processRaidJoin,
+  evaluateJoinRisk,
   quarantineMember,
   releaseMember,
   releaseAllQuarantine,

@@ -601,6 +601,32 @@ async function startBot() {
     }
   });
 
+  // ── Member Update Event (Role Escalation & Anti-Mod Abuse Detection) ──
+  client.on('guildMemberUpdate', async (oldMember, newMember) => {
+    try {
+      if (!newMember.guild) return;
+      const guild = newMember.guild;
+
+      // Detect role additions
+      const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
+      if (addedRoles.size > 0) {
+        const dangerousFlags = [
+          PermissionsBitField.Flags.Administrator,
+          PermissionsBitField.Flags.ManageGuild,
+          PermissionsBitField.Flags.ManageRoles,
+          PermissionsBitField.Flags.ManageChannels,
+          PermissionsBitField.Flags.BanMembers,
+        ];
+
+        const hasDangerousRole = addedRoles.some(r => dangerousFlags.some(f => r.permissions.has(f)));
+        if (hasDangerousRole) {
+          // Check audit log for role grant actor
+          await handleAntiNukeEvent(guild, AuditLogEvent.MemberRoleUpdate, 'dangerousPermGrant', `Dangerous Administrative Role Assigned to (${newMember.user.tag})`, newMember.id);
+        }
+      }
+    } catch (_) {}
+  });
+
   // ── Message Create Event (AutoMod, Prefix Commands) ──
   client.on('messageCreate', async (message) => {
     if (!message || message.author?.bot || !message.guild) return;

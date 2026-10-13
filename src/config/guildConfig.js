@@ -260,6 +260,61 @@ function getGuildConfig(guildId, guildName = '') {
 }
 
 /**
+ * Async write queue to decouple real-time security events from disk I/O
+ */
+const pendingWrites = new Map(); // guildId -> { data, timer }
+const activeWrites = new Set();  // guildId
+
+async function flushGuildConfig(guildId) {
+  const item = pendingWrites.get(guildId);
+  if (!item || activeWrites.has(guildId)) return;
+
+  activeWrites.add(guildId);
+  pendingWrites.delete(guildId);
+
+  const filePath = path.join(GUILDS_DIR, `${guildId}.json`);
+  const tempPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 6)}`;
+
+  try {
+    await fs.promises.writeFile(tempPath, JSON.stringify(item.data, null, 2), 'utf8');
+    await fs.promises.rename(tempPath, filePath);
+  } catch (err) {
+    try {
+      await fs.promises.writeFile(filePath, JSON.stringify(item.data, null, 2), 'utf8');
+      if (fs.existsSync(tempPath)) await fs.promises.unlink(tempPath).catch(() => {});
+    } catch (fallbackErr) {
+      console.error(`Failed to async persist config for guild ${guildId}:`, fallbackErr.message);
+      if (fs.existsSync(tempPath)) await fs.promises.unlink(tempPath).catch(() => {});
+    }
+  } finally {
+    activeWrites.delete(guildId);
+    if (pendingWrites.has(guildId)) {
+      setImmediate(() => flushGuildConfig(guildId));
+    }
+  }
+}
+
+/**
+ * Saves guild configuration asynchronously without blocking the event loop.
+ * Updates in-memory cache instantly (0ms) and schedules non-blocking write.
+ */
+function saveGuildConfigAsync(guildId, config, delayMs = 150) {
+  if (!guildId) return;
+  configCache.set(guildId, config);
+
+  const existing = pendingWrites.get(guildId);
+  if (existing?.timer) clearTimeout(existing.timer);
+
+  const timer = setTimeout(() => {
+    flushGuildConfig(guildId).catch(err => {
+      console.error(`flushGuildConfig error for ${guildId}:`, err.message);
+    });
+  }, delayMs);
+
+  pendingWrites.set(guildId, { data: config, timer });
+}
+
+/**
  * Saves guild configuration to disk and updates cache.
  */
 function saveGuildConfig(guildId, config) {
@@ -295,6 +350,7 @@ module.exports = {
   getDefaultGuildConfig,
   getGuildConfig,
   saveGuildConfig,
+  saveGuildConfigAsync,
   updateGuildConfig,
   invalidateCache,
 };

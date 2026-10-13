@@ -298,26 +298,16 @@ async function dispatchCommand(interaction, context = {}) {
       }
     }
     if (sub === 'lockdown') {
-      config.security.lockdown = true; saveGuildConfig(guild.id, config);
-      if (guild.channels?.cache) {
-        for (const [, ch] of guild.channels.cache) {
-          if (ch.isTextBased?.() && ch.permissionOverwrites?.create) {
-            await ch.permissionOverwrites.create(guild.roles?.everyone, { SendMessages: false }).catch(() => {});
-          }
-        }
-      }
-      return safeReply(interaction, '🚨 **SERVER LOCKDOWN ENGAGED!** `@everyone` cannot send messages.');
+      const { engageEmergencyLockdown } = require('../security/backupRecovery');
+      await interaction.deferReply({ ephemeral: true });
+      const res = await engageEmergencyLockdown(guild, `Command Lockdown by ${user.tag}`);
+      return interaction.editReply(`🚨 **SERVER LOCKDOWN ENGAGED!** Secured **${res.lockedChannels || 0}** channels while preserving original permissions.`);
     }
     if (sub === 'unlock') {
-      config.security.lockdown = false; saveGuildConfig(guild.id, config);
-      if (guild.channels?.cache) {
-        for (const [, ch] of guild.channels.cache) {
-          if (ch.isTextBased?.() && ch.permissionOverwrites?.create) {
-            await ch.permissionOverwrites.create(guild.roles?.everyone, { SendMessages: null }).catch(() => {});
-          }
-        }
-      }
-      return safeReply(interaction, '🟢 **Lockdown lifted.** Server channels restored.');
+      const { liftEmergencyLockdown } = require('../security/backupRecovery');
+      await interaction.deferReply({ ephemeral: true });
+      const res = await liftEmergencyLockdown(guild, `Command Unlock by ${user.tag}`);
+      return interaction.editReply(`🟢 **Lockdown lifted.** Successfully restored **${res.unlockedChannels || 0}** channels.`);
     }
   }
 
