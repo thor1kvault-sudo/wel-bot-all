@@ -6,6 +6,7 @@ const {
   VoiceConnectionStatus,
   entersState,
   StreamType,
+  NoSubscriberBehavior,
 } = require('@discordjs/voice');
 const { PermissionsBitField } = require('discord.js');
 
@@ -148,6 +149,18 @@ async function playNext(guildId) {
     return;
   }
 
+  // Ensure voice connection is ready and player subscription is active before streaming
+  if (session.connection) {
+    if (session.connection.state.status !== VoiceConnectionStatus.Ready && session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+      try {
+        await entersState(session.connection, VoiceConnectionStatus.Ready, 10_000);
+      } catch (_) {}
+    }
+    if (session.player) {
+      try { session.connection.subscribe(session.player); } catch (_) {}
+    }
+  }
+
   const track = session.queue.shift();
   session.currentTrack = track;
   session.isPlaying = true;
@@ -212,7 +225,15 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
         channelId: vc.id,
         guildId: guild.id,
         adapterCreator: guild.voiceAdapterCreator,
-        selfDeaf: true,
+        selfDeaf: false,
+      });
+
+      // Re-subscribe when connection becomes ready
+      session.connection.on(VoiceConnectionStatus.Ready, () => {
+        logIncident('INFO', 'VOICE_READY', `Voice connection ready in guild ${guild.id}`);
+        if (session.player) {
+          try { session.connection.subscribe(session.player); } catch (_) {}
+        }
       });
 
       // Monitor Voice Connection Lifecycle
@@ -231,6 +252,13 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       session.connection.on(VoiceConnectionStatus.Destroyed, () => {
         sessions.delete(guild.id);
       });
+
+      // Await Ready state (with timeout) so voice UDP socket connects before streaming
+      try {
+        await entersState(session.connection, VoiceConnectionStatus.Ready, 15_000);
+      } catch (connErr) {
+        logIncident('WARN', 'VOICE_READY_TIMEOUT', `Voice connection not ready in 15s in guild ${guild.id}: ${connErr.message}`);
+      }
     } catch (err) {
       logIncident('ERROR', 'VOICE_CONNECT_ERR', err.message);
       return { success: false, message: `Could not join voice channel: ${err.message}` };
@@ -239,17 +267,34 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
 
   // 3. Initialize Audio Player and Lifecycle Handlers
   if (!session.player) {
-    session.player = createAudioPlayer();
-    session.connection.subscribe(session.player);
+    session.player = createAudioPlayer({
+      behaviors: {
+        noSubscriber: NoSubscriberBehavior.Play,
+        maxMissedFrames: Math.round(5000 / 20),
+      },
+    });
+
+    session.player.on(AudioPlayerStatus.Playing, () => {
+      logIncident('DEBUG', 'PLAYER_PLAYING', `Player playing in guild ${guild.id}`);
+    });
 
     session.player.on(AudioPlayerStatus.Idle, () => {
       handleTrackEnded(guild.id);
+    });
+
+    session.player.on(AudioPlayerStatus.AutoPaused, () => {
+      logIncident('WARN', 'PLAYER_AUTOPAUSED', `Player auto-paused in guild ${guild.id}`);
     });
 
     session.player.on('error', (err) => {
       logIncident('ERROR', 'PLAYER_ERROR', err.message);
       handleTrackEnded(guild.id);
     });
+  }
+
+  // Always ensure voice connection is subscribed to player
+  if (session.connection && session.player) {
+    try { session.connection.subscribe(session.player); } catch (_) {}
   }
 
   // 4. Resolve Tracks from Query (Spotify vs Native Provider)
@@ -298,6 +343,8 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
   }
 
   // 5. Enqueue Tracks
+  const targetPosition = playNow ? 1 : (session.isPlaying ? session.queue.length + 1 : 1);
+
   if (playNow) {
     session.queue.unshift(...tracksToAdd);
     if (session.isPlaying) {
@@ -319,7 +366,7 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
     firstTrack: tracksToAdd[0],
     isPlaylist,
     playlistName,
-    position: playNow ? 1 : session.queue.length - tracksToAdd.length + 1,
+    position: targetPosition,
   };
 }
 

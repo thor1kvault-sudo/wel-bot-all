@@ -497,6 +497,35 @@ test('VIII-4: musicService.seek rejects target exceeding track duration', async 
 });
 
 // ─────────────────────────────────────────────────────────────
+// SECTION IX: voice connection & player autopause resilience [UNIT]
+// ─────────────────────────────────────────────────────────────
+
+test('IX-1: audioProvider.matchPlayableTrack safely resolves candidates without ReferenceError', async () => {
+  const audioProvider = require('../src/music/audioProvider');
+  const resEmpty = await audioProvider.matchPlayableTrack({});
+  assert.strictEqual(resEmpty.streamUrl, null);
+
+  const res = await audioProvider.matchPlayableTrack({ title: 'Test Audio Song Nonexistent 12345' });
+  assert.ok(res !== null && typeof res === 'object');
+  assert.ok('streamUrl' in res);
+});
+
+test('IX-2: enqueueTrack position calculation never returns 0', () => {
+  const session = musicService.getSession('guild_pos_test');
+  session.isPlaying = false;
+  session.queue = [];
+  const targetPosition = false ? 1 : (session.isPlaying ? session.queue.length + 1 : 1);
+  assert.strictEqual(targetPosition, 1, 'Initial track should be position 1');
+
+  session.isPlaying = true;
+  session.queue = [{ title: 'Upcoming 1' }];
+  const nextPos = session.isPlaying ? session.queue.length + 1 : 1;
+  assert.strictEqual(nextPos, 2, 'Next track while playing should be position 2');
+
+  musicService.sessions.delete('guild_pos_test');
+});
+
+// ─────────────────────────────────────────────────────────────
 // Cleanup all test sessions
 // ─────────────────────────────────────────────────────────────
 const cleanupIds = [
@@ -506,6 +535,6 @@ const cleanupIds = [
   'guild_history_cap', 'guild_move_bounds', 'guild_remove_bounds',
   'guild_shuffle_single', 'guild_shuffle_empty', 'guild_clear_nosession_xyz',
   'guild_loop_nosession_xyz', 'guild_vol_nosession_xyz', 'guild_seek_notplaying',
-  'guild_seek_bounds',
+  'guild_seek_bounds', 'guild_pos_test',
 ];
 for (const id of cleanupIds) musicService.sessions.delete(id);

@@ -27,7 +27,12 @@ const playdl       = require('play-dl');
 
 /* ── Optional deps loaded defensively ─────────────────────────── */
 let ffmpegPath = null;
-try { ffmpegPath = require('ffmpeg-static'); } catch (_) {}
+try {
+  ffmpegPath = require('ffmpeg-static');
+  if (ffmpegPath && !process.env.FFMPEG_PATH) {
+    process.env.FFMPEG_PATH = ffmpegPath;
+  }
+} catch (_) {}
 
 /* ── SoundCloud client state ───────────────────────────────────── */
 let scClientId    = null;
@@ -338,6 +343,8 @@ async function matchPlayableTrack(track) {
   let bestMatch = null;
   let bestScore = -1;
 
+  const allCandidates = [];
+
   for (const q of queries) {
     let candidates;
     try {
@@ -352,6 +359,8 @@ async function matchPlayableTrack(track) {
       const durScore  = durationScore(track.durationSec, c.durationSec);
       // Weighted: title 50%, artist 30%, duration 20%
       const score = (titleSim * 0.5) + (artistSim * 0.3) + (durScore * 0.2);
+      c._score = score;
+      allCandidates.push(c);
       if (score > bestScore) {
         bestScore  = score;
         bestMatch  = c;
