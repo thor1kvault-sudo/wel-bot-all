@@ -29,8 +29,14 @@ const playdl       = require('play-dl');
 let ffmpegPath = null;
 try {
   ffmpegPath = require('ffmpeg-static');
-  if (ffmpegPath && !process.env.FFMPEG_PATH) {
-    process.env.FFMPEG_PATH = ffmpegPath;
+  if (ffmpegPath) {
+    if (!process.env.FFMPEG_PATH) process.env.FFMPEG_PATH = ffmpegPath;
+    if (process.platform !== 'win32') {
+      try {
+        const fs = require('fs');
+        fs.chmodSync(ffmpegPath, 0o755);
+      } catch (_) {}
+    }
   }
 } catch (_) {}
 
@@ -379,6 +385,7 @@ async function matchPlayableTrack(track) {
 
     return {
       ...track,
+      durationSec:  (track.durationSec && track.durationSec > 0) ? track.durationSec : (bestMatch.durationSec || 0),
       streamUrl:    bestMatch.streamUrl,
       source:       'soundcloud',
       matchedTitle: bestMatch.title,

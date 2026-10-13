@@ -33,10 +33,24 @@ const {
   processRaidJoin, releaseAllQuarantine, releaseMember, getQuarantinedCount,
 } = require('./src/security/antiRaid');
 
-// Setup FFMPEG static if present
+// Setup FFMPEG static if present & verify Linux permissions
 try {
   const ff = require('ffmpeg-static');
-  if (ff) process.env.FFMPEG_PATH = ff;
+  if (ff) {
+    process.env.FFMPEG_PATH = ff;
+    if (process.platform !== 'win32') {
+      try {
+        const fs = require('fs');
+        fs.chmodSync(ff, 0o755);
+      } catch (_) {}
+    }
+  }
+} catch (_) {}
+
+// Diagnostic voice dependency report
+try {
+  const { generateDependencyReport } = require('@discordjs/voice');
+  console.log('🎙️ [THOR-VOICE] Dependency Report:\n' + generateDependencyReport());
 } catch (_) {}
 
 // ── Global Process Safety & Diagnostics ──

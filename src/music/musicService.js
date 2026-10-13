@@ -170,11 +170,35 @@ async function playNext(guildId) {
   session.pauseTime = 0;
 
   try {
+    console.log(`[THOR-AUDIO] Resolving audio stream for "${track.title}" (source: ${track.source || 'unknown'})...`);
     const audioData = await resolveAudioStream(track);
+    console.log(`[THOR-AUDIO] Stream resolved: type=${audioData.type}, source=${audioData.source}, isStream=${!!audioData.stream?.on}`);
+
+    let streamBytes = 0;
+    if (audioData.stream && typeof audioData.stream.on === 'function') {
+      audioData.stream.on('data', (chunk) => {
+        streamBytes += chunk.length;
+      });
+      audioData.stream.on('error', (streamErr) => {
+        console.error(`[THOR-AUDIO Stream Error] "${track.title}":`, streamErr.message);
+      });
+      audioData.stream.on('end', () => {
+        console.log(`[THOR-AUDIO Stream End] "${track.title}": Received total ${streamBytes} bytes`);
+      });
+    }
+
     const resource = createAudioResource(audioData.stream, {
       inputType: audioData.type === 'arbitrary' ? StreamType.Arbitrary : audioData.type,
       inlineVolume: true,
     });
+
+    console.log(`[THOR-AUDIO] Resource created: readable=${resource.readable}, edges=${resource.edges?.map(e => e.type).join(' -> ')}`);
+
+    if (resource.playStream) {
+      resource.playStream.on('error', (err) => {
+        console.error(`[THOR-AUDIO Resource Error]:`, err.message);
+      });
+    }
 
     if (resource.volume) {
       resource.volume.setVolume(session.volume / 100);
@@ -183,6 +207,22 @@ async function playNext(guildId) {
     session.currentResource = resource;
     session.recoveryAttempts = 0;
     session.player.play(resource);
+
+    // Synchronize speaking status if connection is in ready state
+    if (session.connection && session.connection.state.status === VoiceConnectionStatus.Ready) {
+      try { session.connection.setSpeaking(true); } catch (_) {}
+    }
+
+    // Diagnostic check after 5 seconds of playback
+    setTimeout(() => {
+      if (session.isPlaying && session.currentTrack === track) {
+        const connStatus = session.connection ? session.connection.state.status : 'none';
+        const speakingState = session.connection?.state?.networking?.state?.connectionData?.speaking;
+        const playerStatus = session.player ? session.player.state.status : 'none';
+        const pbDuration = session.player?.state?.playbackDuration;
+        console.log(`[THOR-AUDIO DIAG] 5s check: conn=${connStatus}, speaking=${speakingState}, player=${playerStatus}, duration=${pbDuration}ms, streamBytes=${streamBytes}`);
+      }
+    }, 5000);
 
     // Update or post player card
     await updatePlayerCardMessage(session);
@@ -226,10 +266,28 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
         guildId: guild.id,
         adapterCreator: guild.voiceAdapterCreator,
         selfDeaf: false,
+        debug: true,
+      });
+
+      // Voice connection diagnostics
+      session.connection.on('stateChange', (oldState, newState) => {
+        console.log(`[THOR-VOICE] Guild ${guild.id}: ${oldState.status} -> ${newState.status}`);
+      });
+
+      session.connection.on('debug', (msg) => {
+        if (!msg.includes('token') && !msg.includes('secret')) {
+          console.log(`[THOR-VOICE Debug] Guild ${guild.id}: ${msg}`);
+        }
+      });
+
+      session.connection.on('error', (err) => {
+        console.error(`[THOR-VOICE Error] Guild ${guild.id}:`, err.message);
+        logIncident('ERROR', 'VOICE_ERR', `Voice error in guild ${guild.id}: ${err.message}`);
       });
 
       // Re-subscribe when connection becomes ready
       session.connection.on(VoiceConnectionStatus.Ready, () => {
+        console.log(`[THOR-VOICE] Connection READY in guild ${guild.id}. Ping:`, session.connection.ping);
         logIncident('INFO', 'VOICE_READY', `Voice connection ready in guild ${guild.id}`);
         if (session.player) {
           try { session.connection.subscribe(session.player); } catch (_) {}
@@ -253,11 +311,22 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
         sessions.delete(guild.id);
       });
 
-      // Await Ready state (with timeout) so voice UDP socket connects before streaming
+      // Await Ready state so voice UDP socket connects before streaming
       try {
         await entersState(session.connection, VoiceConnectionStatus.Ready, 15_000);
+        console.log(`[THOR-VOICE] Voice connection successfully entered READY in guild ${guild.id}`);
       } catch (connErr) {
-        logIncident('WARN', 'VOICE_READY_TIMEOUT', `Voice connection not ready in 15s in guild ${guild.id}: ${connErr.message}`);
+        const curStatus = session.connection ? session.connection.state.status : 'unknown';
+        console.error(`[THOR-VOICE] Connection did not become Ready in 15s (status: ${curStatus}):`, connErr.message);
+        logIncident('ERROR', 'VOICE_READY_TIMEOUT', `Voice connection not ready in 15s in guild ${guild.id}: ${connErr.message}`);
+        // If not ready and not mock environment, fail gracefully
+        if (session.connection && session.connection.state.status !== VoiceConnectionStatus.Ready) {
+          return {
+            success: false,
+            message: `Voice connection timed out in state \`${curStatus}\`. ` +
+                     `Discord voice UDP audio transmission could not be negotiated. (Host network may restrict UDP).`,
+          };
+        }
       }
     } catch (err) {
       logIncident('ERROR', 'VOICE_CONNECT_ERR', err.message);
@@ -272,21 +341,40 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
         noSubscriber: NoSubscriberBehavior.Play,
         maxMissedFrames: Math.round(5000 / 20),
       },
+      debug: true,
+    });
+
+    session.player.on('debug', (msg) => {
+      console.log(`[THOR-PLAYER Debug] Guild ${guild.id}: ${msg}`);
+    });
+
+    session.player.on('stateChange', (oldState, newState) => {
+      console.log(`[THOR-PLAYER] Guild ${guild.id}: ${oldState.status} -> ${newState.status}`);
     });
 
     session.player.on(AudioPlayerStatus.Playing, () => {
+      console.log(`[THOR-PLAYER] Started Playing in guild ${guild.id}`);
+      if (session.connection && session.connection.state.status === VoiceConnectionStatus.Ready) {
+        try { session.connection.setSpeaking(true); } catch (_) {}
+      }
       logIncident('DEBUG', 'PLAYER_PLAYING', `Player playing in guild ${guild.id}`);
     });
 
     session.player.on(AudioPlayerStatus.Idle, () => {
+      console.log(`[THOR-PLAYER] Idle in guild ${guild.id}`);
+      if (session.connection && session.connection.state.status === VoiceConnectionStatus.Ready) {
+        try { session.connection.setSpeaking(false); } catch (_) {}
+      }
       handleTrackEnded(guild.id);
     });
 
     session.player.on(AudioPlayerStatus.AutoPaused, () => {
+      console.warn(`[THOR-PLAYER] AutoPaused in guild ${guild.id}`);
       logIncident('WARN', 'PLAYER_AUTOPAUSED', `Player auto-paused in guild ${guild.id}`);
     });
 
     session.player.on('error', (err) => {
+      console.error(`[THOR-PLAYER Error] Guild ${guild.id}:`, err.message);
       logIncident('ERROR', 'PLAYER_ERROR', err.message);
       handleTrackEnded(guild.id);
     });
@@ -294,7 +382,10 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
 
   // Always ensure voice connection is subscribed to player
   if (session.connection && session.player) {
-    try { session.connection.subscribe(session.player); } catch (_) {}
+    try {
+      const sub = session.connection.subscribe(session.player);
+      console.log(`[THOR-VOICE] Subscribed player to connection. Subscription active:`, !!sub);
+    } catch (_) {}
   }
 
   // 4. Resolve Tracks from Query (Spotify vs Native Provider)
