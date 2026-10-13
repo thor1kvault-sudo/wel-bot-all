@@ -1122,6 +1122,58 @@ async function startBot() {
           const labels = { 1: '🔴 DEFCON 1 — Raid Underway', 2: '🟡 DEFCON 2 — High Alert', 3: '🟢 DEFCON 3 — Normal' };
           return interaction.reply({ content: `🚨 DEFCON level switched to **${labels[level]}**.`, ephemeral: true });
         }
+
+        // ── Help Category Select Menu ──
+        if (id === 'help_category_select') {
+          const selected = interaction.values[0]?.replace('help_', '') || 'overview';
+
+          const helpCats = {
+            overview: { emoji: '🏠', label: 'Overview', title: '🏠 THOR APEX — All-in-One Command Centre', description: '**THOR APEX** is a production-grade, all-in-one Discord bot with **80+ commands** spanning security, moderation, music, welcome, utility, fun and more.\n\n**Use the dropdown menu below to explore each category in detail.**\n\n📁 **Command Categories:**\n> ⚖️ **Moderation** — Warn, timeout, kick, ban, purge & more\n> 🛡️ **Security & Anti-Nuke** — Real-time nuke interception & lockdown\n> 🤖 **AutoMod** — 12 detection filters with custom punishments\n> 📋 **Server Logs** — 14 dedicated event log channels\n> 🎉 **Welcome & Goodbye** — Custom welcome cards & departure messages\n> 🎵 **Music** — Full music player, queue, radio & Spotify\n> 🔧 **Utility & Info** — Ping, uptime, botinfo, userinfo\n> 🎮 **Fun & Roleplay** — Minigames, dice, 8-ball, roleplay actions\n> 💎 **Economy & Badges** — Points, leaderboard & member badges\n> 🌐 **Integrations** — YouTube, Twitch & GitHub alerts\n> ⚙️ **Admin & Config** — Server config, modules, maintenance\n> 🚀 **Advanced** — AFK, birthdays, translate, VPN check & more', color: '#5865F2' },
+            moderation: { emoji: '⚖️', label: 'Moderation', title: '⚖️ Moderation Commands', description: '`/warn` — Issue an official warning to a member\n`/warnings` — View active warnings for a member\n`/clearwarnings` — Clear all warnings for a member\n`/timeout` — Timeout a member (e.g. 10m, 1h, 1d)\n`/untimeout` — Remove timeout from a member\n`/kick` — Kick a member from the server\n`/ban` — Ban a user from the server\n`/unban` — Unban a user by their User ID\n`/softban` — Ban and instantly unban to purge messages\n`/purge` — Bulk delete messages (1–100, with filters)\n`/slowmode` — Set slowmode delay for a channel\n`/lock` — Lock a channel to prevent member messages\n`/unlock` — Unlock a previously locked channel\n`/nick` — Change a member\'s nickname\n`/modlogs` — View moderation history for a member\n`/quickmod` — Launch rapid one-click moderation panel', color: '#FEE75C' },
+            security: { emoji: '🛡️', label: 'Security & Anti-Nuke', title: '🛡️ Security & Anti-Nuke Commands', description: '`/security status` — View security protection overview\n`/security audit` — Security configuration health check\n`/security incidents` — View recent incident history\n`/security test` — Test security alert dispatch path\n`/antinuke enable` — Enable anti-nuke protection\n`/antinuke disable` — Disable anti-nuke protection\n`/antinuke status` — View anti-nuke status & thresholds\n`/antinuke config` — Set enforcement action\n`/antinuke threshold` — Set burst limit for event categories\n`/antinuke trust` — Manage trusted users/roles\n`/antinuke lockdown` — Engage emergency lockdown\n`/antinuke unlock` — Lift emergency lockdown\n`/lockdown` — Toggle server-wide lockdown\n`/whitelist` — Interactive whitelist management\n`/quarantine status` — View quarantine status\n`/quarantine release` — Release quarantined members\n`/threat` — Switch server DEFCON threat level\n`/raidmode on/off/status` — Manual raid defense mode\n`/vpncheck user` — Analyze account risk score\n`/vpncheck ip` — Check IP for VPN/proxy flags', color: '#ED4245' },
+            automod: { emoji: '🤖', label: 'AutoMod', title: '🤖 AutoMod Engine Commands', description: '`/automod enable` — Enable AutoMod or a specific filter rule\n`/automod disable` — Disable AutoMod or a specific filter rule\n`/automod enableall` — Enable all 12 detection rules\n`/automod disableall` — Disable all rules\n`/automod status` — View active filter rules & thresholds\n`/automod config` — Interactive AutoMod dashboard\n`/automod test` — Run safe diagnostic & simulation suite\n`/automod blacklist` — Manage word blacklist\n`/automod whitelist` — Manage AutoMod exemptions\n`/automod punishment` — Customize punishment per rule\n\n**Legacy:** `/antispam` `/antilink` `/antiraid` `/altdetection` `/wordfilter` `/addword` `/removeword`\n\n**12 Filters:** Anti-Spam, Duplicate, Mention Spam, @everyone, Invites, Links, NSFW, Word Blacklist, Caps, Emoji Spam, Alt Detection, Anti-Raid', color: '#57F287' },
+            logs: { emoji: '📋', label: 'Server Logs', title: '📋 14-Channel Logging System', description: '`/logs setup` — Auto-create 📁 SERVER LOGS category & 14 channels\n`/logs status` — View all 14 log channel destinations\n`/logs configure` — Bind a log category to a channel\n`/logs test` — Send test embeds to all log channels\n`/logs disable` — Disable logging for a category or all\n\n**14 Channels:** Member, Message, Moderation, Security, Anti-Nuke, AutoMod, Role, Channel, Voice, Server Settings, Invite, Webhook, Bot, Welcome', color: '#5865F2' },
+            welcome: { emoji: '🎉', label: 'Welcome & Goodbye', title: '🎉 Welcome & Goodbye System', description: '`/welcome setup` `/welcome enable` `/welcome disable` `/welcome config` `/welcome test` `/welcome banner`\n`/goodbye setup` `/goodbye enable` `/goodbye disable` `/goodbye config` `/goodbye test`\n\n**Shortcuts:** `/setwelcome` `/setleave` `/setrules` `/setroles` `/setgeneral` `/setfun` `/setedit` `/setgaming` `/setwelcomecolor` `/setwelcometext` `/setbanner` `/setlogo` `/serverbanner` `/setleavetext` `/setautorole`', color: '#EB459E' },
+            music: { emoji: '🎵', label: 'Music', title: '🎵 Music & Radio System', description: '`/play` — Play from YouTube, Spotify, or SoundCloud\n`/playnow` — Play immediately at front of queue\n`/pause` `/resume` — Pause/resume playback\n`/skip` — Skip current song\n`/previous` — Play previous track\n`/stop` — Stop playback & leave channel\n`/disconnect` — Leave voice channel\n`/nowplaying` — Show current track with progress bar\n`/search` — Search & pick from results\n`/queue view/remove/move/jump/export/clear` — Queue management\n`/shuffle` — Shuffle queue\n`/loop` — Set repeat (off/track/queue)\n`/volume` — Adjust volume (1–100)\n`/seek` — Seek to position (e.g. 1:30)\n`/radio` — 24/7 radio (Lofi, Gaming, Pop, Chill)\n`/lyrics` — Search real-time lyrics\n`/musicstatus` — Engine diagnostics\n`/musicupdate` — status/check/logs/repair/apply', color: '#1DB954' },
+            utility: { emoji: '🔧', label: 'Utility & Info', title: '🔧 Utility & Information', description: '`/ping` — Bot heartbeat latency & gateway ping\n`/uptime` — Bot continuous running time\n`/botinfo` — Bot stats, runtime, memory & architecture\n`/serverinfo` — Server statistics & member counts\n`/userinfo` — Member profile, roles & join info\n`/permissions` — Inspect permissions\n`/help` — This comprehensive command guide\n`/myinvites` — Your total server invites\n`/invites` — Check invites for a user\n`/invitetop` — Top inviters leaderboard\n`/translate` — Translate text\n`/panel` — THOR APEX interactive admin panel', color: '#5865F2' },
+            fun: { emoji: '🎮', label: 'Fun & Roleplay', title: '🎮 Fun, Minigames & Roleplay', description: '**🎲 Minigames:**\n`/fun coinflip` — Flip a coin\n`/fun dice` — Roll dice\n`/fun 8ball` — Ask the Magic 8-Ball\n`/fun rps` — Rock, Paper, Scissors\n\n**🎭 Roleplay:**\n`/roleplay hug` `/roleplay pat` `/roleplay slap` `/roleplay highfive` `/roleplay wave`', color: '#EB459E' },
+            economy: { emoji: '💎', label: 'Economy & Badges', title: '💎 Points Economy & Member Badges', description: '**💰 Points:**\n`/points check` — Check balance\n`/points give` — Award points\n`/points take` — Deduct points\n`/points leaderboard` — Top 10 members\n`/points reset` — Reset points\n\n**🏅 Badges:**\n`/badge give` — Award a custom badge\n`/badge remove` — Remove a badge\n`/badge list` — View member badges', color: '#FEE75C' },
+            integrations: { emoji: '🌐', label: 'Integrations', title: '🌐 External Service Integrations', description: '`/integration youtube` — YouTube upload alerts\n`/integration twitch` — Twitch stream live alerts\n`/integration github` — GitHub release/commit alerts\n`/integration list` — List active integrations\n`/integration remove` — Remove an integration\n\n**Feeds go to your chosen existing text channels — no extra channels created!**', color: '#7289DA' },
+            admin: { emoji: '⚙️', label: 'Admin & Config', title: '⚙️ Administration & Server Configuration', description: '`/setup` — One-click auto-setup\n`/serverconfig view/export/reset` — Master config dashboard\n`/module enable/disable/list` — Toggle feature modules\n`/maintenance enable/disable/status` — Maintenance mode\n`/clone export/import` — Config template transfer\n`/nightmode setup/toggle/status` — Quiet hours\n`/devmode stats/diagnostics/simulate` — Performance & health\n`/dm user/role` — Staff DM dispatcher', color: '#99AAB5' },
+            advanced: { emoji: '🚀', label: 'Advanced Features', title: '🚀 Advanced Suite Commands', description: '`/afk set/clear/status` — AFK status system\n`/birthday set/check/upcoming/channel` — Birthday tracker\n`/appeal submit/status/review/setup` — Unban/punishment appeals\n`/serverstat setup/update/disable` — Voice stat channels', color: '#9B59B6' },
+          };
+
+          const cat = helpCats[selected] || helpCats.overview;
+          const { EmbedBuilder: EB } = require('discord.js');
+
+          const catEmbed = new EB()
+            .setColor(cat.color)
+            .setTitle(cat.title)
+            .setDescription(cat.description)
+            .setFooter({ text: `THOR APEX v2.0 • ${Object.keys(helpCats).length - 1} categories • 80+ commands • Use the dropdown to navigate` })
+            .setTimestamp();
+
+          // Rebuild select menu with updated default
+          const { ActionRowBuilder: ARB, StringSelectMenuBuilder: SSMB } = require('discord.js');
+          const selectOpts = Object.entries(helpCats).map(([key, c]) => ({
+            label: c.label,
+            value: `help_${key}`,
+            description: c.title.replace(/^[^\s]+\s/, '').slice(0, 100),
+            emoji: c.emoji,
+            default: key === selected,
+          }));
+
+          const newSelectRow = new ARB().addComponents(
+            new SSMB()
+              .setCustomId('help_category_select')
+              .setPlaceholder('📖 Select a command category...')
+              .setMinValues(1)
+              .setMaxValues(1)
+              .addOptions(selectOpts)
+          );
+
+          return interaction.update({ embeds: [catEmbed], components: [newSelectRow] });
+        }
       }
 
       // ── Modal Submit Handlers ──
