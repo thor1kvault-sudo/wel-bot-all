@@ -117,11 +117,43 @@ function buildApplicationCommands() {
     // ── SECURITY & ANTI-NUKE ──
     new SlashCommandBuilder()
       .setName('security')
-      .setDescription('View server security status, audit info, or incidents')
+      .setDescription('Server security engine, anti-nuke, anti-mod, lockdown and diagnostics')
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
-      .addSubcommand(s => s.setName('status').setDescription('View security protection overview'))
+      .addSubcommand(s => s.setName('status').setDescription('View security protection overview, thresholds & recent incidents'))
+      .addSubcommand(s => s.setName('lockdown').setDescription('Engage emergency lockdown while preserving private & log channels'))
+      .addSubcommand(s => s.setName('unlock').setDescription('Lift emergency lockdown and restore saved permissions'))
+      .addSubcommand(s => s.setName('diagnostics').setDescription('View measured internal latency (p50/p95/p99) and engine metrics'))
       .addSubcommand(s => s.setName('audit').setDescription('View high-level security configuration health check'))
       .addSubcommand(s => s.setName('incidents').setDescription('View recent security incident history'))
+      .addSubcommand(s => s.setName('config').setDescription('Configure security engine enforcement, modules, and thresholds')
+        .addStringOption(o => o.setName('module').setDescription('Security module to configure').setRequired(true).addChoices(
+          { name: 'Anti-Nuke Protection', value: 'antinuke' },
+          { name: 'Anti-Mod Abuse Engine', value: 'antimod' },
+          { name: 'Anti-Raid Protection', value: 'antiraid' },
+          { name: 'Enforcement Action Policy', value: 'action' }
+        ))
+        .addStringOption(o => o.setName('toggle').setDescription('Enable or disable the module').setRequired(false).addChoices(
+          { name: 'Enable', value: 'enable' },
+          { name: 'Disable', value: 'disable' }
+        ))
+        .addStringOption(o => o.setName('action').setDescription('Enforcement action').setRequired(false).addChoices(
+          { name: 'Strip Roles & Instant Ban (Recommended)', value: 'strip_and_ban' },
+          { name: 'Strip Dangerous Roles Only (Safe)', value: 'strip_roles' },
+          { name: 'Instant Ban Only', value: 'ban' },
+          { name: 'Instant Kick', value: 'kick' },
+          { name: 'Quarantine Only', value: 'quarantine' },
+          { name: 'Alert Only (No Punishment)', value: 'alert' }
+        ))
+        .addIntegerOption(o => o.setName('threshold').setDescription('Action burst threshold limit (e.g. 3)').setRequired(false).setMinValue(1).setMaxValue(20))
+        .addIntegerOption(o => o.setName('window_seconds').setDescription('Time window in seconds (default: 15s)').setRequired(false).setMinValue(3).setMaxValue(120)))
+      .addSubcommand(s => s.setName('trust').setDescription('Manage trusted users/roles who bypass security enforcement')
+        .addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices(
+          { name: 'Add Trusted Entry', value: 'add' },
+          { name: 'Remove Trusted Entry', value: 'remove' },
+          { name: 'List Trusted Entries', value: 'list' }
+        ))
+        .addUserOption(o => o.setName('user').setDescription('User to trust/untrust').setRequired(false))
+        .addRoleOption(o => o.setName('role').setDescription('Role to trust/untrust').setRequired(false)))
       .addSubcommand(s => s.setName('test').setDescription('Test security alert dispatch path')),
 
     new SlashCommandBuilder()

@@ -192,46 +192,376 @@ async function dispatchCommand(interaction, context = {}) {
   // ─────────────────────────────────────────────────────────────
   // 2. SECURITY & ANTI-NUKE COMMANDS
   // ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // 2. SECURITY & ANTI-NUKE COMMANDS
+  // ─────────────────────────────────────────────────────────────
+
+  // Shared Emergency Lockdown Operation
+  const executeLockdownOperation = async (int, g, u, m) => {
+    const { engageEmergencyLockdown } = require('../security/backupRecovery');
+    const { isImmuneUser } = require('../security/securityEngine');
+    const isAuth = isImmuneUser(g, u.id) || m?.permissions?.has(PermissionsBitField.Flags.Administrator) || m?.permissions?.has(PermissionsBitField.Flags.ManageGuild);
+    if (!isAuth) {
+      return safeReply(int, { embeds: [
+        new EmbedBuilder()
+          .setColor('#ED4245')
+          .setTitle('🚫 Unauthorised')
+          .setDescription('You must be a server administrator or trusted user to engage server lockdown.')
+          .setTimestamp()
+      ] }, true);
+    }
+
+    if (!int.deferred && !int.replied) await int.deferReply({ ephemeral: true });
+    const res = await engageEmergencyLockdown(g, `${u.tag} (${u.id})`);
+
+    if (res.alreadyLocked) {
+      return int.editReply({ embeds: [
+        new EmbedBuilder()
+          .setColor('#FEE75C')
+          .setTitle('⚠️ Already Locked')
+          .setDescription('The server is already in lockdown. Use `/security unlock` to lift it first before re-engaging.')
+          .setTimestamp()
+      ] });
+    }
+    if (!res.success) {
+      return int.editReply({ embeds: [
+        new EmbedBuilder()
+          .setColor('#ED4245')
+          .setTitle('❌ Lockdown Failed')
+          .setDescription(`Could not engage lockdown: ${res.reason || 'Unknown error.'}`)
+          .setTimestamp()
+      ] });
+    }
+
+    try {
+      const lockEmbed = new EmbedBuilder()
+        .setColor('#ED4245')
+        .setTitle('🚨 Server Lockdown Engaged')
+        .setDescription(`Emergency server lockdown has been activated. All public text and voice channels have been restricted.`)
+        .addFields(
+          { name: '🔒 Channels Locked', value: `**${res.lockedChannels}**`, inline: true },
+          { name: '⏭️ Channels Skipped (Pre-locked/Private)', value: `**${res.skippedChannels || 0}**`, inline: true },
+          { name: '👤 Engaged By', value: `${u.tag} (\`${u.id}\`)`, inline: false },
+          { name: '⏱️ Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+        )
+        .setFooter({ text: 'THOR APEX Security Engine • Run /security unlock to lift' })
+        .setTimestamp();
+      await logSecurity(g, lockEmbed);
+    } catch (_) {}
+
+    return int.editReply({ embeds: [
+      new EmbedBuilder()
+        .setColor('#ED4245')
+        .setTitle('🚨 Server Lockdown Engaged')
+        .setDescription(`Server lockdown is **ACTIVE**. The original channel permissions have been saved and will be fully restored when you run \`/security unlock\`.`)
+        .addFields(
+          { name: '🔒 Channels Secured', value: `**${res.lockedChannels}**`, inline: true },
+          { name: '⏭️ Pre-locked / Private (Preserved)', value: `**${res.skippedChannels || 0}**`, inline: true }
+        )
+        .setFooter({ text: 'Original permissions snapshot saved • THOR APEX v2.0' })
+        .setTimestamp()
+    ] });
+  };
+
+  // Shared Emergency Unlock Operation
+  const executeUnlockOperation = async (int, g, u, m) => {
+    const { liftEmergencyLockdown } = require('../security/backupRecovery');
+    const { isImmuneUser } = require('../security/securityEngine');
+    const isAuth = isImmuneUser(g, u.id) || m?.permissions?.has(PermissionsBitField.Flags.Administrator) || m?.permissions?.has(PermissionsBitField.Flags.ManageGuild);
+    if (!isAuth) {
+      return safeReply(int, { embeds: [
+        new EmbedBuilder()
+          .setColor('#ED4245')
+          .setTitle('🚫 Unauthorised')
+          .setDescription('You must be a server administrator or trusted user to disable server lockdown.')
+          .setTimestamp()
+      ] }, true);
+    }
+
+    if (!int.deferred && !int.replied) await int.deferReply({ ephemeral: true });
+    const res = await liftEmergencyLockdown(g, `${u.tag} (${u.id})`);
+
+    if (res.notLocked) {
+      return int.editReply({ embeds: [
+        new EmbedBuilder()
+          .setColor('#5865F2')
+          .setTitle('ℹ️ Server Is Not Locked')
+          .setDescription('This server is not currently in lockdown. No action was taken.')
+          .setTimestamp()
+      ] });
+    }
+
+    if (res.noSnapshot) {
+      return int.editReply({ embeds: [
+        new EmbedBuilder()
+          .setColor('#ED4245')
+          .setTitle('❌ Cannot Safely Unlock')
+          .setDescription('No valid lockdown snapshot was found. Refusing to blindly overwrite existing channel permissions.\n\n> Re-engage lockdown with `/security lockdown` to create a valid snapshot, then unlock again.')
+          .setTimestamp()
+      ] });
+    }
+
+    if (!res.success && !res.notLocked && !res.noSnapshot) {
+      return int.editReply({ embeds: [
+        new EmbedBuilder()
+          .setColor('#ED4245')
+          .setTitle('❌ Unlock Failed')
+          .setDescription(`Could not lift lockdown: ${res.reason || 'Unknown error.'}`)
+          .setTimestamp()
+      ] });
+    }
+
+    try {
+      const liftEmbed = new EmbedBuilder()
+        .setColor(res.partial ? '#FEE75C' : '#57F287')
+        .setTitle(res.partial ? '⚠️ Lockdown Partially Lifted' : '🔓 Lockdown Fully Lifted')
+        .setDescription(`Emergency server lockdown has been ${res.partial ? 'partially' : 'fully'} disabled. Channel permissions restored from snapshot.`)
+        .addFields(
+          { name: '🔓 Channels Restored', value: `**${res.unlockedChannels}**`, inline: true },
+          { name: '❌ Channels Failed', value: `**${res.failedChannels?.length || 0}**`, inline: true },
+          { name: '👤 Lifted By', value: `${u.tag} (\`${u.id}\`)`, inline: false },
+          { name: '⏱️ Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+          ...(res.failedChannels?.length > 0 ? [{
+            name: '⚠️ Failed Channels',
+            value: res.failedChannels.slice(0, 10).map(f => `• <#${f.id}> — ${f.error}`).join('\n').substring(0, 1024),
+            inline: false,
+          }] : [])
+        )
+        .setFooter({ text: 'THOR APEX Security Engine' })
+        .setTimestamp();
+      await logSecurity(g, liftEmbed);
+    } catch (_) {}
+
+    if (res.partial) {
+      const failList = res.failedChannels.slice(0, 10)
+        .map(f => `• <#${f.id}> (\`${f.name}\`) — ${f.error}`)
+        .join('\n');
+      return int.editReply({ embeds: [
+        new EmbedBuilder()
+          .setColor('#FEE75C')
+          .setTitle('⚠️ Lockdown Partially Disabled')
+          .setDescription(`Restored **${res.unlockedChannels}** channels from the snapshot.\n**${res.failedChannels.length}** channel(s) could not be restored. Details have been saved — you can retry \`/security unlock\` to attempt the failed channels again.`)
+          .addFields({ name: 'Failed Channels', value: failList || 'See security logs', inline: false })
+          .setFooter({ text: 'Original permissions snapshot preserved for retry • THOR APEX v2.0' })
+          .setTimestamp()
+      ] });
+    }
+
+    return int.editReply({ embeds: [
+      new EmbedBuilder()
+        .setColor('#57F287')
+        .setTitle('🔓 Server Lockdown Disabled')
+        .setDescription(`Restored the saved channel permissions for **${res.unlockedChannels}** channel(s). The server is back to normal.`)
+        .setFooter({ text: 'Permissions fully restored from snapshot • THOR APEX v2.0' })
+        .setTimestamp()
+    ] });
+  };
+
   if (commandName === 'security') {
     const sub = interaction.options.getSubcommand(false) || 'status';
+
+    if (sub === 'lockdown') {
+      return executeLockdownOperation(interaction, guild, user, member);
+    }
+
+    if (sub === 'unlock') {
+      return executeUnlockOperation(interaction, guild, user, member);
+    }
+
     if (sub === 'status') {
       const s = config.security || {};
+      const t = s.thresholds || {};
+      const r = config.antiRaid || {};
       const embed = new EmbedBuilder()
         .setColor(s.lockdown ? '#ED4245' : '#57F287')
         .setTitle(`🛡️ Security Engine Status — ${guild.name}`)
-        .setDescription(`**Anti-Nuke Protection:** ${s.antiNuke ? '🟢 **ACTIVE**' : '🔴 **DISABLED**'}\n**Enforcement Action:** \`${s.action || 'strip_and_ban'}\`\n**Emergency Lockdown:** ${s.lockdown ? '🚨 **ENGAGED**' : '🟢 **NORMAL**'}\n**Trusted Users:** ${s.trustedUsers?.length || 0}\n**Trusted Roles:** ${s.trustedRoles?.length || 0}\n**Recent Incidents Intercepted:** ${config.incidents?.length || 0}`)
-        .setFooter({ text: 'High-speed event detection engine active' })
+        .setDescription(
+          `**Anti-Nuke Protection:** ${s.antiNuke !== false ? '🟢 **ACTIVE**' : '🔴 **DISABLED**'}\n` +
+          `**Anti-Mod Abuse Engine:** ${s.antiMod !== false ? '🟢 **ACTIVE**' : '🔴 **DISABLED**'}\n` +
+          `**Anti-Raid System:** ${r.enabled !== false ? '🟢 **ACTIVE**' : '🔴 **DISABLED**'}\n` +
+          `**Enforcement Action:** \`${s.action || 'strip_and_ban'}\`\n` +
+          `**Emergency Lockdown:** ${s.lockdown ? '🚨 **ENGAGED**' : '🟢 **NORMAL**'}\n` +
+          `**Quarantined Members:** **${getQuarantinedCount(guild.id)}**\n` +
+          `**Trusted Users:** ${s.trustedUsers?.length || 0} | **Trusted Roles:** ${s.trustedRoles?.length || 0}\n` +
+          `**Recent Incidents:** ${config.incidents?.length || 0}`
+        )
+        .addFields(
+          {
+            name: '⚙️ Active Thresholds (Limits / Window)',
+            value:
+              `• Channel Delete: ${t.channelDelete?.limit || 2} in ${(t.channelDelete?.windowMs || 15000)/1000}s\n` +
+              `• Channel Create: ${t.channelCreate?.limit || 4} in ${(t.channelCreate?.windowMs || 15000)/1000}s\n` +
+              `• Role Delete: ${t.roleDelete?.limit || 2} in ${(t.roleDelete?.windowMs || 15000)/1000}s\n` +
+              `• Role Create: ${t.roleCreate?.limit || 4} in ${(t.roleCreate?.windowMs || 15000)/1000}s\n` +
+              `• Member Ban: ${t.memberBan?.limit || 3} in ${(t.memberBan?.windowMs || 15000)/1000}s\n` +
+              `• Member Kick: ${t.memberKick?.limit || 3} in ${(t.memberKick?.windowMs || 15000)/1000}s\n` +
+              `• Bot Add: ${t.botAdd?.limit || 1} in ${(t.botAdd?.windowMs || 15000)/1000}s`,
+            inline: false,
+          }
+        )
+        .setFooter({ text: 'High-speed event detection engine active • THOR APEX v2.0' })
         .setTimestamp();
       return safeReply(interaction, { embeds: [embed] });
     }
+
+    if (sub === 'diagnostics') {
+      const { getLatencyMetrics } = require('../security/securityEngine');
+      const metrics = getLatencyMetrics();
+      const me = guild.members.me;
+      const memUsage = process.memoryUsage();
+      const rssMB = Math.round(memUsage.rss / 1024 / 1024);
+      const heapMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+      const pingMs = Math.round(client?.ws?.ping || 0);
+      const uptimeSec = Math.floor(process.uptime());
+
+      const fmtMetric = (m) => {
+        if (m.count === 0) return 'No events recorded yet';
+        return `p50: **${m.p50}ms** | p95: **${m.p95}ms** | p99: **${m.p99}ms**\n(Min: ${m.min}ms, Max: ${m.max}ms, Avg: ${m.avg}ms • ${m.count} samples)`;
+      };
+
+      const diagEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`⚡ Security Pipeline Diagnostics — ${guild.name}`)
+        .setDescription(
+          `**System Health & Performance:**\n` +
+          `• Discord WebSocket Ping: **${pingMs}ms**\n` +
+          `• Process Memory: **${rssMB} MB** RSS (**${heapMB} MB** Heap)\n` +
+          `• Process Uptime: **${formatDuration(uptimeSec)}**\n` +
+          `• Node.js Version: \`${process.version}\`\n\n` +
+          `**Internal Processing Latency (process.hrtime.bigint()):**\n` +
+          `> *Internal processing duration only. Network gateway delivery and Discord API rate limits are outside the bot's control.*\n\n` +
+          `**1. Threat Detection & Classification (Gateway ➔ Decision):**\n${fmtMetric(metrics.detect)}\n\n` +
+          `**2. Containment Execution (API Request ➔ API Response):**\n${fmtMetric(metrics.contain)}\n\n` +
+          `**3. Total Event Processing (Gateway ➔ Containment Complete):**\n${fmtMetric(metrics.total)}`
+        )
+        .addFields(
+          {
+            name: '🛡️ Bot Permission Posture',
+            value:
+              `• Administrator: ${me?.permissions?.has(PermissionsBitField.Flags.Administrator) ? '✅ Present' : '⚠️ Missing (Recommended)'}\n` +
+              `• View Audit Log: ${me?.permissions?.has(PermissionsBitField.Flags.ViewAuditLog) ? '✅ Present' : '❌ Missing'}\n` +
+              `• Manage Roles: ${me?.permissions?.has(PermissionsBitField.Flags.ManageRoles) ? '✅ Present' : '❌ Missing'}\n` +
+              `• Ban Members: ${me?.permissions?.has(PermissionsBitField.Flags.BanMembers) ? '✅ Present' : '❌ Missing'}\n` +
+              `• Manage Channels: ${me?.permissions?.has(PermissionsBitField.Flags.ManageChannels) ? '✅ Present' : '❌ Missing'}`,
+            inline: false,
+          }
+        )
+        .setFooter({ text: 'Monotonic High-Resolution Telemetry • THOR APEX Security Engine' })
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [diagEmbed] });
+    }
+
+    if (sub === 'config') {
+      const { isImmuneUser } = require('../security/securityEngine');
+      if (!isImmuneUser(guild, user.id) && !member?.permissions?.has(PermissionsBitField.Flags.Administrator)) {
+        return safeReply(interaction, '❌ Only administrators can configure security settings.', true);
+      }
+
+      const mod = interaction.options.getString('module', true);
+      const toggle = interaction.options.getString('toggle');
+      const action = interaction.options.getString('action');
+      const threshold = interaction.options.getInteger('threshold');
+      const winSec = interaction.options.getInteger('window_seconds');
+
+      if (!config.security) config.security = {};
+
+      if (mod === 'antinuke') {
+        if (toggle) config.security.antiNuke = toggle === 'enable';
+        if (action) config.security.action = action;
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `🛡️ **Anti-Nuke Configuration Updated!** Status: **${config.security.antiNuke ? '🟢 Enabled' : '🔴 Disabled'}** | Action: \`${config.security.action || 'strip_and_ban'}\`.`);
+      }
+
+      if (mod === 'antimod') {
+        if (toggle) config.security.antiMod = toggle === 'enable';
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `🛡️ **Anti-Mod Abuse Engine Updated!** Status: **${config.security.antiMod ? '🟢 Enabled' : '🔴 Disabled'}**.`);
+      }
+
+      if (mod === 'antiraid') {
+        if (!config.antiRaid) config.antiRaid = {};
+        if (toggle) config.antiRaid.enabled = toggle === 'enable';
+        if (threshold) config.antiRaid.joinThreshold = threshold;
+        if (winSec) config.antiRaid.joinWindowMs = winSec * 1000;
+        if (action) config.antiRaid.action = action;
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `🛡️ **Anti-Raid Configuration Updated!** Status: **${config.antiRaid.enabled ? '🟢 Enabled' : '🔴 Disabled'}** | Threshold: **${config.antiRaid.joinThreshold || 5} joins** in **${(config.antiRaid.joinWindowMs || 10000)/1000}s** | Action: \`${config.antiRaid.action || 'quarantine'}\`.`);
+      }
+
+      if (mod === 'action') {
+        if (action) config.security.action = action;
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `🛡️ Master security enforcement action set to **${(config.security.action || 'strip_and_ban').toUpperCase()}**.`);
+      }
+    }
+
+    if (sub === 'trust') {
+      const { isImmuneUser } = require('../security/securityEngine');
+      if (!isImmuneUser(guild, user.id) && !member?.permissions?.has(PermissionsBitField.Flags.Administrator)) {
+        return safeReply(interaction, '❌ Only administrators can manage trusted exemptions.', true);
+      }
+
+      const action = interaction.options.getString('action', true);
+      const targetUser = interaction.options.getUser('user');
+      const targetRole = interaction.options.getRole('role');
+      if (!config.security.trustedUsers) config.security.trustedUsers = [];
+      if (!config.security.trustedRoles) config.security.trustedRoles = [];
+
+      if (action === 'add') {
+        if (targetUser && !config.security.trustedUsers.includes(targetUser.id)) config.security.trustedUsers.push(targetUser.id);
+        if (targetRole && !config.security.trustedRoles.includes(targetRole.id)) config.security.trustedRoles.push(targetRole.id);
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `✅ Trusted security entry added.`);
+      }
+      if (action === 'remove') {
+        if (targetUser) config.security.trustedUsers = config.security.trustedUsers.filter(id => id !== targetUser.id);
+        if (targetRole) config.security.trustedRoles = config.security.trustedRoles.filter(id => id !== targetRole.id);
+        saveGuildConfig(guild.id, config);
+        return safeReply(interaction, `❌ Trusted security entry removed.`);
+      }
+      if (action === 'list') {
+        const uList = config.security.trustedUsers.map(id => `<@${id}>`).join(', ') || 'None';
+        const rList = config.security.trustedRoles.map(id => `<@&${id}>`).join(', ') || 'None';
+        return safeReply(interaction, `🛡️ **Trusted Users:** ${uList}\n🛡️ **Trusted Roles:** ${rList}`);
+      }
+    }
+
     if (sub === 'audit') {
       const me = guild.members.me;
       const auditEmbed = new EmbedBuilder()
         .setColor('#5865F2')
         .setTitle(`🔍 Security Audit — ${guild.name}`)
-        .setDescription(`**Bot Highest Role Position:** ${me?.roles?.highest?.position}\n**Server Owner:** <@${guild.ownerId}>\n**Has Administrator:** ${me?.permissions?.has(PermissionsBitField.Flags.Administrator) ? '✅ Yes' : '⚠️ No (Admin recommended for instant containment)'}\n**Has View Audit Log:** ${me?.permissions?.has(PermissionsBitField.Flags.ViewAuditLog) ? '✅ Yes' : '❌ Missing'}\n**Has Ban Members:** ${me?.permissions?.has(PermissionsBitField.Flags.BanMembers) ? '✅ Yes' : '❌ Missing'}\n**Has Manage Roles:** ${me?.permissions?.has(PermissionsBitField.Flags.ManageRoles) ? '✅ Yes' : '❌ Missing'}`)
+        .setDescription(`**Bot Highest Role Position:** ${me?.roles?.highest?.position}\n**Server Owner:** <@${guild.ownerId}>\n**Has Administrator:** ${me?.permissions?.has(PermissionsBitField.Flags.Administrator) ? '✅ Yes' : '⚠️ No (Admin recommended for instant containment)'}\n**Has View Audit Log:** ${me?.permissions?.has(PermissionsBitField.Flags.ViewAuditLog) ? '✅ Yes' : '❌ Missing'}\n**Has Ban Members:** ${me?.permissions?.has(PermissionsBitField.Flags.BanMembers) ? '✅ Yes' : '❌ Missing'}\n**Has Manage Roles:** ${me?.permissions?.has(PermissionsBitField.Flags.ManageRoles) ? '✅ Yes' : '❌ Missing'}\n**Has Manage Channels:** ${me?.permissions?.has(PermissionsBitField.Flags.ManageChannels) ? '✅ Yes' : '❌ Missing'}`)
         .setTimestamp();
       return safeReply(interaction, { embeds: [auditEmbed] });
     }
+
     if (sub === 'incidents') {
       const incs = config.incidents || [];
       if (incs.length === 0) return safeReply(interaction, '🛡️ No recent security incidents recorded.');
-      const list = incs.slice(0, 10).map(inc => `• **${inc.action}** by \`${inc.actorTag}\` ➔ **${inc.result}** (${inc.latencyMs}ms latency) [<t:${Math.floor(inc.timestamp / 1000)}:R>]`).join('\n');
+      const list = incs.slice(0, 10).map(inc => `• **${inc.action}** by \`${inc.actorTag}\` ➔ **${inc.result}** (${inc.totalLatencyMs || inc.latencyMs || 0}ms latency • ${inc.attribution || 'verified'}) [<t:${Math.floor(inc.timestamp / 1000)}:R>]`).join('\n');
       const embed = new EmbedBuilder()
         .setColor('#ED4245')
-        .setTitle('🚨 Recent Anti-Nuke Intercepts')
+        .setTitle('🚨 Recent Security Intercepts')
         .setDescription(list)
         .setFooter({ text: `Showing last ${Math.min(10, incs.length)} of ${incs.length} incidents` })
         .setTimestamp();
       return safeReply(interaction, { embeds: [embed] });
     }
+
     if (sub === 'test') {
-      return safeReply(interaction, '✅ Security alert dispatch path tested successfully. Sub-second interception active.');
+      return safeReply(interaction, '✅ Security alert dispatch path tested successfully. Sub-millisecond local classification active.');
     }
   }
 
   if (commandName === 'antinuke') {
     const sub = interaction.options.getSubcommand();
+    if (sub === 'lockdown') {
+      return executeLockdownOperation(interaction, guild, user, member);
+    }
+    if (sub === 'unlock') {
+      return executeUnlockOperation(interaction, guild, user, member);
+    }
     if (sub === 'enable') {
       config.security.antiNuke = true; saveGuildConfig(guild.id, config);
       return safeReply(interaction, '🛡️ **Anti-Nuke Protection ENABLED!** All channels, roles, and administrative activity are guarded.');
@@ -296,166 +626,6 @@ async function dispatchCommand(interaction, context = {}) {
         const rList = config.security.trustedRoles.map(id => `<@&${id}>`).join(', ') || 'None';
         return safeReply(interaction, `🛡️ **Trusted Users:** ${uList}\n🛡️ **Trusted Roles:** ${rList}`);
       }
-    }
-    if (sub === 'lockdown') {
-      const { engageEmergencyLockdown } = require('../security/backupRecovery');
-      const { isImmuneUser } = require('../security/securityEngine');
-      // Only server owner, bot owner, or trusted users may engage lockdown
-      if (!isImmuneUser(guild, user.id) && !member?.permissions?.has(PermissionsBitField.Flags.Administrator)) {
-        return safeReply(interaction, { embeds: [
-          new EmbedBuilder()
-            .setColor('#ED4245')
-            .setTitle('🚫 Unauthorised')
-            .setDescription('You must be a server administrator or trusted user to engage server lockdown.')
-            .setTimestamp()
-        ] }, true);
-      }
-      await interaction.deferReply({ ephemeral: true });
-      const res = await engageEmergencyLockdown(guild, `${user.tag} (${user.id})`);
-
-      if (res.alreadyLocked) {
-        return interaction.editReply({ embeds: [
-          new EmbedBuilder()
-            .setColor('#FEE75C')
-            .setTitle('⚠️ Already Locked')
-            .setDescription('The server is already in lockdown. Use `/security unlock` to lift it first before re-engaging.')
-            .setTimestamp()
-        ] });
-      }
-      if (!res.success) {
-        return interaction.editReply({ embeds: [
-          new EmbedBuilder()
-            .setColor('#ED4245')
-            .setTitle('❌ Lockdown Failed')
-            .setDescription(`Could not engage lockdown: ${res.reason || 'Unknown error.'}`)
-            .setTimestamp()
-        ] });
-      }
-
-      // Log to security channel
-      try {
-        const lockEmbed = new EmbedBuilder()
-          .setColor('#ED4245')
-          .setTitle('🚨 Server Lockdown Engaged')
-          .setDescription(`Emergency server lockdown has been activated. All text and voice channels have been restricted.`)
-          .addFields(
-            { name: '🔒 Channels Locked', value: `**${res.lockedChannels}**`, inline: true },
-            { name: '⏭️ Channels Skipped (Pre-locked)', value: `**${res.skippedChannels || 0}**`, inline: true },
-            { name: '👤 Engaged By', value: `${user.tag} (\`${user.id}\`)`, inline: false },
-            { name: '⏱️ Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
-          )
-          .setFooter({ text: 'THOR APEX Security Engine • Use /security unlock to lift' })
-          .setTimestamp();
-        await logSecurity(guild, lockEmbed);
-      } catch (_) {}
-
-      return interaction.editReply({ embeds: [
-        new EmbedBuilder()
-          .setColor('#ED4245')
-          .setTitle('🚨 Server Lockdown Engaged')
-          .setDescription(`Server lockdown is **ACTIVE**. The original channel permissions have been saved and will be fully restored when you run \`/security unlock\`.`)
-          .addFields(
-            { name: '🔒 Channels Secured', value: `**${res.lockedChannels}**`, inline: true },
-            { name: '⏭️ Pre-locked (Skipped)', value: `**${res.skippedChannels || 0}**`, inline: true }
-          )
-          .setFooter({ text: 'Original permissions snapshot saved • THOR APEX v2.0' })
-          .setTimestamp()
-      ] });
-    }
-    if (sub === 'unlock') {
-      const { liftEmergencyLockdown } = require('../security/backupRecovery');
-      const { isImmuneUser } = require('../security/securityEngine');
-      // Only server owner, bot owner, or trusted users / administrators may lift lockdown
-      if (!isImmuneUser(guild, user.id) && !member?.permissions?.has(PermissionsBitField.Flags.Administrator)) {
-        return safeReply(interaction, { embeds: [
-          new EmbedBuilder()
-            .setColor('#ED4245')
-            .setTitle('🚫 Unauthorised')
-            .setDescription('You must be a server administrator or trusted user to disable server lockdown.')
-            .setTimestamp()
-        ] }, true);
-      }
-      await interaction.deferReply({ ephemeral: true });
-      const res = await liftEmergencyLockdown(guild, `${user.tag} (${user.id})`);
-
-      // Not in lockdown
-      if (res.notLocked) {
-        return interaction.editReply({ embeds: [
-          new EmbedBuilder()
-            .setColor('#5865F2')
-            .setTitle('ℹ️ Server Is Not Locked')
-            .setDescription('This server is not currently in lockdown. No action was taken.')
-            .setTimestamp()
-        ] });
-      }
-
-      // No valid snapshot
-      if (res.noSnapshot) {
-        return interaction.editReply({ embeds: [
-          new EmbedBuilder()
-            .setColor('#ED4245')
-            .setTitle('❌ Cannot Safely Unlock')
-            .setDescription('No valid lockdown snapshot was found. Refusing to blindly overwrite existing channel permissions.\n\n> Re-engage lockdown with `/security lockdown` to create a valid snapshot, then unlock again.')
-            .setTimestamp()
-        ] });
-      }
-
-      // Bot permission error
-      if (!res.success && !res.notLocked && !res.noSnapshot) {
-        return interaction.editReply({ embeds: [
-          new EmbedBuilder()
-            .setColor('#ED4245')
-            .setTitle('❌ Unlock Failed')
-            .setDescription(`Could not lift lockdown: ${res.reason || 'Unknown error.'}`)
-            .setTimestamp()
-        ] });
-      }
-
-      // Log to security channel
-      try {
-        const liftEmbed = new EmbedBuilder()
-          .setColor(res.partial ? '#FEE75C' : '#57F287')
-          .setTitle(res.partial ? '⚠️ Lockdown Partially Lifted' : '🔓 Lockdown Fully Lifted')
-          .setDescription(`Emergency server lockdown has been ${res.partial ? 'partially' : 'fully'} disabled. Channel permissions restored from snapshot.`)
-          .addFields(
-            { name: '🔓 Channels Restored', value: `**${res.unlockedChannels}**`, inline: true },
-            { name: '❌ Channels Failed', value: `**${res.failedChannels?.length || 0}**`, inline: true },
-            { name: '👤 Lifted By', value: `${user.tag} (\`${user.id}\`)`, inline: false },
-            { name: '⏱️ Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
-            ...(res.failedChannels?.length > 0 ? [{
-              name: '⚠️ Failed Channels',
-              value: res.failedChannels.slice(0, 10).map(f => `• <#${f.id}> — ${f.error}`).join('\n').substring(0, 1024),
-              inline: false,
-            }] : [])
-          )
-          .setFooter({ text: 'THOR APEX Security Engine' })
-          .setTimestamp();
-        await logSecurity(guild, liftEmbed);
-      } catch (_) {}
-
-      if (res.partial) {
-        const failList = res.failedChannels.slice(0, 10)
-          .map(f => `• <#${f.id}> (\`${f.name}\`) — ${f.error}`)
-          .join('\n');
-        return interaction.editReply({ embeds: [
-          new EmbedBuilder()
-            .setColor('#FEE75C')
-            .setTitle('⚠️ Lockdown Partially Disabled')
-            .setDescription(`Restored **${res.unlockedChannels}** channels from the snapshot.\n**${res.failedChannels.length}** channel(s) could not be restored. Details have been saved — you can retry \`/security unlock\` to attempt the failed channels again.`)
-            .addFields({ name: 'Failed Channels', value: failList || 'See security logs', inline: false })
-            .setFooter({ text: 'Original permissions snapshot preserved for retry • THOR APEX v2.0' })
-            .setTimestamp()
-        ] });
-      }
-
-      return interaction.editReply({ embeds: [
-        new EmbedBuilder()
-          .setColor('#57F287')
-          .setTitle('🔓 Server Lockdown Disabled')
-          .setDescription(`Restored the saved channel permissions for **${res.unlockedChannels}** channel(s). The server is back to normal.`)
-          .setFooter({ text: 'Permissions fully restored from snapshot • THOR APEX v2.0' })
-          .setTimestamp()
-      ] });
     }
   }
 
@@ -3237,12 +3407,15 @@ async function dispatchCommand(interaction, context = {}) {
     }
 
     if (sub === 'list') {
-      if (config.integrations.length === 0) return safeReply(interaction, '📡 No external integrations configured yet.');
-      const list = config.integrations.map((it, i) => `${i + 1}. **[${it.type.toUpperCase()}]** \`${it.id}\` ➜ <#${it.channelId}>`).join('\n');
+      if (!config.integrations || config.integrations.length === 0) return safeReply(interaction, '📡 No external integrations configured yet.');
+      const entries = config.integrations.slice(-20);
+      let list = entries.map((it, i) => `${i + 1}. **[${it.type?.toUpperCase() || 'FEED'}]** \`${it.id}\` ➜ <#${it.channelId}>`).join('\n');
+      if (list.length > 4000) list = list.slice(0, 3990) + '...';
       const embed = new EmbedBuilder()
         .setColor('#5865F2')
         .setTitle(`📡 External Integrations — ${guild.name}`)
-        .setDescription(list)
+        .setDescription(list || '*No active integrations*')
+        .setFooter({ text: `${config.integrations.length} total integration(s)` })
         .setTimestamp();
       return safeReply(interaction, { embeds: [embed] });
     }

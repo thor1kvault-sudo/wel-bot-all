@@ -608,7 +608,18 @@ async function startBot() {
       if (!newMember.guild) return;
       const guild = newMember.guild;
 
-      // Detect role additions
+      // 1. Detect timeout addition (Anti-Mod Mass Timeout check)
+      const timedOut = (!oldMember.isCommunicationDisabled || !oldMember.isCommunicationDisabled()) && (newMember.isCommunicationDisabled && newMember.isCommunicationDisabled());
+      if (timedOut) {
+        const { handleModerationAction, MOD_ACTION_KEYS } = require('./src/security/antiMod');
+        const { resolveAuditActorRobust } = require('./src/security/securityEngine');
+        const modActor = await resolveAuditActorRobust(guild, AuditLogEvent.MemberUpdate, newMember.id);
+        if (modActor) {
+          await handleModerationAction(guild, modActor, MOD_ACTION_KEYS.TIMEOUT, 'Timeout', `<@${newMember.id}>`);
+        }
+      }
+
+      // 2. Detect role additions
       const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
       if (addedRoles.size > 0) {
         const dangerousFlags = [
@@ -619,10 +630,16 @@ async function startBot() {
           PermissionsBitField.Flags.BanMembers,
         ];
 
-        const hasDangerousRole = addedRoles.some(r => dangerousFlags.some(f => r.permissions.has(f)));
+        const hasDangerousRole = addedRoles.some(r => dangerousFlags.some(f => r.permissions?.has(f)));
         if (hasDangerousRole) {
           // Check audit log for role grant actor
           await handleAntiNukeEvent(guild, AuditLogEvent.MemberRoleUpdate, 'dangerousPermGrant', `Dangerous Administrative Role Assigned to (${newMember.user.tag})`, newMember.id);
+          const { handleModerationAction, MOD_ACTION_KEYS } = require('./src/security/antiMod');
+          const { resolveAuditActorRobust } = require('./src/security/securityEngine');
+          const modActor = await resolveAuditActorRobust(guild, AuditLogEvent.MemberRoleUpdate, newMember.id);
+          if (modActor) {
+            await handleModerationAction(guild, modActor, MOD_ACTION_KEYS.ROLE_GRANT, 'Dangerous Role Grant', `<@${newMember.id}>`);
+          }
         }
       }
     } catch (_) {}

@@ -6,6 +6,7 @@ const {
   isImmuneUser,
   resolveAuditActorRobust,
   executeContainment,
+  processSecurityPipelineEvent,
 } = require('./securityEngine');
 
 /**
@@ -42,34 +43,24 @@ async function executeEnforcement(guild, actor, actionName, detectionDetails) {
 
 /**
  * Primary Anti-Nuke Event Handler called by Discord Gateway events.
+ * Dispatches through the Ultra-Fast Security Pipeline for sub-millisecond local classification,
+ * idempotency, decoupled attribution, and thread-safe containment.
  */
-async function handleAntiNukeEvent(guild, auditLogType, actionKey, actionLabel, targetId = null) {
+async function handleAntiNukeEvent(guild, auditLogType, actionKey, actionLabel, targetId = null, actor = null) {
   if (!guild) return false;
   const config = getGuildConfig(guild.id, guild.name);
   if (!config.security?.antiNuke) return false;
 
-  // Resolve actor from audit log with retries and target matching
-  const executor = await resolveAuditActor(guild, auditLogType, targetId);
-  if (!executor) {
-    // If actor is unknown or audit log delayed, do not punish random users
-    return false;
-  }
+  const result = await processSecurityPipelineEvent({
+    guild,
+    auditLogType,
+    actionKey,
+    actionLabel,
+    targetId,
+    actor,
+  });
 
-  // Check trusted exemptions
-  if (isTrustedUser(guild, executor.id)) {
-    return false;
-  }
-
-  // Rate tracking & threshold check
-  const check = recordAndCheckThreshold(guild.id, executor.id, actionKey);
-  if (!check.triggered) {
-    console.log(redactSecrets(`[Anti-Nuke Monitor] ${executor.tag || executor.id} performed ${actionLabel} (${check.count}/${check.limit}) in ${guild.name}`));
-    return false;
-  }
-
-  // Trigger punishment with concurrency lock
-  await executeEnforcement(guild, executor, actionLabel, check);
-  return true;
+  return result.contained || false;
 }
 
 module.exports = {
