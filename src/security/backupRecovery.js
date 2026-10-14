@@ -6,31 +6,31 @@ const { getGuildConfig, saveGuildConfigAsync } = require('../config/guildConfig'
  *
  * Capabilities:
  * - Creates complete non-destructive snapshots of channels, permissions, and roles
- * - Safe emergency lockdown that preserves the full original @everyone overwrite per-channel
- * - Full restoration engine: restores exactly what was changed — never blindly grants permissions
+ * - Safe emergency lockdown that preserves the full original permission overwrites
+ * - Skips channels that are already hidden (ViewChannel denied) to avoid breaking
+ *   private channels, SERVER LOGS channels, and category-inherited privacy
+ * - Full restoration engine: restores the exact full overwrite bitfield atomically
  * - Partial-failure tracking so admins can see which channels failed and retry
  * - Concurrency lock: prevents simultaneous lockdown/unlock from corrupting state
  * - Persists lockdown state (including who engaged it and when) across bot restarts
  * - NEVER claims deleted messages can be recovered (honoring Discord API limitations)
- * - Excludes any secrets, webhooks tokens, or bot credentials
+ * - Excludes any secrets, webhook tokens, or bot credentials
  */
 
 // Concurrency locks per guild: Map<guildId, Promise>
 const lockdownLocks = new Map();
 
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Acquires a per-guild lock before modifying lockdown state.
- * Returns a release function.
+ * Returns a release function. Callers MUST call release() in a finally block.
  */
 async function acquireLock(guildId) {
   if (lockdownLocks.has(guildId)) {
-    try {
-      await lockdownLocks.get(guildId);
-    } catch (_) {}
+    try { await lockdownLocks.get(guildId); } catch (_) {}
   }
   let releaseLock;
   const lockPromise = new Promise(r => { releaseLock = r; });
@@ -42,21 +42,65 @@ async function acquireLock(guildId) {
 }
 
 /**
- * Serialises a PermissionOverwrite cache entry into a plain object for persistence.
- * Stores allow/deny as BigInt strings so they survive JSON round-trips correctly.
+ * Serialises ALL flags from a PermissionOverwrite cache entry into a plain
+ * object suitable for JSON persistence.
+ * Stores allow/deny as decimal BigInt strings so they survive JSON round-trips.
  */
 function serialiseOverwrite(ov) {
   return {
     id: ov.id,
-    type: ov.type,              // 0 = role, 1 = member
+    type: ov.type,   // 0 = role overwrite, 1 = member overwrite
     allow: (ov.allow?.bitfield ?? 0n).toString(),
-    deny: (ov.deny?.bitfield ?? 0n).toString(),
+    deny:  (ov.deny?.bitfield  ?? 0n).toString(),
   };
 }
 
-// ─────────────────────────────────────────────────────────────
+/**
+ * Returns true if @everyone is explicitly denied ViewChannel on this channel.
+ */
+function isExplicitlyHidden(ch, everyoneId) {
+  const ow = ch.permissionOverwrites?.cache?.get?.(everyoneId);
+  if (!ow) return false;
+  const denyBit = ow.deny?.bitfield ?? 0n;
+  return (denyBit & PermissionsBitField.Flags.ViewChannel) !== 0n;
+}
+
+/**
+ * Returns true if @everyone is denied ViewChannel via the channel's parent
+ * category — i.e. the channel inherits its invisibility from the category.
+ *
+ * This is the mechanism behind SERVER LOGS channels (and any other private
+ * category): the individual channel has no @everyone overwrite, but the
+ * parent category has ViewChannel denied. If we were to create a new
+ * per-channel overwrite, the category inheritance would be broken.
+ */
+function isCategoryHidden(ch, guild, everyoneId) {
+  if (!ch.parentId) return false;
+  const category = guild.channels.cache.get(ch.parentId);
+  if (!category) return false;
+  const catOW = category.permissionOverwrites?.cache?.get?.(everyoneId);
+  if (!catOW) return false;
+  const denyBit = catOW.deny?.bitfield ?? 0n;
+  return (denyBit & PermissionsBitField.Flags.ViewChannel) !== 0n;
+}
+
+/**
+ * Returns true if the channel should be skipped during lockdown because
+ * @everyone cannot see it — either via an explicit per-channel overwrite or
+ * via an inherited category overwrite.
+ *
+ * We must never touch hidden channels during lockdown because:
+ * 1. They don't need to be restricted (members can't see them anyway).
+ * 2. Creating or editing their @everyone overwrite can break category
+ *    inheritance and make them accidentally visible.
+ */
+function isChannelHiddenFromEveryone(ch, guild, everyoneId) {
+  return isExplicitlyHidden(ch, everyoneId) || isCategoryHidden(ch, guild, everyoneId);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public API
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Takes a non-destructive snapshot of the guild channel and role topology.
@@ -74,23 +118,23 @@ function createGuildSnapshot(guild) {
       if (ch.permissionOverwrites?.cache) {
         for (const [, ov] of ch.permissionOverwrites.cache) {
           overwrites.push({
-            id: ov.id,
-            type: ov.type,
-            allow: ov.allow?.bitfield?.toString() || '0',
-            deny: ov.deny?.bitfield?.toString() || '0',
+            id:    ov.id,
+            type:  ov.type,
+            allow: (ov.allow?.bitfield ?? 0n).toString(),
+            deny:  (ov.deny?.bitfield  ?? 0n).toString(),
           });
         }
       }
 
       channels.push({
-        id: ch.id,
-        name: ch.name,
-        type: ch.type,
-        parentId: ch.parentId || null,
-        position: ch.position,
-        topic: ch.topic || '',
-        nsfw: !!ch.nsfw,
-        rateLimitPerUser: ch.rateLimitPerUser || 0,
+        id:                  ch.id,
+        name:                ch.name,
+        type:                ch.type,
+        parentId:            ch.parentId || null,
+        position:            ch.position,
+        topic:               ch.topic || '',
+        nsfw:                !!ch.nsfw,
+        rateLimitPerUser:    ch.rateLimitPerUser || 0,
         permissionOverwrites: overwrites,
       });
     }
@@ -101,11 +145,11 @@ function createGuildSnapshot(guild) {
     for (const [, r] of guild.roles.cache) {
       if (!r || r.managed || r.id === guild.roles.everyone?.id) continue;
       roles.push({
-        id: r.id,
-        name: r.name,
-        color: r.color,
-        hoist: r.hoist,
-        position: r.position,
+        id:          r.id,
+        name:        r.name,
+        color:       r.color,
+        hoist:       r.hoist,
+        position:    r.position,
         permissions: r.permissions.bitfield.toString(),
         mentionable: r.mentionable,
       });
@@ -113,11 +157,11 @@ function createGuildSnapshot(guild) {
   }
 
   return {
-    guildId: guild.id,
-    guildName: guild.name,
-    timestamp: Date.now(),
+    guildId:      guild.id,
+    guildName:    guild.name,
+    timestamp:    Date.now(),
     channelCount: channels.length,
-    roleCount: roles.length,
+    roleCount:    roles.length,
     channels,
     roles,
   };
@@ -126,23 +170,35 @@ function createGuildSnapshot(guild) {
 /**
  * Performs emergency server lockdown.
  *
- * For every applicable text/voice/stage channel that does NOT already have
- * SendMessages (or Connect for voice) explicitly denied for @everyone, we:
- *   1. Save the FULL current @everyone overwrite (all flags) as the snapshot.
- *   2. Apply the lockdown deny: SendMessages, AddReactions,
- *      CreatePublicThreads, CreatePrivateThreads, Connect (voice).
+ * SAFETY RULES (applied for every channel before touching it):
  *
- * Channels where @everyone already has SendMessages/Connect denied are
- * skipped — they are NOT added to the snapshot so unlock won't touch them.
+ *   SKIP if the channel is hidden from @everyone (ViewChannel denied
+ *   explicitly on the channel, or denied on the parent category).
+ *   ↳ This protects private channels, staff channels, and SERVER LOGS.
  *
- * Persists: config.security.lockdown = true
- *           config.security.lockdownEngagedAt   = timestamp
- *           config.security.lockdownEngagedBy   = "tag (id)"
- *           config.security.preLockdownSnapshot = { [channelId]: { allow, deny } }
+ *   SKIP if @everyone already has SendMessages (text) or Connect (voice)
+ *   explicitly denied — the channel is already effectively locked.
  *
- * @returns {{ success: boolean, lockedChannels: number, skippedChannels: number, reason?: string }}
+ * For channels that pass both checks:
+ *   1. Snapshot the COMPLETE current @everyone overwrite (all allow/deny bits).
+ *      If no explicit overwrite exists, record allow=0 / deny=0.
+ *   2. Edit only the lockdown-specific bits:
+ *      Text → deny SendMessages, AddReactions, CreatePublicThreads, CreatePrivateThreads
+ *      Voice → deny Connect
+ *
+ * State persisted on success:
+ *   config.security.lockdown            = true
+ *   config.security.lockdownEngagedAt   = timestamp (ms)
+ *   config.security.lockdownEngagedBy   = "Tag (id)" label
+ *   config.security.preLockdownSnapshot = { [channelId]: { id, type, allow, deny } }
+ *
+ * @returns {{ success, lockedChannels, skippedChannels, reason?, alreadyLocked? }}
  */
-async function engageEmergencyLockdown(guild, engagedByLabel = 'System', reason = 'Emergency Security Lockdown') {
+async function engageEmergencyLockdown(
+  guild,
+  engagedByLabel = 'System',
+  reason = 'Emergency Security Lockdown',
+) {
   if (!guild) return { success: false, reason: 'Invalid guild' };
 
   const release = await acquireLock(guild.id);
@@ -155,7 +211,7 @@ async function engageEmergencyLockdown(guild, engagedByLabel = 'System', reason 
     const config = getGuildConfig(guild.id, guild.name);
     config.security = config.security || {};
 
-    // If already locked, return early — do not overwrite the existing snapshot
+    // Re-engage guard — never overwrite an existing snapshot
     if (config.security.lockdown === true) {
       return {
         success: false,
@@ -164,53 +220,53 @@ async function engageEmergencyLockdown(guild, engagedByLabel = 'System', reason 
       };
     }
 
-    // Build a fresh snapshot map (channel id → serialised pre-lockdown overwrite)
-    const snapshot = {};
-
     const everyoneId = guild.roles.everyone.id;
-    let lockedCount = 0;
+    const snapshot = {};
+    let lockedCount  = 0;
     let skippedCount = 0;
 
     for (const [, ch] of guild.channels.cache) {
-      // Skip categories and threads
+      // ── Skip categories and threads ────────────────────────────────────────
       if (ch.type === ChannelType.GuildCategory) continue;
       const isThread = typeof ch.isThread === 'function' ? ch.isThread() : false;
       if (isThread) continue;
 
-      const isText = typeof ch.isTextBased === 'function' ? ch.isTextBased() : false;
+      const isText  = typeof ch.isTextBased === 'function' ? ch.isTextBased() : false;
       const isVoice = ch.type === ChannelType.GuildVoice || ch.type === ChannelType.GuildStageVoice;
-
       if (!isText && !isVoice) continue;
 
-      const editFn = ch.permissionOverwrites?.edit || ch.permissionOverwrites?.create;
-      if (typeof editFn !== 'function') continue;
-
-      // Read the current @everyone overwrite (may be undefined if no explicit overwrite exists)
-      const currentOW = ch.permissionOverwrites?.cache?.get?.(everyoneId);
-
-      // Check if already explicitly denied the key permission we want to deny
-      const alreadyDeniedText = isText &&
-        (currentOW?.deny?.has?.(PermissionsBitField.Flags.SendMessages) ?? false);
-      const alreadyDeniedVoice = isVoice &&
-        (currentOW?.deny?.has?.(PermissionsBitField.Flags.Connect) ?? false);
-
-      if (alreadyDeniedText || alreadyDeniedVoice) {
-        // Channel was already locked before us — skip, so we don't touch it during unlock
+      // ── Skip channels that @everyone cannot see (hidden channels) ──────────
+      // This prevents breaking private channels, staff channels, and
+      // SERVER LOGS category children.
+      if (isChannelHiddenFromEveryone(ch, guild, everyoneId)) {
         skippedCount++;
         continue;
       }
 
-      // Snapshot the FULL overwrite (allow + deny bits) — or empty if none existed
+      // ── Skip channels where the relevant permission is already denied ───────
+      const currentOW = ch.permissionOverwrites?.cache?.get?.(everyoneId);
+      const alreadyDeniedText  = isText  && ((currentOW?.deny?.bitfield ?? 0n) & PermissionsBitField.Flags.SendMessages) !== 0n;
+      const alreadyDeniedVoice = isVoice && ((currentOW?.deny?.bitfield ?? 0n) & PermissionsBitField.Flags.Connect)      !== 0n;
+
+      if (alreadyDeniedText || alreadyDeniedVoice) {
+        skippedCount++;
+        continue;
+      }
+
+      const editFn = ch.permissionOverwrites?.edit || ch.permissionOverwrites?.create;
+      if (typeof editFn !== 'function') continue;
+
+      // ── Snapshot the full current @everyone overwrite ──────────────────────
       snapshot[ch.id] = currentOW
         ? serialiseOverwrite(currentOW)
         : { id: everyoneId, type: 0, allow: '0', deny: '0' };
 
-      // Apply lockdown deny flags
+      // ── Apply only the lockdown deny bits ──────────────────────────────────
       const denyOptions = isVoice
         ? { Connect: false }
         : {
-            SendMessages: false,
-            AddReactions: false,
+            SendMessages:        false,
+            AddReactions:        false,
             CreatePublicThreads: false,
             CreatePrivateThreads: false,
           };
@@ -219,18 +275,17 @@ async function engageEmergencyLockdown(guild, engagedByLabel = 'System', reason 
         await editFn.call(ch.permissionOverwrites, guild.roles.everyone, denyOptions, { reason });
         lockedCount++;
       } catch (_) {
-        // Remove from snapshot if we couldn't actually lock it
+        // Could not lock this channel — remove from snapshot so unlock won't touch it
         delete snapshot[ch.id];
       }
     }
 
-    // Persist state
-    config.security.lockdown = true;
+    // Persist state atomically
+    config.security.lockdown          = true;
     config.security.lockdownEngagedAt = Date.now();
     config.security.lockdownEngagedBy = engagedByLabel;
     config.security.preLockdownSnapshot = snapshot;
-    // Legacy key — cleared so stale data doesn't confuse old code paths
-    delete config.security.preLockdownOverwrites;
+    delete config.security.preLockdownOverwrites; // clear any stale legacy key
 
     saveGuildConfigAsync(guild.id, config);
 
@@ -242,29 +297,30 @@ async function engageEmergencyLockdown(guild, engagedByLabel = 'System', reason 
 
 /**
  * Lifts emergency server lockdown and fully restores the original @everyone
- * permission overwrites saved during engageEmergencyLockdown.
+ * permission overwrites that were saved during engageEmergencyLockdown.
  *
- * Safety guarantees:
- * - If the server is NOT in lockdown, returns an informational result.
- * - If no snapshot exists, refuses to guess — returns an error result.
- * - Only modifies channels that appear in the snapshot (channels that were
- *   pre-locked before lockdown are left completely untouched).
- * - Each channel's FULL original overwrite is restored, not just a null-reset.
- * - Failures per channel are collected; the unlock continues for all others.
- * - Clears lockdown state only after ALL channels have been attempted.
- * - Safe to retry: channels already restored are idempotent on re-edit.
+ * SAFETY GUARANTEES:
+ *   - Returns notLocked:true  if the server is not currently in lockdown.
+ *   - Returns noSnapshot:true if no valid snapshot exists (refuses to guess).
+ *   - Only modifies channels present in the snapshot.
+ *   - Channels with allow=0 / deny=0 have their overwrite DELETED (not reset
+ *     to null via edit), fully restoring category inheritance.
+ *   - Channels with a non-zero saved overwrite use permissionOverwrites.set()
+ *     (or full-bitfield edit) to atomically restore the exact allow+deny pair.
+ *   - Failures are collected; restoration continues for all remaining channels.
+ *   - On partial failure the snapshot is PRESERVED so the admin can retry.
+ *   - Clears lockdown state only after all channels have been attempted.
  *
  * @returns {{
- *   success: boolean,
- *   unlockedChannels: number,
- *   failedChannels: Array<{id:string, error:string}>,
- *   partial: boolean,
- *   reason?: string,
- *   noSnapshot?: boolean,
- *   notLocked?: boolean
+ *   success, unlockedChannels, failedChannels, partial,
+ *   reason?, noSnapshot?, notLocked?
  * }}
  */
-async function liftEmergencyLockdown(guild, liftedByLabel = 'System', reason = 'Security Lockdown Lifted') {
+async function liftEmergencyLockdown(
+  guild,
+  liftedByLabel = 'System',
+  reason = 'Security Lockdown Lifted',
+) {
   if (!guild) return { success: false, reason: 'Invalid guild' };
 
   const release = await acquireLock(guild.id);
@@ -277,7 +333,7 @@ async function liftEmergencyLockdown(guild, liftedByLabel = 'System', reason = '
     const config = getGuildConfig(guild.id, guild.name);
     config.security = config.security || {};
 
-    // Guard: not in lockdown
+    // ── Guard: not in lockdown ─────────────────────────────────────────────
     if (!config.security.lockdown) {
       return {
         success: false,
@@ -286,10 +342,11 @@ async function liftEmergencyLockdown(guild, liftedByLabel = 'System', reason = '
       };
     }
 
-    // Guard: no snapshot — cannot safely restore
-    const snapshot = config.security.preLockdownSnapshot || null;
-    if (!snapshot || Object.keys(snapshot).length === 0) {
-      // Attempt legacy key migration
+    // ── Guard: no snapshot — refuse to touch permissions ───────────────────
+    let effectiveSnapshot = config.security.preLockdownSnapshot || null;
+
+    if (!effectiveSnapshot || Object.keys(effectiveSnapshot).length === 0) {
+      // Try legacy migration (old format stored { hadExplicitDeny: false })
       const legacyMap = config.security.preLockdownOverwrites || null;
       if (!legacyMap || Object.keys(legacyMap).length === 0) {
         return {
@@ -298,89 +355,83 @@ async function liftEmergencyLockdown(guild, liftedByLabel = 'System', reason = '
           reason: 'No valid lockdown snapshot found. Cannot safely restore permissions without a snapshot.',
         };
       }
-      // Migrate legacy format: treat it as an empty-overwrite map (null-reset strategy)
-      // Legacy only tracked { hadExplicitDeny: false } — restore to null (inheritance)
-      config.security.preLockdownSnapshot = {};
+      // Migrate: treat each legacy entry as "no prior overwrite" (delete/null-reset)
+      effectiveSnapshot = {};
+      const evId = guild.roles.everyone.id;
       for (const chId of Object.keys(legacyMap)) {
-        config.security.preLockdownSnapshot[chId] = { id: guild.roles.everyone.id, type: 0, allow: '0', deny: '0' };
+        effectiveSnapshot[chId] = { id: evId, type: 0, allow: '0', deny: '0' };
       }
+      config.security.preLockdownSnapshot = effectiveSnapshot;
     }
 
-    const effectiveSnapshot = config.security.preLockdownSnapshot || {};
     const everyoneRole = guild.roles.everyone;
     const failedChannels = [];
     let unlockedCount = 0;
 
     for (const [chId, savedOW] of Object.entries(effectiveSnapshot)) {
       const ch = guild.channels.cache.get(chId);
-      if (!ch) {
-        // Channel was deleted after lockdown — skip silently (not a failure)
-        continue;
-      }
+      if (!ch) continue; // channel deleted — silently skip
 
       if (typeof ch.permissionOverwrites?.edit !== 'function') {
-        failedChannels.push({ id: chId, name: ch.name || chId, error: 'No edit function available on channel' });
+        failedChannels.push({ id: chId, name: ch.name || chId, error: 'No edit function on channel' });
         continue;
       }
 
       try {
-        // Restore original allow/deny bits
-        // If the saved overwrite had allow=0 and deny=0 (no prior explicit overwrite),
-        // we reset to null (remove the overwrite Discord added during lockdown).
         const savedAllow = BigInt(savedOW.allow || '0');
-        const savedDeny = BigInt(savedOW.deny || '0');
+        const savedDeny  = BigInt(savedOW.deny  || '0');
 
         if (savedAllow === 0n && savedDeny === 0n) {
-          // No prior explicit overwrite existed — delete the lockdown overwrite entirely
-          const ow = ch.permissionOverwrites.cache?.get?.(everyoneRole.id);
-          if (ow && typeof ch.permissionOverwrites.delete === 'function') {
+          // No explicit overwrite existed before lockdown — delete the entry
+          // we added so the channel reverts to category inheritance.
+          const currentOW = ch.permissionOverwrites.cache?.get?.(everyoneRole.id);
+          if (currentOW && typeof ch.permissionOverwrites.delete === 'function') {
             await ch.permissionOverwrites.delete(everyoneRole, reason);
           } else {
-            // Fallback: null-reset via edit (sets back to inherit)
+            // Fallback if delete is not available: null-reset all lockdown flags
             await ch.permissionOverwrites.edit(everyoneRole, {
-              SendMessages: null,
-              AddReactions: null,
+              SendMessages:        null,
+              AddReactions:        null,
               CreatePublicThreads: null,
               CreatePrivateThreads: null,
-              Connect: null,
+              Connect:             null,
             }, { reason });
           }
         } else {
-          // Restore exact original overwrite bits using raw bitfield values
-          await ch.permissionOverwrites.edit(everyoneRole, {
-            SendMessages: savedDeny & PermissionsBitField.Flags.SendMessages
-              ? false
-              : savedAllow & PermissionsBitField.Flags.SendMessages
-                ? true
-                : null,
-            AddReactions: savedDeny & PermissionsBitField.Flags.AddReactions
-              ? false
-              : savedAllow & PermissionsBitField.Flags.AddReactions
-                ? true
-                : null,
-            CreatePublicThreads: savedDeny & PermissionsBitField.Flags.CreatePublicThreads
-              ? false
-              : savedAllow & PermissionsBitField.Flags.CreatePublicThreads
-                ? true
-                : null,
-            CreatePrivateThreads: savedDeny & PermissionsBitField.Flags.CreatePrivateThreads
-              ? false
-              : savedAllow & PermissionsBitField.Flags.CreatePrivateThreads
-                ? true
-                : null,
-            Connect: savedDeny & PermissionsBitField.Flags.Connect
-              ? false
-              : savedAllow & PermissionsBitField.Flags.Connect
-                ? true
-                : null,
-          }, { reason });
-        }
+          // There was an explicit overwrite before lockdown — restore it exactly.
+          // We use permissionOverwrites.set() if available (atomic full replace),
+          // otherwise fall back to a structured edit that covers all five flags
+          // lockdown may have touched, restoring each to its original value.
+          const bit = (flag) => {
+            if ((savedDeny  & flag) !== 0n) return false;  // was explicitly denied
+            if ((savedAllow & flag) !== 0n) return true;   // was explicitly allowed
+            return null;                                    // was inherited
+          };
 
+          if (typeof ch.permissionOverwrites.set === 'function') {
+            // Atomic: replace the entire allow/deny bitfield in one call
+            await ch.permissionOverwrites.set(
+              [{ id: everyoneRole.id, type: 0, allow: savedAllow, deny: savedDeny }],
+              reason,
+            );
+          } else {
+            // Partial edit — restore all five lockdown-touched flags to their
+            // original values (deny / allow / inherit).
+            await ch.permissionOverwrites.edit(everyoneRole, {
+              ViewChannel:          bit(PermissionsBitField.Flags.ViewChannel),
+              SendMessages:         bit(PermissionsBitField.Flags.SendMessages),
+              AddReactions:         bit(PermissionsBitField.Flags.AddReactions),
+              CreatePublicThreads:  bit(PermissionsBitField.Flags.CreatePublicThreads),
+              CreatePrivateThreads: bit(PermissionsBitField.Flags.CreatePrivateThreads),
+              Connect:              bit(PermissionsBitField.Flags.Connect),
+            }, { reason });
+          }
+        }
         unlockedCount++;
       } catch (err) {
         failedChannels.push({
-          id: chId,
-          name: ch.name || chId,
+          id:    chId,
+          name:  ch.name || chId,
           error: err.message || String(err),
         });
       }
@@ -388,20 +439,28 @@ async function liftEmergencyLockdown(guild, liftedByLabel = 'System', reason = '
 
     const partial = failedChannels.length > 0;
 
-    // Clear lockdown state. If partial, record the failures for admin review.
-    config.security.lockdown = false;
+    // Persist outcome
+    config.security.lockdown        = false;
     config.security.lockdownLiftedAt = Date.now();
     config.security.lockdownLiftedBy = liftedByLabel;
-    config.security.preLockdownSnapshot = {};
-    // Keep legacy key cleared
-    delete config.security.preLockdownOverwrites;
 
     if (partial) {
-      config.security.lastUnlockFailures = failedChannels.map(f => ({ id: f.id, name: f.name, error: f.error }));
+      // Preserve snapshot so admin can retry the failed channels
+      config.security.lastUnlockFailures = failedChannels.map(
+        f => ({ id: f.id, name: f.name, error: f.error }),
+      );
+      // Keep the snapshot for the failed channels only so retry works
+      const remainingSnapshot = {};
+      for (const f of failedChannels) {
+        if (effectiveSnapshot[f.id]) remainingSnapshot[f.id] = effectiveSnapshot[f.id];
+      }
+      config.security.preLockdownSnapshot = remainingSnapshot;
     } else {
+      config.security.preLockdownSnapshot = {};
       delete config.security.lastUnlockFailures;
     }
 
+    delete config.security.preLockdownOverwrites; // keep legacy key cleared
     saveGuildConfigAsync(guild.id, config);
 
     return {
@@ -419,4 +478,6 @@ module.exports = {
   createGuildSnapshot,
   engageEmergencyLockdown,
   liftEmergencyLockdown,
+  // Exported for tests
+  _internals: { isChannelHiddenFromEveryone, isExplicitlyHidden, isCategoryHidden },
 };

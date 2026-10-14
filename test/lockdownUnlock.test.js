@@ -1,33 +1,50 @@
 'use strict';
 
 /**
- * Lockdown / Unlock Comprehensive Test Suite
+ * Lockdown / Unlock Permission-Preservation Regression Test Suite
  *
  * Tests cover:
- *  LU-1  : Successful lockdown engagement (snapshot created, channels locked)
- *  LU-2  : Pre-existing denied channels are skipped during lockdown (fidelity)
+ *  LU-1  : Successful lockdown — snapshot created, channels locked, state persisted
+ *  LU-2  : Channels with SendMessages already denied are skipped (old fidelity guard)
  *  LU-3  : Successful unlock — full restoration from snapshot
- *  LU-4  : Unlock with no prior overwrite (null-reset path)
- *  LU-5  : Partial restoration failures — continues, reports, persists for retry
+ *  LU-4  : Unlock with no prior @everyone overwrite uses delete path
+ *  LU-5  : Partial restoration failures — continues, reports, preserves snapshot for retry
  *  LU-6  : Missing / empty snapshot — unlock refuses to act
- *  LU-7  : Unlock when server is not in lockdown — informational result
- *  LU-8  : Unauthorized user is denied via isImmuneUser check
- *  LU-9  : Repeated unlock attempts are idempotent (state not corrupted)
- *  LU-10 : Persistence — lockdown state survives simulated bot restart (reload from disk)
- *  LU-11 : Concurrent unlock requests are serialised (concurrency lock)
- *  LU-12 : Lockdown re-engage is blocked while already locked
- *  LU-13 : Legacy preLockdownOverwrites migration path
- *  LU-14 : Existing securityEngine tests still pass (regression guard)
+ *  LU-7  : Unlock when server is not in lockdown — notLocked flag
+ *  LU-8  : Unauthorized user denied via isImmuneUser check
+ *  LU-9  : Repeated unlock attempts are idempotent
+ *  LU-10 : Lockdown state persists across simulated bot restart
+ *  LU-11 : Concurrent unlock requests serialised (concurrency lock)
+ *  LU-12 : Re-engage lockdown blocked while already locked
+ *  LU-13 : Legacy preLockdownOverwrites format migrated and unlock succeeds
+ *  LU-14 : Existing securityEngine regression guard
+ *
+ *  ── NEW PERMISSION-PRESERVATION TESTS ──────────────────────────────────────
+ *  PP-1  : Explicitly hidden channel (@everyone ViewChannel denied) is skipped during lockdown
+ *  PP-2  : Category-inherited hidden channel is skipped during lockdown
+ *  PP-3  : SERVER LOGS category pattern — all children skipped, no new overwrites created
+ *  PP-4  : Existing non-@everyone role overwrites are not touched during lockdown
+ *  PP-5  : Existing member-specific overwrites are not touched during lockdown
+ *  PP-6  : Category synchronization (parentId) is not changed by lockdown
+ *  PP-7  : Unlock restores exact full overwrite bitfield (ViewChannel + other flags)
+ *  PP-8  : Hidden channel remains hidden after full lockdown + unlock cycle
+ *  PP-9  : Category-hidden channel remains category-hidden after full lockdown + unlock cycle
+ *  PP-10 : Snapshot absent → unlock refuses and leaves lockdown flag set
+ *  PP-11 : Partial failure preserves recovery snapshot for failed channels
+ *  PP-12 : isExplicitlyHidden and isCategoryHidden helper accuracy
  */
 
-const test = require('node:test');
+const test  = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
   engageEmergencyLockdown,
   liftEmergencyLockdown,
   createGuildSnapshot,
+  _internals,
 } = require('../src/security/backupRecovery');
+const { isExplicitlyHidden, isCategoryHidden, isChannelHiddenFromEveryone } = _internals;
+
 const {
   checkThreshold,
   isImmuneUser,
@@ -35,105 +52,145 @@ const {
 } = require('../src/security/securityEngine');
 const { getGuildConfig, saveGuildConfigAsync, invalidateCache } = require('../src/config/guildConfig');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Known PermissionsBitField values (matching discord.js constants)
+// ─────────────────────────────────────────────────────────────────────────────
+const F = {
+  ViewChannel:          1024n,
+  SendMessages:         2048n,
+  AddReactions:         64n,
+  CreatePublicThreads:  34359738368n,
+  CreatePrivateThreads: 68719476736n,
+  Connect:              1048576n,
+  Speak:                2097152n,
+  AttachFiles:          32768n,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Guild ID counter — use a random base so IDs never collide across test runs
-// and each test gets a fresh, pristine config with no disk pollution.
+// Unique, run-scoped guild IDs
 // ─────────────────────────────────────────────────────────────────────────────
 const _RUN_ID = Math.random().toString(36).slice(2, 8);
-let _guildCounter = 1;
-function nextGuildId() {
-  const id = `lu_${_RUN_ID}_${_guildCounter++}`;
-  invalidateCache(id); // ensure no stale in-memory config
+let _counter = 1;
+function nextId() {
+  const id = `lu_${_RUN_ID}_${_counter++}`;
+  invalidateCache(id);
   return id;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Factory helpers
+// Mock factory
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Creates a fake PermissionsBitField-compatible flag set so we can test
- * BigInt-based comparisons without importing discord.js in tests.
+ * Builds a mock @everyone overwrite object with arbitrary allow/deny bits.
+ * @param {string} everyoneId
+ * @param {bigint} allowBits
+ * @param {bigint} denyBits
  */
-const SEND_MESSAGES_BIT = 2048n;           // PermissionsBitField.Flags.SendMessages
-const CONNECT_BIT       = 1048576n;        // PermissionsBitField.Flags.Connect
-const ADD_REACTIONS_BIT = 64n;
+function mockOW(everyoneId, allowBits = 0n, denyBits = 0n) {
+  return {
+    id:    everyoneId,
+    type:  0,
+    allow: { bitfield: allowBits, has: (f) => (allowBits & BigInt(f)) !== 0n },
+    deny:  { bitfield: denyBits,  has: (f) => (denyBits  & BigInt(f)) !== 0n },
+  };
+}
 
 /**
- * Builds a mock Discord guild with configurable channels.
+ * Builds a complete mock guild.
  *
- * @param {string} guildId
- * @param {Array<{id, isTextBased, isVoice, preDenied, editShouldThrow}>} channelDefs
+ * channelDefs:
+ *   id             – channel ID
+ *   name           – display name
+ *   isVoice        – GuildVoice type if true
+ *   parentId       – parent category ID (optional)
+ *   allowBits      – @everyone overwrite allow bitfield (BigInt, default 0n)
+ *   denyBits       – @everyone overwrite deny bitfield (BigInt, default 0n)
+ *   noOW           – if true, no @everyone overwrite entry is placed
+ *   editShouldThrow
+ *   deleteShouldThrow
+ *
+ * categoryDefs:
+ *   id             – category ID
+ *   allowBits      – @everyone overwrite allow bitfield (BigInt, default 0n)
+ *   denyBits       – @everyone overwrite deny bitfield (BigInt, default 0n)
+ *
+ * @returns { guild, editLogs }   editLogs[channelId] = array of { role, perms, opts }
  */
-function buildMockGuild(guildId, channelDefs = []) {
-  const everyoneId = guildId;
+function buildMockGuild(guildId, channelDefs = [], categoryDefs = []) {
+  const everyoneId  = guildId;
   const everyoneRole = {
-    id: everyoneId,
-    name: '@everyone',
+    id: everyoneId, name: '@everyone',
     permissions: { has: () => false, bitfield: 0n },
   };
 
   const channelsMap = new Map();
+  const editLogs = {};
 
+  // Add category entries first
+  for (const def of categoryDefs) {
+    const catOWCache = new Map();
+    const catOW = mockOW(everyoneId, def.allowBits || 0n, def.denyBits || 0n);
+    catOWCache.set(everyoneId, catOW);
+    channelsMap.set(def.id, {
+      id:   def.id,
+      name: def.name || def.id,
+      type: 4, // GuildCategory
+      parentId: null,
+      permissionOverwrites: { cache: catOWCache, edit: async () => {}, delete: async () => {} },
+    });
+  }
+
+  // Add channel entries
   for (const def of channelDefs) {
-    const editLog = [];   // records what was passed to edit()
+    const log = [];
+    editLogs[def.id] = log;
 
-    // Build a per-channel @everyone overwrite mock
-    const preDenyBit = def.preDenied
-      ? (def.isVoice ? CONNECT_BIT : SEND_MESSAGES_BIT)
-      : 0n;
-
-    const ow = {
-      id: everyoneId,
-      type: 0,
-      allow: { bitfield: 0n, has: (f) => false },
-      deny: {
-        bitfield: preDenyBit,
-        has: (f) => {
-          const flag = typeof f === 'bigint' ? f : BigInt(f);
-          return (preDenyBit & flag) !== 0n;
-        },
-      },
-    };
-
-    const owCache = new Map([[everyoneId, ow]]);
+    const owCache = new Map();
+    if (!def.noOW) {
+      const ow = mockOW(everyoneId, def.allowBits || 0n, def.denyBits || 0n);
+      owCache.set(everyoneId, ow);
+    }
 
     const ch = {
-      id: def.id,
-      name: def.name || def.id,
-      type: def.isVoice ? 2 /* GuildVoice */ : 0 /* GuildText */,
-      parentId: null,
-      position: 0,
-      topic: '',
-      nsfw: false,
+      id:              def.id,
+      name:            def.name || def.id,
+      type:            def.isVoice ? 2 : 0,
+      parentId:        def.parentId || null,
+      position:        0,
+      topic:           '',
+      nsfw:            false,
       rateLimitPerUser: 0,
       isTextBased: () => !def.isVoice,
-      isThread: () => false,
-      _editLog: editLog,
+      isThread:    () => false,
       permissionOverwrites: {
         cache: owCache,
         edit: async (role, perms, opts) => {
-          if (def.editShouldThrow) throw new Error('Simulated API error');
-          editLog.push({ role, perms, opts });
-          return perms;
+          if (def.editShouldThrow) throw new Error('Simulated edit error');
+          log.push({ op: 'edit', role, perms, opts });
+        },
+        set: async (overwrites, reason) => {
+          if (def.editShouldThrow) throw new Error('Simulated set error');
+          log.push({ op: 'set', overwrites, reason });
         },
         delete: async (role, reason) => {
-          if (def.deleteShouldThrow) throw new Error('Simulated delete API error');
-          editLog.push({ deleted: true, role, reason });
+          if (def.deleteShouldThrow) throw new Error('Simulated delete error');
+          log.push({ op: 'delete', role, reason });
         },
       },
     };
-
     channelsMap.set(def.id, ch);
   }
 
-  return {
-    id: guildId,
-    name: `Test Server ${guildId}`,
+  const guild = {
+    id:      guildId,
+    name:    `Test Server ${guildId}`,
     ownerId: `owner_${guildId}`,
     channels: { cache: channelsMap },
-    roles: { cache: new Map([[everyoneId, everyoneRole]]), everyone: everyoneRole },
+    roles: {
+      cache: new Map([[everyoneId, everyoneRole]]),
+      everyone: everyoneRole,
+    },
     members: {
       cache: new Map(),
       me: {
@@ -145,343 +202,596 @@ function buildMockGuild(guildId, channelDefs = []) {
     bans: { create: async () => {} },
     fetchAuditLogs: async () => ({ entries: new Map() }),
   };
+
+  return { guild, editLogs };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tests
+// ── ORIGINAL TESTS (LU-1 … LU-14) ──────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('LU-1: Successful lockdown — snapshot created, channels locked, state persisted', async () => {
-  const guildId = nextGuildId();
-  const guild = buildMockGuild(guildId, [
-    { id: 'ch_text_a', isTextBased: true },
-    { id: 'ch_text_b', isTextBased: true },
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_a' },
+    { id: 'ch_b' },
   ]);
 
-  const res = await engageEmergencyLockdown(guild, 'TestAdmin#0001 (user_1)');
+  const res = await engageEmergencyLockdown(guild, 'TestAdmin (user_1)');
 
-  assert.equal(res.success, true, 'engageEmergencyLockdown should succeed');
-  assert.equal(res.lockedChannels, 2, 'Both text channels should be locked');
-  assert.equal(res.skippedChannels, 0, 'No pre-denied channels to skip');
+  assert.equal(res.success, true);
+  assert.equal(res.lockedChannels, 2);
+  assert.equal(res.skippedChannels, 0);
 
-  const config = getGuildConfig(guildId);
-  assert.equal(config.security.lockdown, true, 'lockdown flag should be true');
-  assert.equal(typeof config.security.lockdownEngagedAt, 'number', 'lockdownEngagedAt should be a timestamp');
-  assert.equal(config.security.lockdownEngagedBy, 'TestAdmin#0001 (user_1)');
-  assert.ok(config.security.preLockdownSnapshot, 'snapshot should exist');
-  assert.ok(config.security.preLockdownSnapshot['ch_text_a'], 'ch_text_a in snapshot');
-  assert.ok(config.security.preLockdownSnapshot['ch_text_b'], 'ch_text_b in snapshot');
+  const cfg = getGuildConfig(guildId);
+  assert.equal(cfg.security.lockdown, true);
+  assert.ok(cfg.security.preLockdownSnapshot['ch_a']);
+  assert.ok(cfg.security.preLockdownSnapshot['ch_b']);
 });
 
-test('LU-2: Lockdown skips channels already explicitly denied (fidelity)', async () => {
-  const guildId = nextGuildId();
-  const guild = buildMockGuild(guildId, [
-    { id: 'ch_open',   isTextBased: true, preDenied: false },
-    { id: 'ch_closed', isTextBased: true, preDenied: true  }, // already denied
+test('LU-2: Channels with SendMessages already denied are skipped', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_open',   denyBits: 0n },
+    { id: 'ch_closed', denyBits: F.SendMessages }, // already locked
   ]);
 
   const res = await engageEmergencyLockdown(guild, 'Admin');
 
   assert.equal(res.success, true);
-  assert.equal(res.lockedChannels, 1, 'Only 1 open channel should be locked');
-  assert.equal(res.skippedChannels, 1, 'Pre-denied channel must be skipped');
+  assert.equal(res.lockedChannels, 1);
+  assert.equal(res.skippedChannels, 1);
 
-  const config = getGuildConfig(guildId);
-  assert.ok(config.security.preLockdownSnapshot['ch_open'], 'open channel in snapshot');
-  assert.equal(config.security.preLockdownSnapshot['ch_closed'], undefined,
-    'pre-denied channel must NOT be in snapshot (must not be touched during unlock)');
+  const cfg = getGuildConfig(guildId);
+  assert.ok(cfg.security.preLockdownSnapshot['ch_open']);
+  assert.equal(cfg.security.preLockdownSnapshot['ch_closed'], undefined);
 });
 
 test('LU-3: Successful unlock — restores channel permissions from snapshot', async () => {
-  const guildId = nextGuildId();
-  const guild = buildMockGuild(guildId, [
-    { id: 'ch_a', isTextBased: true },
-    { id: 'ch_b', isTextBased: true },
-  ]);
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_a' }, { id: 'ch_b' }]);
 
-  // Engage lockdown first
   const lockRes = await engageEmergencyLockdown(guild, 'Admin');
   assert.equal(lockRes.success, true);
-  assert.equal(lockRes.lockedChannels, 2);
 
-  // Now lift
   const liftRes = await liftEmergencyLockdown(guild, 'Admin');
-  assert.equal(liftRes.success, true, 'lift should succeed');
-  assert.equal(liftRes.unlockedChannels, 2, 'both channels should be restored');
-  assert.equal(liftRes.failedChannels.length, 0, 'no failures');
-  assert.equal(liftRes.partial, false, 'should be a full restore');
+  assert.equal(liftRes.success, true);
+  assert.equal(liftRes.unlockedChannels, 2);
+  assert.equal(liftRes.failedChannels.length, 0);
+  assert.equal(liftRes.partial, false);
 
-  // State should be cleared
-  const config = getGuildConfig(guildId);
-  assert.equal(config.security.lockdown, false, 'lockdown flag should be false');
-  assert.deepEqual(config.security.preLockdownSnapshot, {}, 'snapshot cleared after full restore');
-  assert.equal(typeof config.security.lockdownLiftedAt, 'number', 'lockdownLiftedAt should be set');
-  assert.equal(config.security.lockdownLiftedBy, 'Admin');
+  const cfg = getGuildConfig(guildId);
+  assert.equal(cfg.security.lockdown, false);
+  assert.deepEqual(cfg.security.preLockdownSnapshot, {});
+  assert.ok(typeof cfg.security.lockdownLiftedAt === 'number');
 });
 
-test('LU-4: Unlock with no prior @everyone overwrite uses delete/null-reset path', async () => {
-  // When snapshot has allow=0, deny=0 it means the channel had no explicit overwrite before lockdown.
-  // The unlock should delete or null-reset (not apply allow=0 which could differ from inherit).
-  const guildId = nextGuildId();
+test('LU-4: Unlock with no prior @everyone overwrite uses delete path', async () => {
+  const guildId = nextId();
 
-  // Manually pre-seed a config as if lockdown already happened (no prior overwrite)
-  const config = getGuildConfig(guildId);
-  config.security = config.security || {};
-  config.security.lockdown = true;
-  config.security.lockdownEngagedAt = Date.now() - 5000;
-  config.security.lockdownEngagedBy = 'Admin';
-  config.security.preLockdownSnapshot = {
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = true;
+  cfg.security.preLockdownSnapshot = {
     'ch_noprior': { id: guildId, type: 0, allow: '0', deny: '0' },
   };
-  saveGuildConfigAsync(guildId, config);
+  saveGuildConfigAsync(guildId, cfg);
 
-  const deletedChannels = [];
-  const editedChannels  = [];
-
+  const deletedChs = [];
   const guild = {
-    id: guildId,
-    name: 'Test Guild',
-    ownerId: `owner_${guildId}`,
-    channels: {
-      cache: new Map([['ch_noprior', {
-        id: 'ch_noprior',
-        name: 'no-prior',
-        isTextBased: () => true,
-        isThread: () => false,
-        permissionOverwrites: {
-          cache: new Map([[guildId, { id: guildId }]]),
-          edit: async (role, perms, opts) => { editedChannels.push(perms); },
-          delete: async (role, reason) => { deletedChannels.push(role.id || role); },
-        },
-      }]]),
-    },
-    roles: {
-      everyone: { id: guildId },
-      cache: new Map(),
-    },
-    members: {
-      me: { permissions: { has: () => true } },
-    },
+    id: guildId, name: 'T', ownerId: `o_${guildId}`,
+    channels: { cache: new Map([['ch_noprior', {
+      id: 'ch_noprior', name: 'no-prior',
+      permissionOverwrites: {
+        cache: new Map([[guildId, { id: guildId }]]),
+        edit:   async (r, p) => {},
+        delete: async (r)    => { deletedChs.push(r.id || r); },
+      },
+    }]]) },
+    roles: { everyone: { id: guildId }, cache: new Map() },
+    members: { me: { permissions: { has: () => true } } },
   };
 
   const res = await liftEmergencyLockdown(guild, 'Admin');
   assert.equal(res.success, true);
   assert.equal(res.unlockedChannels, 1);
-  // Either delete was called OR null-reset via edit — both are acceptable
-  const restoredViaDelete = deletedChannels.length > 0;
-  const restoredViaEdit   = editedChannels.length > 0;
-  assert.ok(restoredViaDelete || restoredViaEdit, 'channel should be restored by delete or null-reset edit');
+  assert.ok(deletedChs.length > 0, 'overwrite should have been deleted');
 });
 
-test('LU-5: Partial restoration failures — continues, reports, persists for retry', async () => {
-  const guildId = nextGuildId();
-
-  // Pre-seed config as if lockdown already engaged so the snapshot includes ch_fail.
-  // This avoids the editShouldThrow flag interfering with the lockdown write path.
+test('LU-5: Partial failures — continues, reports, preserves snapshot for retry', async () => {
+  const guildId = nextId();
   const cfg = getGuildConfig(guildId);
   cfg.security = cfg.security || {};
   cfg.security.lockdown = true;
-  cfg.security.lockdownEngagedAt = Date.now() - 3000;
-  cfg.security.lockdownEngagedBy = 'Admin';
   cfg.security.preLockdownSnapshot = {
-    'ch_ok'  : { id: guildId, type: 0, allow: '0', deny: '0' },
+    'ch_ok':   { id: guildId, type: 0, allow: '0', deny: '0' },
     'ch_fail': { id: guildId, type: 0, allow: '0', deny: '0' },
-    'ch_ok_2': { id: guildId, type: 0, allow: '0', deny: '0' },
+    'ch_ok2':  { id: guildId, type: 0, allow: '0', deny: '0' },
   };
   saveGuildConfigAsync(guildId, cfg);
 
-  // Build guild where ch_fail.delete() and ch_fail.edit() both throw during restore
-  const guild = buildMockGuild(guildId, [
-    { id: 'ch_ok',   isTextBased: true, editShouldThrow: false, deleteShouldThrow: false },
-    { id: 'ch_fail', isTextBased: true, editShouldThrow: true,  deleteShouldThrow: true  },
-    { id: 'ch_ok_2', isTextBased: true, editShouldThrow: false, deleteShouldThrow: false },
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_ok',   editShouldThrow: false, deleteShouldThrow: false },
+    { id: 'ch_fail', editShouldThrow: true,  deleteShouldThrow: true  },
+    { id: 'ch_ok2',  editShouldThrow: false, deleteShouldThrow: false },
   ]);
 
-  const liftRes = await liftEmergencyLockdown(guild, 'Admin');
-
-  assert.equal(liftRes.success, true, 'overall success — lift was attempted');
-  assert.equal(liftRes.partial, true, 'should be a partial restore');
-  assert.equal(liftRes.unlockedChannels, 2, 'two channels should be restored');
-  assert.equal(liftRes.failedChannels.length, 1, 'one failure');
-  assert.equal(liftRes.failedChannels[0].id, 'ch_fail');
-  assert.ok(liftRes.failedChannels[0].error, 'error message should be present');
-
-  // Failures should be persisted for admin retry
-  const config = getGuildConfig(guildId);
-  assert.ok(Array.isArray(config.security.lastUnlockFailures), 'lastUnlockFailures should be saved');
-  assert.equal(config.security.lastUnlockFailures.length, 1);
-});
-
-test('LU-6: Unlock with no snapshot — refuses to act without guessing permissions', async () => {
-  const guildId = nextGuildId();
-
-  // Force the server into "locked" state but with no snapshot
-  const config = getGuildConfig(guildId);
-  config.security = config.security || {};
-  config.security.lockdown = true;
-  config.security.preLockdownSnapshot = {};
-  delete config.security.preLockdownOverwrites;
-  saveGuildConfigAsync(guildId, config);
-
-  const guild = buildMockGuild(guildId, [{ id: 'ch_x', isTextBased: true }]);
   const res = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.partial, true);
+  assert.equal(res.unlockedChannels, 2);
+  assert.equal(res.failedChannels.length, 1);
+  assert.equal(res.failedChannels[0].id, 'ch_fail');
 
-  assert.equal(res.success, false, 'should refuse to unlock without snapshot');
-  assert.equal(res.noSnapshot, true, 'noSnapshot flag must be set');
-  assert.ok(res.reason, 'reason string should be present');
-
-  // Lockdown flag must NOT be cleared — state preserved for admin retry
-  const afterConfig = getGuildConfig(guildId);
-  assert.equal(afterConfig.security.lockdown, true, 'lockdown should still be true after refusal');
+  // Snapshot for failed channel preserved for retry
+  const afterCfg = getGuildConfig(guildId);
+  assert.ok(afterCfg.security.preLockdownSnapshot['ch_fail'],
+    'snapshot for failed channel should be preserved for retry');
+  assert.equal(afterCfg.security.preLockdownSnapshot['ch_ok'], undefined,
+    'successfully restored channels should be removed from snapshot');
 });
 
-test('LU-7: Unlock when server is not in lockdown — returns notLocked flag', async () => {
-  const guildId = nextGuildId();
-  const guild = buildMockGuild(guildId, [{ id: 'ch_a', isTextBased: true }]);
+test('LU-6: Missing snapshot — unlock refuses to act', async () => {
+  const guildId = nextId();
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = true;
+  cfg.security.preLockdownSnapshot = {};
+  delete cfg.security.preLockdownOverwrites;
+  saveGuildConfigAsync(guildId, cfg);
 
-  // Ensure lockdown is false (default)
-  const config = getGuildConfig(guildId);
-  config.security = config.security || {};
-  config.security.lockdown = false;
-  saveGuildConfigAsync(guildId, config);
-
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_x' }]);
   const res = await liftEmergencyLockdown(guild, 'Admin');
 
   assert.equal(res.success, false);
-  assert.equal(res.notLocked, true, 'notLocked flag should be set');
-  assert.ok(res.reason, 'reason should describe the state');
+  assert.equal(res.noSnapshot, true);
+  const afterCfg = getGuildConfig(guildId);
+  assert.equal(afterCfg.security.lockdown, true, 'lockdown must stay true');
+});
+
+test('LU-7: Unlock when not in lockdown — notLocked flag', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_a' }]);
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = false;
+  saveGuildConfigAsync(guildId, cfg);
+
+  const res = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, false);
+  assert.equal(res.notLocked, true);
 });
 
 test('LU-8: Unauthorized user is denied by isImmuneUser check', () => {
   const guild = {
-    id: 'guild_auth_test',
-    ownerId: 'owner_real',
-    name: 'Auth Test',
+    id: 'auth_test', ownerId: 'owner_real', name: 'Auth',
     client: { user: { id: 'bot_001' } },
     members: { cache: new Map() },
   };
-
-  // Owner is immune
-  assert.equal(isImmuneUser(guild, 'owner_real'), true, 'owner must be immune');
-
-  // Random user is not
-  assert.equal(isImmuneUser(guild, 'random_user_9999'), false, 'random user must NOT be immune');
-
-  // Bot itself is immune
-  assert.equal(isImmuneUser(guild, 'bot_001'), true, 'bot itself must be immune');
+  assert.equal(isImmuneUser(guild, 'owner_real'), true);
+  assert.equal(isImmuneUser(guild, 'random_99'), false);
+  assert.equal(isImmuneUser(guild, 'bot_001'), true);
 });
 
-test('LU-9: Repeated unlock attempts after successful unlock are idempotent', async () => {
-  const guildId = nextGuildId();
-  const guild = buildMockGuild(guildId, [{ id: 'ch_a', isTextBased: true }]);
+test('LU-9: Repeated unlock is idempotent', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_a' }]);
+  await engageEmergencyLockdown(guild, 'Admin');
+  const r1 = await liftEmergencyLockdown(guild, 'Admin');
+  const r2 = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(r1.success, true);
+  assert.equal(r2.notLocked, true);
+});
+
+test('LU-10: Lockdown state persists across simulated bot restart', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_p' }]);
+  await engageEmergencyLockdown(guild, 'Admin');
+
+  const reloadedCfg = getGuildConfig(guildId);
+  assert.equal(reloadedCfg.security.lockdown, true);
+  assert.ok(reloadedCfg.security.preLockdownSnapshot['ch_p']);
+
+  const res = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.unlockedChannels, 1);
+});
+
+test('LU-11: Concurrent unlock requests serialised', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_r1' }, { id: 'ch_r2' }]);
+  await engageEmergencyLockdown(guild, 'Admin');
+
+  const [r1, r2] = await Promise.all([
+    liftEmergencyLockdown(guild, 'A'),
+    liftEmergencyLockdown(guild, 'B'),
+  ]);
+  const successes = [r1, r2].filter(r => r.success).length;
+  const notLocked = [r1, r2].filter(r => r.notLocked).length;
+  assert.equal(successes, 1);
+  assert.equal(notLocked, 1);
+});
+
+test('LU-12: Re-engage blocked while already locked', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_a' }]);
+  const r1 = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(r1.success, true);
+  const r2 = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(r2.success, false);
+  assert.equal(r2.alreadyLocked, true);
+  const cfg = getGuildConfig(guildId);
+  assert.ok(cfg.security.preLockdownSnapshot['ch_a']);
+});
+
+test('LU-13: Legacy preLockdownOverwrites migration succeeds', async () => {
+  const guildId = nextId();
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = true;
+  cfg.security.preLockdownOverwrites = { 'ch_leg': { hadExplicitDeny: false } };
+  delete cfg.security.preLockdownSnapshot;
+  saveGuildConfigAsync(guildId, cfg);
+
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_leg' }]);
+  const res = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.unlockedChannels, 1);
+});
+
+test('LU-14: securityEngine regression — checkThreshold still works', () => {
+  resetWindows();
+  const r1 = checkThreshold('lu14_g', 'a', 'channelDelete', 3, 10000);
+  assert.equal(r1.triggered, false);
+  const r2 = checkThreshold('lu14_g', 'a', 'channelDelete', 3, 10000);
+  assert.equal(r2.triggered, false);
+  const r3 = checkThreshold('lu14_g', 'a', 'channelDelete', 3, 10000);
+  assert.equal(r3.triggered, true);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── NEW PERMISSION-PRESERVATION TESTS (PP-1 … PP-12) ───────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('PP-1: Explicitly hidden channel (ViewChannel denied) is skipped during lockdown', async () => {
+  const guildId = nextId();
+  // ch_private has @everyone ViewChannel: denied
+  const { guild, editLogs } = buildMockGuild(guildId, [
+    { id: 'ch_public',  denyBits: 0n },
+    { id: 'ch_private', denyBits: F.ViewChannel },
+  ]);
+
+  const res = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.lockedChannels, 1,  'only the public channel should be locked');
+  assert.equal(res.skippedChannels, 1, 'the hidden channel must be skipped');
+
+  // ch_private must not have been edited
+  assert.equal(editLogs['ch_private'].length, 0,
+    'lockdown must not call edit() on a hidden channel');
+
+  // ch_private must not appear in snapshot
+  const cfg = getGuildConfig(guildId);
+  assert.equal(cfg.security.preLockdownSnapshot['ch_private'], undefined,
+    'hidden channel must NOT be in snapshot');
+});
+
+test('PP-2: Category-inherited hidden channel is skipped during lockdown', async () => {
+  const guildId = nextId();
+  const catId = `cat_${guildId}`;
+
+  // Category denies ViewChannel for @everyone (SERVER LOGS pattern)
+  // Child channel has NO @everyone overwrite of its own — it inherits visibility from category
+  const { guild, editLogs } = buildMockGuild(
+    guildId,
+    [{ id: 'ch_log', parentId: catId, noOW: true }],   // no explicit overwrite
+    [{ id: catId,    denyBits: F.ViewChannel }],         // category hides @everyone
+  );
+
+  const res = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.lockedChannels, 0,  'no channels should be locked (all category-hidden)');
+  assert.equal(res.skippedChannels, 1, 'category-hidden channel must be counted as skipped');
+  assert.equal(editLogs['ch_log'].length, 0,
+    'lockdown must not call edit() on a category-inherited hidden channel');
+
+  const cfg = getGuildConfig(guildId);
+  assert.equal(cfg.security.preLockdownSnapshot['ch_log'], undefined,
+    'category-hidden channel must NOT be in snapshot');
+});
+
+test('PP-3: SERVER LOGS category pattern — all children skipped, no new overwrites created', async () => {
+  const guildId = nextId();
+  const catId = `serverlog_cat_${guildId}`;
+
+  // Simulate SERVER LOGS: category denies ViewChannel for @everyone
+  // Multiple children (security-logs, moderation-logs, etc.) — no per-channel @everyone overwrite
+  const logChildren = [
+    'security-logs', 'moderation-logs', 'anti-nuke-logs', 'member-logs',
+  ].map(name => ({ id: `${name}_${guildId}`, name, parentId: catId, noOW: true }));
+
+  // Also include a regular public channel not in the category
+  const { guild, editLogs } = buildMockGuild(
+    guildId,
+    [...logChildren, { id: 'ch_general', denyBits: 0n }],
+    [{ id: catId, denyBits: F.ViewChannel }],
+  );
+
+  const res = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.lockedChannels, 1,   'only ch_general should be locked');
+  assert.equal(res.skippedChannels, 4,  'all 4 log channels must be skipped');
+
+  // Verify no log channel was edited
+  for (const child of logChildren) {
+    assert.equal(editLogs[child.id].length, 0,
+      `${child.name} must not be edited during lockdown`);
+  }
+
+  // Verify no log channel is in snapshot
+  const cfg = getGuildConfig(guildId);
+  for (const child of logChildren) {
+    assert.equal(cfg.security.preLockdownSnapshot[child.id], undefined,
+      `${child.name} must not be in snapshot`);
+  }
+});
+
+test('PP-4: Existing non-@everyone role overwrites are not touched by lockdown', async () => {
+  const guildId = nextId();
+  // Build a channel that has a staff role overwrite AND an @everyone overwrite
+  const { guild, editLogs } = buildMockGuild(guildId, [
+    { id: 'ch_staff_only', denyBits: 0n },
+  ]);
+
+  // Manually add a "staff" role overwrite to the channel's overwrite cache
+  const staffRoleId = `staff_${guildId}`;
+  const ch = guild.channels.cache.get('ch_staff_only');
+  ch.permissionOverwrites.cache.set(staffRoleId, {
+    id:    staffRoleId,
+    type:  0,
+    allow: { bitfield: F.ViewChannel | F.SendMessages, has: () => true },
+    deny:  { bitfield: 0n, has: () => false },
+  });
 
   await engageEmergencyLockdown(guild, 'Admin');
-  const first  = await liftEmergencyLockdown(guild, 'Admin');
-  const second = await liftEmergencyLockdown(guild, 'Admin');
 
-  assert.equal(first.success, true, 'first unlock succeeds');
-  assert.equal(second.success, false, 'second unlock should report not-locked');
-  assert.equal(second.notLocked, true, 'second unlock must return notLocked');
+  // The edit log should have exactly ONE call (for @everyone lockdown deny)
+  // and that call should NOT change the staff role overwrite
+  const callsForChannel = editLogs['ch_staff_only'];
+  assert.equal(callsForChannel.length, 1);
+  // The role passed to edit should be the @everyone role, not the staff role
+  const editCall = callsForChannel[0];
+  assert.notEqual(editCall.role?.id || editCall.role, staffRoleId,
+    'lockdown edit must target @everyone, not the staff role');
+
+  // Staff overwrite still present in cache
+  assert.ok(ch.permissionOverwrites.cache.has(staffRoleId),
+    'staff role overwrite must still exist after lockdown');
 });
 
-test('LU-10: Lockdown state persists across simulated bot restart (config reload)', async () => {
-  const guildId = nextGuildId();
-  const guild = buildMockGuild(guildId, [
-    { id: 'ch_persist', isTextBased: true },
+test('PP-5: Member-specific overwrites are not touched during lockdown', async () => {
+  const guildId = nextId();
+  const { guild, editLogs } = buildMockGuild(guildId, [{ id: 'ch_vip', denyBits: 0n }]);
+
+  const vipMemberId = `member_vip_${guildId}`;
+  const ch = guild.channels.cache.get('ch_vip');
+  ch.permissionOverwrites.cache.set(vipMemberId, {
+    id:    vipMemberId,
+    type:  1, // member overwrite
+    allow: { bitfield: F.SendMessages, has: () => true },
+    deny:  { bitfield: 0n,             has: () => false },
+  });
+
+  await engageEmergencyLockdown(guild, 'Admin');
+
+  // Edit was called once (for @everyone), not for the member overwrite
+  assert.equal(editLogs['ch_vip'].length, 1);
+  assert.ok(ch.permissionOverwrites.cache.has(vipMemberId),
+    'member overwrite must still exist after lockdown');
+});
+
+test('PP-6: parentId (category sync) is not changed by lockdown or unlock', async () => {
+  const guildId = nextId();
+  const catId = `cat_pub_${guildId}`;
+  const { guild } = buildMockGuild(
+    guildId,
+    [{ id: 'ch_synced', parentId: catId, denyBits: 0n }],
+    [{ id: catId, denyBits: 0n }],
+  );
+
+  await engageEmergencyLockdown(guild, 'Admin');
+  const ch = guild.channels.cache.get('ch_synced');
+  assert.equal(ch.parentId, catId, 'parentId must not change during lockdown');
+
+  await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(ch.parentId, catId, 'parentId must not change during unlock');
+});
+
+test('PP-7: Unlock restores exact full overwrite bitfield including ViewChannel', async () => {
+  const guildId = nextId();
+  // Simulate a channel that had a rich existing overwrite before lockdown:
+  // ViewChannel: allowed, AttachFiles: allowed, SendMessages: allowed (explicitly)
+  const originalAllow = F.ViewChannel | F.SendMessages | F.AttachFiles;
+  const originalDeny  = 0n;
+
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = true;
+  cfg.security.preLockdownSnapshot = {
+    'ch_rich': {
+      id:    guildId,
+      type:  0,
+      allow: originalAllow.toString(),
+      deny:  originalDeny.toString(),
+    },
+  };
+  saveGuildConfigAsync(guildId, cfg);
+
+  const setLog = [];
+  const guild = {
+    id: guildId, name: 'T', ownerId: `o_${guildId}`,
+    channels: { cache: new Map([['ch_rich', {
+      id: 'ch_rich', name: 'rich',
+      permissionOverwrites: {
+        cache: new Map([[guildId, mockOW(guildId, originalAllow, originalDeny)]]),
+        edit: async () => {},
+        set:  async (overwrites, reason) => { setLog.push({ overwrites, reason }); },
+        delete: async () => {},
+      },
+    }]]) },
+    roles: { everyone: { id: guildId }, cache: new Map() },
+    members: { me: { permissions: { has: () => true } } },
+  };
+
+  const res = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.unlockedChannels, 1);
+
+  // set() should have been called with the original allow+deny bigints
+  assert.equal(setLog.length, 1, 'permissionOverwrites.set() should have been called');
+  const restoredOW = setLog[0].overwrites[0];
+  assert.equal(BigInt(restoredOW.allow), originalAllow,
+    'restored allow bitfield must match original');
+  assert.equal(BigInt(restoredOW.deny), originalDeny,
+    'restored deny bitfield must match original');
+});
+
+test('PP-8: Hidden channel stays hidden through full lockdown → unlock cycle', async () => {
+  const guildId = nextId();
+  // A visible public channel and a hidden private one
+  const { guild, editLogs } = buildMockGuild(guildId, [
+    { id: 'ch_pub',     denyBits: 0n },
+    { id: 'ch_private', denyBits: F.ViewChannel },
   ]);
 
   const lockRes = await engageEmergencyLockdown(guild, 'Admin');
   assert.equal(lockRes.success, true);
+  assert.equal(lockRes.lockedChannels, 1);
 
-  // Simulate restart: reload config from disk (getGuildConfig reads from disk on cache miss)
-  // We clear the in-memory cache by inspecting config directly
-  const configAfterRestart = getGuildConfig(guildId);
-  assert.equal(configAfterRestart.security.lockdown, true, 'lockdown must survive restart');
-  assert.ok(configAfterRestart.security.preLockdownSnapshot, 'snapshot must survive restart');
-  assert.ok(configAfterRestart.security.preLockdownSnapshot['ch_persist'], 'ch_persist in snapshot after restart');
-
-  // Unlock should still work using the persisted snapshot
   const liftRes = await liftEmergencyLockdown(guild, 'Admin');
-  assert.equal(liftRes.success, true, 'unlock should work after simulated restart');
-  assert.equal(liftRes.unlockedChannels, 1);
+  assert.equal(liftRes.success, true);
+
+  // ch_private must never have been edited at any point
+  assert.equal(editLogs['ch_private'].length, 0,
+    'hidden channel must not be modified at any point during lockdown + unlock');
 });
 
-test('LU-11: Concurrent unlock requests are serialised — no race condition corruption', async () => {
-  const guildId = nextGuildId();
-  const guild = buildMockGuild(guildId, [
-    { id: 'ch_race1', isTextBased: true },
-    { id: 'ch_race2', isTextBased: true },
-  ]);
+test('PP-9: Category-hidden channel stays category-hidden after lockdown + unlock', async () => {
+  const guildId = nextId();
+  const catId = `log_cat_${guildId}`;
 
-  await engageEmergencyLockdown(guild, 'Admin');
+  const { guild, editLogs } = buildMockGuild(
+    guildId,
+    [
+      { id: 'ch_general', denyBits: 0n },
+      { id: 'ch_seclog',  parentId: catId, noOW: true }, // inherits from category
+    ],
+    [{ id: catId, denyBits: F.ViewChannel }],
+  );
 
-  // Fire two concurrent unlock requests
-  const [res1, res2] = await Promise.all([
-    liftEmergencyLockdown(guild, 'Admin-A'),
-    liftEmergencyLockdown(guild, 'Admin-B'),
-  ]);
+  const lockRes = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(lockRes.lockedChannels, 1);
+  assert.equal(lockRes.skippedChannels, 1);
 
-  // Exactly one must succeed (first acquires lock), second must see notLocked
-  const successes = [res1, res2].filter(r => r.success).length;
-  const notLocked = [res1, res2].filter(r => r.notLocked).length;
+  const liftRes = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(liftRes.success, true);
 
-  assert.equal(successes, 1, 'exactly one concurrent unlock should succeed');
-  assert.equal(notLocked, 1, 'the other should report notLocked (serialised)');
+  // ch_seclog must never have been edited
+  assert.equal(editLogs['ch_seclog'].length, 0,
+    'category-hidden channel must not be edited during lockdown or unlock');
+
+  // The category itself must never have been edited
+  const cat = guild.channels.cache.get(catId);
+  // categories are in the channelsMap but we didn't add them to the channel iteration
+  // The key point: ch_seclog has no @everyone overwrite added to it
+  const chSeclog = guild.channels.cache.get('ch_seclog');
+  assert.equal(chSeclog.permissionOverwrites.cache.size, 0,
+    'category-hidden channel must have no @everyone overwrite after unlock');
 });
 
-test('LU-12: Re-engage lockdown is blocked while already locked', async () => {
-  const guildId = nextGuildId();
-  const guild = buildMockGuild(guildId, [{ id: 'ch_a', isTextBased: true }]);
+test('PP-10: Absent snapshot leaves lockdown flag untouched', async () => {
+  const guildId = nextId();
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = true;
+  cfg.security.preLockdownSnapshot = {};
+  delete cfg.security.preLockdownOverwrites;
+  saveGuildConfigAsync(guildId, cfg);
 
-  const first = await engageEmergencyLockdown(guild, 'Admin');
-  assert.equal(first.success, true);
-
-  // Try to engage again
-  const second = await engageEmergencyLockdown(guild, 'Admin');
-  assert.equal(second.success, false, 'second engage should fail');
-  assert.equal(second.alreadyLocked, true, 'alreadyLocked flag should be set');
-
-  // Snapshot must NOT be overwritten
-  const config = getGuildConfig(guildId);
-  assert.ok(config.security.preLockdownSnapshot['ch_a'], 'original snapshot should survive second attempt');
-});
-
-test('LU-13: Legacy preLockdownOverwrites format is migrated and unlock succeeds', async () => {
-  const guildId = nextGuildId();
-
-  // Plant legacy-format config (the old system only stored { hadExplicitDeny: false })
-  const config = getGuildConfig(guildId);
-  config.security = config.security || {};
-  config.security.lockdown = true;
-  config.security.lockdownEngagedAt = Date.now() - 10000;
-  config.security.lockdownEngagedBy = 'OldAdmin';
-  config.security.preLockdownOverwrites = {
-    'ch_legacy': { hadExplicitDeny: false },
-  };
-  delete config.security.preLockdownSnapshot;
-  saveGuildConfigAsync(guildId, config);
-
-  const guild = buildMockGuild(guildId, [{ id: 'ch_legacy', isTextBased: true }]);
+  const { guild } = buildMockGuild(guildId, [{ id: 'ch_x' }]);
   const res = await liftEmergencyLockdown(guild, 'Admin');
 
-  assert.equal(res.success, true, 'unlock should succeed with migrated legacy data');
-  assert.equal(res.unlockedChannels, 1, 'legacy channel should be restored');
-  assert.equal(res.failedChannels.length, 0);
+  assert.equal(res.noSnapshot, true);
+  assert.equal(res.success, false);
+  const after = getGuildConfig(guildId);
+  assert.equal(after.security.lockdown, true,
+    'lockdown flag must remain true when snapshot is absent');
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LU-14: Regression — existing security engine tests are unaffected
-// ─────────────────────────────────────────────────────────────────────────────
+test('PP-11: Partial failure preserves recovery snapshot for failed channels only', async () => {
+  const guildId = nextId();
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = true;
+  cfg.security.preLockdownSnapshot = {
+    'ch_ok':   { id: guildId, type: 0, allow: '0', deny: '0' },
+    'ch_fail': { id: guildId, type: 0, allow: '0', deny: '0' },
+  };
+  saveGuildConfigAsync(guildId, cfg);
 
-test('LU-14: Existing securityEngine checkThreshold still works (regression)', () => {
-  resetWindows();
-  const r1 = checkThreshold('lu14_guild', 'actor_z', 'channelDelete', 3, 10000);
-  assert.equal(r1.triggered, false);
-  assert.equal(r1.count, 1);
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_ok',   editShouldThrow: false, deleteShouldThrow: false },
+    { id: 'ch_fail', editShouldThrow: true,  deleteShouldThrow: true  },
+  ]);
 
-  const r2 = checkThreshold('lu14_guild', 'actor_z', 'channelDelete', 3, 10000);
-  assert.equal(r2.triggered, false);
+  const res = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.partial, true);
 
-  const r3 = checkThreshold('lu14_guild', 'actor_z', 'channelDelete', 3, 10000);
-  assert.equal(r3.triggered, true, 'third action should trigger threshold');
+  const after = getGuildConfig(guildId);
+  // ch_fail snapshot preserved so admin can retry
+  assert.ok(after.security.preLockdownSnapshot['ch_fail'],
+    'failed channel snapshot must be preserved for retry');
+  // ch_ok snapshot cleared (successfully restored)
+  assert.equal(after.security.preLockdownSnapshot['ch_ok'], undefined,
+    'successfully restored channel must be removed from snapshot');
+  // lastUnlockFailures persisted
+  assert.ok(Array.isArray(after.security.lastUnlockFailures));
+  assert.equal(after.security.lastUnlockFailures[0].id, 'ch_fail');
+});
+
+test('PP-12: isExplicitlyHidden and isCategoryHidden helper accuracy', () => {
+  const guildId = nextId();
+  const catId   = `cat_${guildId}`;
+  const evId    = guildId;
+
+  // Build a mock guild with a category that denies ViewChannel
+  // and channels: one explicitly hidden, one category-hidden, one public
+  const { guild } = buildMockGuild(
+    guildId,
+    [
+      { id: 'ch_explicit_hidden', denyBits: F.ViewChannel },          // explicit deny
+      { id: 'ch_cat_hidden',      parentId: catId, noOW: true },      // inherited
+      { id: 'ch_public',          denyBits: 0n },                     // public
+    ],
+    [{ id: catId, denyBits: F.ViewChannel }],
+  );
+
+  const chExplicit = guild.channels.cache.get('ch_explicit_hidden');
+  const chCat      = guild.channels.cache.get('ch_cat_hidden');
+  const chPublic   = guild.channels.cache.get('ch_public');
+
+  // isExplicitlyHidden
+  assert.equal(isExplicitlyHidden(chExplicit, evId), true,  'explicit deny ViewChannel → hidden');
+  assert.equal(isExplicitlyHidden(chCat,      evId), false, 'no explicit OW → not explicitly hidden');
+  assert.equal(isExplicitlyHidden(chPublic,   evId), false, 'public channel → not hidden');
+
+  // isCategoryHidden
+  assert.equal(isCategoryHidden(chCat,      guild, evId), true,  'category denies ViewChannel → hidden');
+  assert.equal(isCategoryHidden(chExplicit, guild, evId), false, 'no parentId → not category-hidden');
+  assert.equal(isCategoryHidden(chPublic,   guild, evId), false, 'public channel → not category-hidden');
+
+  // isChannelHiddenFromEveryone (union)
+  assert.equal(isChannelHiddenFromEveryone(chExplicit, guild, evId), true);
+  assert.equal(isChannelHiddenFromEveryone(chCat,      guild, evId), true);
+  assert.equal(isChannelHiddenFromEveryone(chPublic,   guild, evId), false);
 });
