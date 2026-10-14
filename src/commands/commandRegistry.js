@@ -115,85 +115,118 @@ function buildApplicationCommands() {
       .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true)),
 
     // ── SECURITY & ANTI-NUKE ──
+    // ── SECURITY COMMAND SYSTEM (CANONICAL ARCHITECTURE) ──
     new SlashCommandBuilder()
       .setName('security')
-      .setDescription('Server security engine, anti-nuke, anti-mod, lockdown and diagnostics')
+      .setDescription('Server security engine, anti-nuke, anti-mod, lockdown and recovery')
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      // Core security subcommands
       .addSubcommand(s => s.setName('status').setDescription('View security protection overview, thresholds & recent incidents'))
+      .addSubcommand(s => s.setName('diagnostics').setDescription('View measured internal latency (p50/p95/p99) and telemetry'))
+      .addSubcommand(s => s.setName('incidents').setDescription('View recent security incident history'))
+      .addSubcommand(s => s.setName('audit').setDescription('View high-level security configuration & permission health check'))
+      .addSubcommand(s => s.setName('test').setDescription('Simulate and test security event pipeline and alert dispatch'))
+      // Lockdown and recovery subcommands
       .addSubcommand(s => s.setName('lockdown').setDescription('Engage emergency lockdown while preserving private & log channels'))
       .addSubcommand(s => s.setName('unlock').setDescription('Lift emergency lockdown and restore saved permissions'))
-      .addSubcommand(s => s.setName('diagnostics').setDescription('View measured internal latency (p50/p95/p99) and engine metrics'))
-      .addSubcommand(s => s.setName('audit').setDescription('View high-level security configuration health check'))
-      .addSubcommand(s => s.setName('incidents').setDescription('View recent security incident history'))
-      .addSubcommand(s => s.setName('config').setDescription('Configure security engine enforcement, modules, and thresholds')
-        .addStringOption(o => o.setName('module').setDescription('Security module to configure').setRequired(true).addChoices(
-          { name: 'Anti-Nuke Protection', value: 'antinuke' },
-          { name: 'Anti-Mod Abuse Engine', value: 'antimod' },
-          { name: 'Anti-Raid Protection', value: 'antiraid' },
-          { name: 'Enforcement Action Policy', value: 'action' }
-        ))
-        .addStringOption(o => o.setName('toggle').setDescription('Enable or disable the module').setRequired(false).addChoices(
-          { name: 'Enable', value: 'enable' },
-          { name: 'Disable', value: 'disable' }
-        ))
-        .addStringOption(o => o.setName('action').setDescription('Enforcement action').setRequired(false).addChoices(
-          { name: 'Strip Roles & Instant Ban (Recommended)', value: 'strip_and_ban' },
-          { name: 'Strip Dangerous Roles Only (Safe)', value: 'strip_roles' },
-          { name: 'Instant Ban Only', value: 'ban' },
-          { name: 'Instant Kick', value: 'kick' },
-          { name: 'Quarantine Only', value: 'quarantine' },
-          { name: 'Alert Only (No Punishment)', value: 'alert' }
-        ))
-        .addIntegerOption(o => o.setName('threshold').setDescription('Action burst threshold limit (e.g. 3)').setRequired(false).setMinValue(1).setMaxValue(20))
-        .addIntegerOption(o => o.setName('window_seconds').setDescription('Time window in seconds (default: 15s)').setRequired(false).setMinValue(3).setMaxValue(120)))
-      .addSubcommand(s => s.setName('trust').setDescription('Manage trusted users/roles who bypass security enforcement')
-        .addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices(
-          { name: 'Add Trusted Entry', value: 'add' },
-          { name: 'Remove Trusted Entry', value: 'remove' },
-          { name: 'List Trusted Entries', value: 'list' }
-        ))
-        .addUserOption(o => o.setName('user').setDescription('User to trust/untrust').setRequired(false))
-        .addRoleOption(o => o.setName('role').setDescription('Role to trust/untrust').setRequired(false)))
-      .addSubcommand(s => s.setName('test').setDescription('Test security alert dispatch path')),
-
-    new SlashCommandBuilder()
-      .setName('antinuke')
-      .setDescription('Manage high-speed anti-nuke system')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
-      .addSubcommand(s => s.setName('enable').setDescription('Enable anti-nuke protection'))
-      .addSubcommand(s => s.setName('disable').setDescription('Disable anti-nuke protection'))
-      .addSubcommand(s => s.setName('status').setDescription('View anti-nuke status and thresholds'))
-      .addSubcommand(s => s.setName('config').setDescription('Configure enforcement action (alert, quarantine, kick, ban, strip_and_ban)')
-        .addStringOption(o => o.setName('action').setDescription('Action').setRequired(true).addChoices(
-          { name: 'Strip Roles & Instant Ban (Recommended)', value: 'strip_and_ban' },
-          { name: 'Instant Ban Only', value: 'ban' },
-          { name: 'Instant Kick', value: 'kick' },
-          { name: 'Quarantine (Strip Roles Only)', value: 'quarantine' },
-          { name: 'Alert Only (No Punishment)', value: 'alert' }
-        )))
-      .addSubcommand(s => s.setName('threshold').setDescription('Set action burst limit')
-        .addStringOption(o => o.setName('action').setDescription('Event category').setRequired(true).addChoices(
-          { name: 'Channel Delete', value: 'channelDelete' },
-          { name: 'Channel Create', value: 'channelCreate' },
-          { name: 'Role Delete', value: 'roleDelete' },
-          { name: 'Role Create', value: 'roleCreate' },
-          { name: 'Member Ban', value: 'memberBan' },
-          { name: 'Member Kick', value: 'memberKick' },
-          { name: 'Webhook Create', value: 'webhookCreate' },
-          { name: 'Bot Add', value: 'botAdd' }
-        ))
-        .addIntegerOption(o => o.setName('limit').setDescription('Max actions before trigger (e.g. 2)').setRequired(true).setMinValue(1).setMaxValue(20))
-        .addIntegerOption(o => o.setName('window_seconds').setDescription('Time window in seconds (default 15s)').setRequired(false).setMinValue(3).setMaxValue(60)))
-      .addSubcommand(s => s.setName('trust').setDescription('Manage trusted users/roles who bypass anti-nuke')
-        .addStringOption(o => o.setName('action').setDescription('Add, remove, or list').setRequired(true).addChoices(
-          { name: 'Add Trusted Entry', value: 'add' },
-          { name: 'Remove Trusted Entry', value: 'remove' },
-          { name: 'List Trusted Entries', value: 'list' }
-        ))
-        .addUserOption(o => o.setName('user').setDescription('User to trust/untrust').setRequired(false))
-        .addRoleOption(o => o.setName('role').setDescription('Role to trust/untrust').setRequired(false)))
-      .addSubcommand(s => s.setName('lockdown').setDescription('Engage emergency lockdown on all channels'))
-      .addSubcommand(s => s.setName('unlock').setDescription('Lift emergency lockdown')),
+      // Anti-nuke subcommand group
+      .addSubcommandGroup(g => g.setName('antinuke').setDescription('High-speed anti-nuke protection')
+        .addSubcommand(s => s.setName('status').setDescription('View anti-nuke protection status, limits and active thresholds'))
+        .addSubcommand(s => s.setName('configure').setDescription('Configure anti-nuke thresholds, actions, and time windows')
+          .addStringOption(o => o.setName('toggle').setDescription('Enable or disable anti-nuke').setRequired(false).addChoices(
+            { name: 'Enable', value: 'enable' },
+            { name: 'Disable', value: 'disable' }
+          ))
+          .addStringOption(o => o.setName('action').setDescription('Enforcement action').setRequired(false).addChoices(
+            { name: 'Strip Roles & Instant Ban (Recommended)', value: 'strip_and_ban' },
+            { name: 'Strip Dangerous Roles Only (Safe)', value: 'strip_roles' },
+            { name: 'Instant Ban Only', value: 'ban' },
+            { name: 'Instant Kick', value: 'kick' },
+            { name: 'Quarantine Only', value: 'quarantine' },
+            { name: 'Alert Only (No Punishment)', value: 'alert' }
+          ))
+          .addIntegerOption(o => o.setName('channel_delete_limit').setDescription('Max channel deletions allowed in window').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('channel_create_limit').setDescription('Max channel creations allowed in window').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('role_delete_limit').setDescription('Max role deletions allowed in window').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('role_create_limit').setDescription('Max role creations allowed in window').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('ban_limit').setDescription('Max member bans allowed in window').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('kick_limit').setDescription('Max member kicks allowed in window').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('window_seconds').setDescription('Rolling window in seconds (default: 15s)').setRequired(false).setMinValue(3).setMaxValue(120)))
+        .addSubcommand(s => s.setName('test').setDescription('Simulate an anti-nuke event and measure pipeline reaction time')))
+      // Anti-moderator abuse subcommand group (user requested /security antomod)
+      .addSubcommandGroup(g => g.setName('antomod').setDescription('Anti-moderator abuse protection')
+        .addSubcommand(s => s.setName('status').setDescription('View anti-moderator abuse status and velocity thresholds'))
+        .addSubcommand(s => s.setName('configure').setDescription('Configure anti-moderator abuse thresholds and containment')
+          .addStringOption(o => o.setName('toggle').setDescription('Enable or disable anti-mod engine').setRequired(false).addChoices(
+            { name: 'Enable', value: 'enable' },
+            { name: 'Disable', value: 'disable' }
+          ))
+          .addStringOption(o => o.setName('action').setDescription('Containment action').setRequired(false).addChoices(
+            { name: 'Strip Roles & Quarantine (Safe)', value: 'strip_roles' },
+            { name: 'Strip Roles & Instant Ban', value: 'strip_and_ban' },
+            { name: 'Instant Ban', value: 'ban' },
+            { name: 'Instant Kick', value: 'kick' },
+            { name: 'Alert Only', value: 'alert' }
+          ))
+          .addIntegerOption(o => o.setName('ban_limit').setDescription('Max mod bans before containment').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('kick_limit').setDescription('Max mod kicks before containment').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('timeout_limit').setDescription('Max timeouts before containment').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('role_limit').setDescription('Max role assignments before containment').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('window_seconds').setDescription('Burst window in seconds (default: 30s)').setRequired(false).setMinValue(5).setMaxValue(120)))
+        .addSubcommand(s => s.setName('test').setDescription('Simulate a mod velocity check and evaluate containment')))
+      // Anti-moderator abuse alias (for standard /security antimod)
+      .addSubcommandGroup(g => g.setName('antimod').setDescription('Anti-moderator abuse protection (standard alias)')
+        .addSubcommand(s => s.setName('status').setDescription('View anti-moderator abuse status and velocity thresholds'))
+        .addSubcommand(s => s.setName('configure').setDescription('Configure anti-moderator abuse thresholds and containment')
+          .addStringOption(o => o.setName('toggle').setDescription('Enable or disable anti-mod engine').setRequired(false).addChoices(
+            { name: 'Enable', value: 'enable' },
+            { name: 'Disable', value: 'disable' }
+          ))
+          .addStringOption(o => o.setName('action').setDescription('Containment action').setRequired(false).addChoices(
+            { name: 'Strip Roles & Quarantine (Safe)', value: 'strip_roles' },
+            { name: 'Strip Roles & Instant Ban', value: 'strip_and_ban' },
+            { name: 'Instant Ban', value: 'ban' },
+            { name: 'Instant Kick', value: 'kick' },
+            { name: 'Alert Only', value: 'alert' }
+          ))
+          .addIntegerOption(o => o.setName('ban_limit').setDescription('Max mod bans before containment').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('kick_limit').setDescription('Max mod kicks before containment').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('timeout_limit').setDescription('Max timeouts before containment').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('role_limit').setDescription('Max role assignments before containment').setRequired(false).setMinValue(1).setMaxValue(20))
+          .addIntegerOption(o => o.setName('window_seconds').setDescription('Burst window in seconds (default: 30s)').setRequired(false).setMinValue(5).setMaxValue(120)))
+        .addSubcommand(s => s.setName('test').setDescription('Simulate a mod velocity check and evaluate containment')))
+      // Anti-raid subcommand group
+      .addSubcommandGroup(g => g.setName('antiraid').setDescription('Anti-raid protection and mass join quarantine')
+        .addSubcommand(s => s.setName('status').setDescription('View anti-raid status, risk thresholds and quarantine count'))
+        .addSubcommand(s => s.setName('configure').setDescription('Configure anti-raid join thresholds and quarantine behavior')
+          .addStringOption(o => o.setName('toggle').setDescription('Enable or disable anti-raid').setRequired(false).addChoices(
+            { name: 'Enable', value: 'enable' },
+            { name: 'Disable', value: 'disable' }
+          ))
+          .addStringOption(o => o.setName('action').setDescription('Raid containment action').setRequired(false).addChoices(
+            { name: 'Quarantine Member (Recommended)', value: 'quarantine' },
+            { name: 'Instant Kick', value: 'kick' },
+            { name: 'Instant Ban', value: 'ban' },
+            { name: 'Alert Only', value: 'alert' }
+          ))
+          .addIntegerOption(o => o.setName('join_threshold').setDescription('Max joins in window before raid trigger (default: 5)').setRequired(false).setMinValue(2).setMaxValue(30))
+          .addIntegerOption(o => o.setName('window_seconds').setDescription('Join window in seconds (default: 10s)').setRequired(false).setMinValue(3).setMaxValue(60))
+          .addIntegerOption(o => o.setName('quarantine_duration_minutes').setDescription('Auto-expire quarantine in minutes (0 to disable, default: 30)').setRequired(false).setMinValue(0).setMaxValue(1440)))
+        .addSubcommand(s => s.setName('test').setDescription('Simulate a raid join wave and test risk scoring')))
+      // Trusted users and roles subcommand group
+      .addSubcommandGroup(g => g.setName('trust').setDescription('Manage trusted identities exempt from security containment')
+        .addSubcommand(s => s.setName('add').setDescription('Add an authorized user or role to trusted exemptions')
+          .addUserOption(o => o.setName('user').setDescription('User to trust').setRequired(false))
+          .addRoleOption(o => o.setName('role').setDescription('Role to trust').setRequired(false)))
+        .addSubcommand(s => s.setName('remove').setDescription('Remove a user or role from trusted exemptions')
+          .addUserOption(o => o.setName('user').setDescription('User to untrust').setRequired(false))
+          .addRoleOption(o => o.setName('role').setDescription('Role to untrust').setRequired(false)))
+        .addSubcommand(s => s.setName('list').setDescription('List all currently trusted users and roles')))
+      // Security configuration subcommand group
+      .addSubcommandGroup(g => g.setName('config').setDescription('Security engine configuration and management')
+        .addSubcommand(s => s.setName('view').setDescription('View complete active security engine configuration'))
+        .addSubcommand(s => s.setName('reset').setDescription('Reset all security configuration back to safe factory defaults')
+          .addBooleanOption(o => o.setName('confirm').setDescription('Confirm reset to factory security defaults').setRequired(true)))),
 
     // ── AUTOMOD ──
     new SlashCommandBuilder()

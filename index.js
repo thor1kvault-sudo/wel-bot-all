@@ -575,7 +575,13 @@ async function startBot() {
         const entry = logs?.entries.first();
         if (entry && Date.now() - entry.createdTimestamp < 5000 && entry.target?.id === user.id) {
           if (entry.action === AuditLogEvent.MemberKick) {
-            await handleAntiNukeEvent(guild, AuditLogEvent.MemberKick, 'memberKick', `Member Kicked (${user.tag || user.id})`, user.id);
+            await handleAntiNukeEvent(guild, AuditLogEvent.MemberKick, 'memberKick', `Member Kicked (${user.tag || user.id})`, user.id, entry.executor);
+            if (entry.executor && !entry.executor.bot) {
+              try {
+                const { handleModerationAction, MOD_ACTION_KEYS } = require('./src/security/antiMod');
+                await handleModerationAction(guild, entry.executor, MOD_ACTION_KEYS.KICK, 'Kick', user.tag || user.id);
+              } catch (_) {}
+            }
             const kickEmbed = new EmbedBuilder()
               .setColor('#FF6600')
               .setTitle('👢 Member Kicked')
@@ -807,6 +813,14 @@ async function startBot() {
   client.on('guildBanAdd', async (ban) => {
     try {
       await handleAntiNukeEvent(ban.guild, AuditLogEvent.MemberBanAdd, 'memberBan', `Member Banned (${ban.user.tag || ban.user.id})`, ban.user.id);
+      try {
+        const { resolveAuditActorRobust } = require('./src/security/securityEngine');
+        const { handleModerationAction, MOD_ACTION_KEYS } = require('./src/security/antiMod');
+        const modActor = await resolveAuditActorRobust(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
+        if (modActor && !modActor.bot) {
+          await handleModerationAction(ban.guild, modActor, MOD_ACTION_KEYS.BAN, 'Ban', ban.user?.tag || ban.user?.id);
+        }
+      } catch (_) {}
       const embed = new EmbedBuilder()
         .setColor('#ED4245')
         .setTitle('⛔ Member Banned')
@@ -818,6 +832,14 @@ async function startBot() {
 
   client.on('guildBanRemove', async (ban) => {
     try {
+      try {
+        const { resolveAuditActorRobust } = require('./src/security/securityEngine');
+        const { handleModerationAction, MOD_ACTION_KEYS } = require('./src/security/antiMod');
+        const modActor = await resolveAuditActorRobust(ban.guild, AuditLogEvent.MemberBanRemove, ban.user.id);
+        if (modActor && !modActor.bot) {
+          await handleModerationAction(ban.guild, modActor, MOD_ACTION_KEYS.UNBAN, 'Unban', ban.user?.tag || ban.user?.id);
+        }
+      } catch (_) {}
       const embed = new EmbedBuilder()
         .setColor('#57F287')
         .setTitle('🔓 Member Unbanned')

@@ -20,6 +20,7 @@ if (!token) {
 
 const rest = new REST({ version: '10' }).setToken(token);
 const commands = buildApplicationCommands();
+const payload = commands.map(c => (typeof c.toJSON === 'function' ? c.toJSON() : c));
 const isGuildOnly = process.argv.includes('--guild-only');
 
 (async () => {
@@ -33,9 +34,9 @@ const isGuildOnly = process.argv.includes('--guild-only');
     console.log(`📍 Found ${guilds.length} connected server(s): ${guilds.map(g => `"${g.name}"`).join(', ')}`);
 
     if (isGuildOnly) {
-      console.log(`⚡ Deploying ${commands.length} guild-scoped commands...`);
+      console.log(`⚡ Deploying ${payload.length} guild-scoped commands...`);
       for (const guild of guilds) {
-        await rest.put(Routes.applicationGuildCommands(user.id, guild.id), { body: commands });
+        await rest.put(Routes.applicationGuildCommands(user.id, guild.id), { body: payload });
         console.log(`✅ Guild "${guild.name}" (${guild.id}) updated.`);
       }
     } else {
@@ -47,9 +48,9 @@ const isGuildOnly = process.argv.includes('--guild-only');
         } catch (_) {}
       }
 
-      console.log(`🌐 Registering ${commands.length} application commands globally (Discord limit: 100)...`);
-      const registered = await rest.put(Routes.applicationCommands(user.id), { body: commands });
-      console.log(`🎉 Successfully registered ${registered?.length || commands.length} global commands across all connected servers.`);
+      console.log(`🌐 Registering ${payload.length} application commands globally (Discord limit: 100)...`);
+      const registered = await rest.put(Routes.applicationCommands(user.id), { body: payload });
+      console.log(`🎉 Successfully registered ${registered?.length || payload.length} global commands across all connected servers.`);
     }
   } catch (err) {
     console.error('❌ Command deployment failed:', err.message);

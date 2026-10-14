@@ -420,3 +420,417 @@ test('SO-11: /security diagnostics renders latency percentiles and honest system
   assert.ok(sentEmbed.description.includes('process.hrtime.bigint()'));
   assert.ok(sentEmbed.description.includes('0.42ms'));
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Canonical /security Command System Tests (Phase 2 & 8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('SO-12: Canonical /security status, audit, incidents, test execute with correct payload', async () => {
+  const guild = createMockGuild({ ownerId: 'admin_user_1' });
+  const adminMember = {
+    id: 'admin_user_1',
+    user: { id: 'admin_user_1', tag: 'Admin#0001' },
+    permissions: { has: () => true },
+  };
+
+  const config = getGuildConfig(guild.id, guild.name);
+  config.incidents = [
+    { action: 'channelDelete', actorTag: 'Rogue#0001', result: 'Banned', latencyMs: 14.2, timestamp: Date.now() }
+  ];
+  saveGuildConfig(guild.id, config);
+
+  for (const sub of ['status', 'audit', 'incidents', 'test']) {
+    let sentEmbed = null;
+    const mockInteraction = {
+      commandName: 'security',
+      guild,
+      member: adminMember,
+      user: adminMember.user,
+      options: {
+        getSubcommandGroup: () => null,
+        getSubcommand: () => sub,
+      },
+      reply: async (opts) => {
+        sentEmbed = opts.embeds?.[0]?.data;
+      },
+      isChatInputCommand: () => true,
+    };
+
+    await dispatchCommand(mockInteraction, { client: { ws: { ping: 18 } } });
+    assert.ok(sentEmbed, `Failed for subcommand ${sub}`);
+  }
+});
+
+test('SO-13: Canonical /security antinuke status, configure, test execute correctly', async () => {
+  const guild = createMockGuild({ ownerId: 'admin_user_1' });
+  const adminMember = {
+    id: 'admin_user_1',
+    user: { id: 'admin_user_1', tag: 'Admin#0001' },
+    permissions: { has: () => true },
+  };
+
+  // 1. Configure
+  let confEmbed = null;
+  const confInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'antinuke',
+      getSubcommand: () => 'configure',
+      getString: (name) => {
+        if (name === 'toggle') return 'enable';
+        if (name === 'action') return 'strip_and_ban';
+        return null;
+      },
+      getInteger: (name) => {
+        if (name === 'channel_delete_limit') return 5;
+        if (name === 'window_seconds') return 20;
+        return null;
+      },
+    },
+    reply: async (opts) => { confEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(confInteraction, {});
+  assert.ok(confEmbed);
+  assert.ok(confEmbed.title.includes('Anti-Nuke Configuration Updated'));
+
+  const saved = getGuildConfig(guild.id);
+  assert.strictEqual(saved.security.antiNuke, true);
+  assert.strictEqual(saved.security.action, 'strip_and_ban');
+  assert.strictEqual(saved.security.thresholds.channelDelete.limit, 5);
+  assert.strictEqual(saved.security.thresholds.channelDelete.windowMs, 20000);
+
+  // 2. Status
+  let statusEmbed = null;
+  const statusInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'antinuke',
+      getSubcommand: () => 'status',
+    },
+    reply: async (opts) => { statusEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(statusInteraction, {});
+  assert.ok(statusEmbed);
+  assert.ok(statusEmbed.title.includes('Anti-Nuke Status'));
+
+  // 3. Test
+  let testEmbed = null;
+  const testInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'antinuke',
+      getSubcommand: () => 'test',
+    },
+    reply: async (opts) => { testEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(testInteraction, {});
+  assert.ok(testEmbed);
+  assert.ok(testEmbed.title.includes('Anti-Nuke Pipeline Simulation'));
+});
+
+test('SO-14: Canonical /security antomod & antimod status, configure, test execute correctly', async () => {
+  const guild = createMockGuild({ ownerId: 'admin_user_1' });
+  const adminMember = {
+    id: 'admin_user_1',
+    user: { id: 'admin_user_1', tag: 'Admin#0001' },
+    permissions: { has: () => true },
+  };
+
+  for (const group of ['antomod', 'antimod']) {
+    // Configure
+    let confEmbed = null;
+    const confInteraction = {
+      commandName: 'security',
+      guild,
+      member: adminMember,
+      user: adminMember.user,
+      options: {
+        getSubcommandGroup: () => group,
+        getSubcommand: () => 'configure',
+        getString: (name) => {
+          if (name === 'toggle') return 'enable';
+          if (name === 'action') return 'strip_roles';
+          return null;
+        },
+        getInteger: (name) => {
+          if (name === 'ban_limit') return 4;
+          if (name === 'window_seconds') return 30;
+          return null;
+        },
+      },
+      reply: async (opts) => { confEmbed = opts.embeds?.[0]?.data; },
+      isChatInputCommand: () => true,
+    };
+    await dispatchCommand(confInteraction, {});
+    assert.ok(confEmbed);
+    assert.ok(confEmbed.title.includes('Anti-Moderator Abuse Configuration Updated'));
+
+    // Status
+    let statusEmbed = null;
+    const statusInteraction = {
+      commandName: 'security',
+      guild,
+      member: adminMember,
+      user: adminMember.user,
+      options: {
+        getSubcommandGroup: () => group,
+        getSubcommand: () => 'status',
+      },
+      reply: async (opts) => { statusEmbed = opts.embeds?.[0]?.data; },
+      isChatInputCommand: () => true,
+    };
+    await dispatchCommand(statusInteraction, {});
+    assert.ok(statusEmbed);
+    assert.ok(statusEmbed.title.includes('Anti-Moderator Abuse Engine'));
+
+    // Test
+    let testEmbed = null;
+    const testInteraction = {
+      commandName: 'security',
+      guild,
+      member: adminMember,
+      user: adminMember.user,
+      options: {
+        getSubcommandGroup: () => group,
+        getSubcommand: () => 'test',
+      },
+      reply: async (opts) => { testEmbed = opts.embeds?.[0]?.data; },
+      isChatInputCommand: () => true,
+    };
+    await dispatchCommand(testInteraction, {});
+    assert.ok(testEmbed);
+    assert.ok(testEmbed.title.includes('Anti-Mod Velocity Test'));
+  }
+});
+
+test('SO-15: Canonical /security antiraid status, configure, test execute correctly', async () => {
+  const guild = createMockGuild({ ownerId: 'admin_user_1' });
+  const adminMember = {
+    id: 'admin_user_1',
+    user: { id: 'admin_user_1', tag: 'Admin#0001' },
+    permissions: { has: () => true },
+  };
+
+  // Configure
+  let confEmbed = null;
+  const confInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'antiraid',
+      getSubcommand: () => 'configure',
+      getString: (name) => {
+        if (name === 'toggle') return 'enable';
+        if (name === 'action') return 'quarantine';
+        return null;
+      },
+      getInteger: (name) => {
+        if (name === 'join_threshold') return 6;
+        if (name === 'window_seconds') return 12;
+        if (name === 'quarantine_duration_minutes') return 45;
+        return null;
+      },
+    },
+    reply: async (opts) => { confEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(confInteraction, {});
+  assert.ok(confEmbed);
+  assert.ok(confEmbed.title.includes('Anti-Raid Configuration Updated'));
+
+  const saved = getGuildConfig(guild.id);
+  assert.strictEqual(saved.antiRaid.enabled, true);
+  assert.strictEqual(saved.antiRaid.joinThreshold, 6);
+  assert.strictEqual(saved.antiRaid.joinWindowMs, 12000);
+  assert.strictEqual(saved.antiRaid.quarantineDurationMs, 45 * 60000);
+
+  // Status
+  let statusEmbed = null;
+  const statusInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'antiraid',
+      getSubcommand: () => 'status',
+    },
+    reply: async (opts) => { statusEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(statusInteraction, {});
+  assert.ok(statusEmbed);
+  assert.ok(statusEmbed.title.includes('Anti-Raid System Status'));
+
+  // Test
+  let testEmbed = null;
+  const testInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'antiraid',
+      getSubcommand: () => 'test',
+    },
+    reply: async (opts) => { testEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(testInteraction, {});
+  assert.ok(testEmbed);
+  assert.ok(testEmbed.title.includes('Risk Simulation'));
+});
+
+test('SO-16: Canonical /security trust add, remove, list manipulate config accurately', async () => {
+  const guild = createMockGuild({ ownerId: 'admin_user_1' });
+  const adminMember = {
+    id: 'admin_user_1',
+    user: { id: 'admin_user_1', tag: 'Admin#0001' },
+    permissions: { has: () => true },
+  };
+
+  const targetUser = { id: 'trusted_u_42', tag: 'Trusted#0001' };
+  const targetRole = { id: 'trusted_r_88', name: 'SecurityStaff' };
+
+  // 1. Add
+  let addReply = null;
+  const addInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'trust',
+      getSubcommand: () => 'add',
+      getUser: (n) => n === 'user' ? targetUser : null,
+      getRole: (n) => n === 'role' ? targetRole : null,
+    },
+    reply: async (opts) => { addReply = typeof opts === 'string' ? opts : opts.content; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(addInteraction, {});
+  assert.ok(addReply.includes('Added trusted security entry'));
+
+  let conf = getGuildConfig(guild.id);
+  assert.ok(conf.security.trustedUsers.includes('trusted_u_42'));
+  assert.ok(conf.security.trustedRoles.includes('trusted_r_88'));
+
+  // 2. List
+  let listEmbed = null;
+  const listInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'trust',
+      getSubcommand: () => 'list',
+    },
+    reply: async (opts) => { listEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(listInteraction, {});
+  assert.ok(listEmbed);
+  assert.ok(listEmbed.title.includes('Security Trusted Whitelist'));
+
+  // 3. Remove
+  let remReply = null;
+  const remInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'trust',
+      getSubcommand: () => 'remove',
+      getUser: (n) => n === 'user' ? targetUser : null,
+      getRole: (n) => n === 'role' ? targetRole : null,
+    },
+    reply: async (opts) => { remReply = typeof opts === 'string' ? opts : opts.content; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(remInteraction, {});
+  assert.ok(remReply.includes('Removed trusted security entry'));
+
+  conf = getGuildConfig(guild.id);
+  assert.strictEqual(conf.security.trustedUsers.includes('trusted_u_42'), false);
+  assert.strictEqual(conf.security.trustedRoles.includes('trusted_r_88'), false);
+});
+
+test('SO-17: Canonical /security config view and reset restore factory defaults safely', async () => {
+  const guild = createMockGuild({ ownerId: 'admin_user_1' });
+  const adminMember = {
+    id: 'admin_user_1',
+    user: { id: 'admin_user_1', tag: 'Admin#0001' },
+    permissions: { has: () => true },
+  };
+
+  // Modify some settings and simulate active lockdown snapshot
+  const customConfig = getGuildConfig(guild.id, guild.name);
+  customConfig.security.antiNuke = false;
+  customConfig.security.lockdown = true;
+  customConfig.security.preLockdownSnapshot = { 'chan_123': { id: 'chan_123', allow: 0n, deny: 2048n } };
+  saveGuildConfig(guild.id, customConfig);
+
+  // 1. View
+  let viewEmbed = null;
+  const viewInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'config',
+      getSubcommand: () => 'view',
+    },
+    reply: async (opts) => { viewEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(viewInteraction, {});
+  assert.ok(viewEmbed);
+  assert.ok(viewEmbed.title.includes('Master Security Configuration'));
+
+  // 2. Reset with confirm = true
+  let resetEmbed = null;
+  const resetInteraction = {
+    commandName: 'security',
+    guild,
+    member: adminMember,
+    user: adminMember.user,
+    options: {
+      getSubcommandGroup: () => 'config',
+      getSubcommand: () => 'reset',
+      getBoolean: (n) => n === 'confirm' ? true : false,
+    },
+    reply: async (opts) => { resetEmbed = opts.embeds?.[0]?.data; },
+    isChatInputCommand: () => true,
+  };
+  await dispatchCommand(resetInteraction, {});
+  assert.ok(resetEmbed);
+  assert.ok(resetEmbed.title.includes('Reset Complete'));
+
+  // Verify factory reset state & snapshot preservation
+  const resetConfig = getGuildConfig(guild.id);
+  assert.strictEqual(resetConfig.security.antiNuke, true);
+  assert.strictEqual(resetConfig.security.antiMod, true);
+  assert.strictEqual(resetConfig.security.action, 'strip_and_ban');
+  assert.strictEqual(resetConfig.security.lockdown, true); // Active lockdown flag preserved!
+  assert.ok(resetConfig.security.preLockdownSnapshot['chan_123']); // Snapshot preserved!
+  assert.strictEqual(resetConfig.antiRaid.enabled, true);
+  assert.strictEqual(resetConfig.antiRaid.joinThreshold, 5);
+});
+

@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { buildApplicationCommands } = require('../src/commands/commandRegistry');
 const { dispatchCommand } = require('../src/commands/commandDispatcher');
 
-function createFullMockInteraction(commandName, subcommandName = null) {
+function createFullMockInteraction(commandName, subcommandName = null, subcommandGroup = null) {
   let replied = false;
   let deferred = false;
 
@@ -88,6 +88,7 @@ function createFullMockInteraction(commandName, subcommandName = null) {
     channel: mockChannel,
     isChatInputCommand: () => true,
     options: {
+      getSubcommandGroup: () => subcommandGroup,
       getSubcommand: () => subcommandName,
       getString: (name) => {
         if (name === 'rule') return 'antiSpam';
@@ -96,7 +97,7 @@ function createFullMockInteraction(commandName, subcommandName = null) {
           return 'list';
         }
         if (name === 'timeout_duration') return '5m';
-        if (name === 'toggle') return 'on';
+        if (name === 'toggle') return 'enable';
         if (name === 'song') return 'lofi hip hop';
         if (name === 'category') return 'automod';
         if (name === 'mode') return 'track';
@@ -120,7 +121,7 @@ function createFullMockInteraction(commandName, subcommandName = null) {
       getChannel: () => mockChannel,
       getRole: () => ({ id: 'role_admin', name: 'Admin' }),
       getAttachment: () => null,
-      getBoolean: (name) => false,
+      getBoolean: (name) => true,
     },
     get replied() { return replied; },
     get deferred() { return deferred; },
@@ -135,11 +136,14 @@ function createFullMockInteraction(commandName, subcommandName = null) {
 
 const registeredCommands = buildApplicationCommands();
 
-// Auto-calculate expected endpoint count from the registry so this
-// test never needs a manual number update when commands are added/removed.
+// Auto-calculate expected endpoint count from the registry traversing direct subcommands and subcommand groups
 const EXPECTED_ENDPOINTS = registeredCommands.reduce((total, cmd) => {
-  const subs = (cmd.options || []).filter(o => o.type === 1);
-  return total + (subs.length === 0 ? 1 : subs.length);
+  const directSubs = (cmd.options || []).filter(o => o.type === 1);
+  const groupSubs = (cmd.options || [])
+    .filter(o => o.type === 2)
+    .reduce((gTotal, grp) => gTotal + (grp.options || []).filter(o => o.type === 1).length, 0);
+  const totalSubs = directSubs.length + groupSubs;
+  return total + (totalSubs === 0 ? 1 : totalSubs);
 }, 0);
 
 test('Group D: Every single declared command and subcommand executes and acknowledges without timing out', async () => {
@@ -147,11 +151,12 @@ test('Group D: Every single declared command and subcommand executes and acknowl
   const failures = [];
 
   for (const cmd of registeredCommands) {
-    const subcommands = (cmd.options || []).filter(o => o.type === 1);
+    const directSubs = (cmd.options || []).filter(o => o.type === 1);
+    const groups = (cmd.options || []).filter(o => o.type === 2);
 
-    if (subcommands.length === 0) {
+    if (directSubs.length === 0 && groups.length === 0) {
       auditedEndpoints++;
-      const { interaction, getState } = createFullMockInteraction(cmd.name, null);
+      const { interaction, getState } = createFullMockInteraction(cmd.name, null, null);
       await dispatchCommand(interaction, {
         client: { ws: { ping: 25 }, user: { tag: 'THOR APEX#0001' }, guilds: { cache: new Map() }, users: { cache: new Map() } },
         getQ: () => ({ queue: [], history: [], isPlaying: false, player: null, currentTrack: null }),
@@ -162,9 +167,9 @@ test('Group D: Every single declared command and subcommand executes and acknowl
         failures.push(`/${cmd.name}`);
       }
     } else {
-      for (const sub of subcommands) {
+      for (const sub of directSubs) {
         auditedEndpoints++;
-        const { interaction, getState } = createFullMockInteraction(cmd.name, sub.name);
+        const { interaction, getState } = createFullMockInteraction(cmd.name, sub.name, null);
         await dispatchCommand(interaction, {
           client: { ws: { ping: 25 }, user: { tag: 'THOR APEX#0001' }, guilds: { cache: new Map() }, users: { cache: new Map() } },
           getQ: () => ({ queue: [], history: [], isPlaying: false, player: null, currentTrack: null }),
@@ -173,6 +178,22 @@ test('Group D: Every single declared command and subcommand executes and acknowl
         const state = getState();
         if (!state.replied && !state.deferred) {
           failures.push(`/${cmd.name} ${sub.name}`);
+        }
+      }
+      for (const grp of groups) {
+        const nestedSubs = (grp.options || []).filter(o => o.type === 1);
+        for (const sub of nestedSubs) {
+          auditedEndpoints++;
+          const { interaction, getState } = createFullMockInteraction(cmd.name, sub.name, grp.name);
+          await dispatchCommand(interaction, {
+            client: { ws: { ping: 25 }, user: { tag: 'THOR APEX#0001' }, guilds: { cache: new Map() }, users: { cache: new Map() } },
+            getQ: () => ({ queue: [], history: [], isPlaying: false, player: null, currentTrack: null }),
+            stopMusicSession: () => {},
+          });
+          const state = getState();
+          if (!state.replied && !state.deferred) {
+            failures.push(`/${cmd.name} ${grp.name} ${sub.name}`);
+          }
         }
       }
     }

@@ -168,17 +168,26 @@ function deepMerge(target, source) {
 }
 
 /**
+ * Safe JSON stringify helper that handles BigInt without throwing
+ */
+function safeStringify(data) {
+  return JSON.stringify(data, (key, value) => {
+    return typeof value === 'bigint' ? value.toString() : value;
+  }, 2);
+}
+
+/**
  * Atomically writes JSON to disk using a temporary file to prevent corruption
  */
 function writeAtomic(filePath, data) {
   const tempPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 6)}`;
   try {
-    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
+    fs.writeFileSync(tempPath, safeStringify(data), 'utf8');
     fs.renameSync(tempPath, filePath);
   } catch (err) {
     // Windows file locking / OneDrive sync fallback
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+      fs.writeFileSync(filePath, safeStringify(data), 'utf8');
       if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     } catch (_) {
       if (fs.existsSync(tempPath)) {
@@ -277,11 +286,11 @@ async function flushGuildConfig(guildId) {
   const tempPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 6)}`;
 
   try {
-    await fs.promises.writeFile(tempPath, JSON.stringify(item.data, null, 2), 'utf8');
+    await fs.promises.writeFile(tempPath, safeStringify(item.data), 'utf8');
     await fs.promises.rename(tempPath, filePath);
   } catch (err) {
     try {
-      await fs.promises.writeFile(filePath, JSON.stringify(item.data, null, 2), 'utf8');
+      await fs.promises.writeFile(filePath, safeStringify(item.data), 'utf8');
       if (fs.existsSync(tempPath)) await fs.promises.unlink(tempPath).catch(() => {});
     } catch (fallbackErr) {
       console.error(`Failed to async persist config for guild ${guildId}:`, fallbackErr.message);
