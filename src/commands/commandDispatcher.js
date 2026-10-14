@@ -299,41 +299,204 @@ async function dispatchCommand(interaction, context = {}) {
     }
     if (sub === 'lockdown') {
       const { engageEmergencyLockdown } = require('../security/backupRecovery');
+      const { isImmuneUser } = require('../security/securityEngine');
+      // Only server owner, bot owner, or trusted users may engage lockdown
+      if (!isImmuneUser(guild, user.id) && !member?.permissions?.has(PermissionsBitField.Flags.Administrator)) {
+        return safeReply(interaction, { embeds: [
+          new EmbedBuilder()
+            .setColor('#ED4245')
+            .setTitle('🚫 Unauthorised')
+            .setDescription('You must be a server administrator or trusted user to engage server lockdown.')
+            .setTimestamp()
+        ] }, true);
+      }
       await interaction.deferReply({ ephemeral: true });
-      const res = await engageEmergencyLockdown(guild, `Command Lockdown by ${user.tag}`);
-      return interaction.editReply(`🚨 **SERVER LOCKDOWN ENGAGED!** Secured **${res.lockedChannels || 0}** channels while preserving original permissions.`);
+      const res = await engageEmergencyLockdown(guild, `${user.tag} (${user.id})`);
+
+      if (res.alreadyLocked) {
+        return interaction.editReply({ embeds: [
+          new EmbedBuilder()
+            .setColor('#FEE75C')
+            .setTitle('⚠️ Already Locked')
+            .setDescription('The server is already in lockdown. Use `/security unlock` to lift it first before re-engaging.')
+            .setTimestamp()
+        ] });
+      }
+      if (!res.success) {
+        return interaction.editReply({ embeds: [
+          new EmbedBuilder()
+            .setColor('#ED4245')
+            .setTitle('❌ Lockdown Failed')
+            .setDescription(`Could not engage lockdown: ${res.reason || 'Unknown error.'}`)
+            .setTimestamp()
+        ] });
+      }
+
+      // Log to security channel
+      try {
+        const lockEmbed = new EmbedBuilder()
+          .setColor('#ED4245')
+          .setTitle('🚨 Server Lockdown Engaged')
+          .setDescription(`Emergency server lockdown has been activated. All text and voice channels have been restricted.`)
+          .addFields(
+            { name: '🔒 Channels Locked', value: `**${res.lockedChannels}**`, inline: true },
+            { name: '⏭️ Channels Skipped (Pre-locked)', value: `**${res.skippedChannels || 0}**`, inline: true },
+            { name: '👤 Engaged By', value: `${user.tag} (\`${user.id}\`)`, inline: false },
+            { name: '⏱️ Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+          )
+          .setFooter({ text: 'THOR APEX Security Engine • Use /security unlock to lift' })
+          .setTimestamp();
+        await logSecurity(guild, lockEmbed);
+      } catch (_) {}
+
+      return interaction.editReply({ embeds: [
+        new EmbedBuilder()
+          .setColor('#ED4245')
+          .setTitle('🚨 Server Lockdown Engaged')
+          .setDescription(`Server lockdown is **ACTIVE**. The original channel permissions have been saved and will be fully restored when you run \`/security unlock\`.`)
+          .addFields(
+            { name: '🔒 Channels Secured', value: `**${res.lockedChannels}**`, inline: true },
+            { name: '⏭️ Pre-locked (Skipped)', value: `**${res.skippedChannels || 0}**`, inline: true }
+          )
+          .setFooter({ text: 'Original permissions snapshot saved • THOR APEX v2.0' })
+          .setTimestamp()
+      ] });
     }
     if (sub === 'unlock') {
       const { liftEmergencyLockdown } = require('../security/backupRecovery');
+      const { isImmuneUser } = require('../security/securityEngine');
+      // Only server owner, bot owner, or trusted users / administrators may lift lockdown
+      if (!isImmuneUser(guild, user.id) && !member?.permissions?.has(PermissionsBitField.Flags.Administrator)) {
+        return safeReply(interaction, { embeds: [
+          new EmbedBuilder()
+            .setColor('#ED4245')
+            .setTitle('🚫 Unauthorised')
+            .setDescription('You must be a server administrator or trusted user to disable server lockdown.')
+            .setTimestamp()
+        ] }, true);
+      }
       await interaction.deferReply({ ephemeral: true });
-      const res = await liftEmergencyLockdown(guild, `Command Unlock by ${user.tag}`);
-      return interaction.editReply(`🟢 **Lockdown lifted.** Successfully restored **${res.unlockedChannels || 0}** channels.`);
+      const res = await liftEmergencyLockdown(guild, `${user.tag} (${user.id})`);
+
+      // Not in lockdown
+      if (res.notLocked) {
+        return interaction.editReply({ embeds: [
+          new EmbedBuilder()
+            .setColor('#5865F2')
+            .setTitle('ℹ️ Server Is Not Locked')
+            .setDescription('This server is not currently in lockdown. No action was taken.')
+            .setTimestamp()
+        ] });
+      }
+
+      // No valid snapshot
+      if (res.noSnapshot) {
+        return interaction.editReply({ embeds: [
+          new EmbedBuilder()
+            .setColor('#ED4245')
+            .setTitle('❌ Cannot Safely Unlock')
+            .setDescription('No valid lockdown snapshot was found. Refusing to blindly overwrite existing channel permissions.\n\n> Re-engage lockdown with `/security lockdown` to create a valid snapshot, then unlock again.')
+            .setTimestamp()
+        ] });
+      }
+
+      // Bot permission error
+      if (!res.success && !res.notLocked && !res.noSnapshot) {
+        return interaction.editReply({ embeds: [
+          new EmbedBuilder()
+            .setColor('#ED4245')
+            .setTitle('❌ Unlock Failed')
+            .setDescription(`Could not lift lockdown: ${res.reason || 'Unknown error.'}`)
+            .setTimestamp()
+        ] });
+      }
+
+      // Log to security channel
+      try {
+        const liftEmbed = new EmbedBuilder()
+          .setColor(res.partial ? '#FEE75C' : '#57F287')
+          .setTitle(res.partial ? '⚠️ Lockdown Partially Lifted' : '🔓 Lockdown Fully Lifted')
+          .setDescription(`Emergency server lockdown has been ${res.partial ? 'partially' : 'fully'} disabled. Channel permissions restored from snapshot.`)
+          .addFields(
+            { name: '🔓 Channels Restored', value: `**${res.unlockedChannels}**`, inline: true },
+            { name: '❌ Channels Failed', value: `**${res.failedChannels?.length || 0}**`, inline: true },
+            { name: '👤 Lifted By', value: `${user.tag} (\`${user.id}\`)`, inline: false },
+            { name: '⏱️ Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+            ...(res.failedChannels?.length > 0 ? [{
+              name: '⚠️ Failed Channels',
+              value: res.failedChannels.slice(0, 10).map(f => `• <#${f.id}> — ${f.error}`).join('\n').substring(0, 1024),
+              inline: false,
+            }] : [])
+          )
+          .setFooter({ text: 'THOR APEX Security Engine' })
+          .setTimestamp();
+        await logSecurity(guild, liftEmbed);
+      } catch (_) {}
+
+      if (res.partial) {
+        const failList = res.failedChannels.slice(0, 10)
+          .map(f => `• <#${f.id}> (\`${f.name}\`) — ${f.error}`)
+          .join('\n');
+        return interaction.editReply({ embeds: [
+          new EmbedBuilder()
+            .setColor('#FEE75C')
+            .setTitle('⚠️ Lockdown Partially Disabled')
+            .setDescription(`Restored **${res.unlockedChannels}** channels from the snapshot.\n**${res.failedChannels.length}** channel(s) could not be restored. Details have been saved — you can retry \`/security unlock\` to attempt the failed channels again.`)
+            .addFields({ name: 'Failed Channels', value: failList || 'See security logs', inline: false })
+            .setFooter({ text: 'Original permissions snapshot preserved for retry • THOR APEX v2.0' })
+            .setTimestamp()
+        ] });
+      }
+
+      return interaction.editReply({ embeds: [
+        new EmbedBuilder()
+          .setColor('#57F287')
+          .setTitle('🔓 Server Lockdown Disabled')
+          .setDescription(`Restored the saved channel permissions for **${res.unlockedChannels}** channel(s). The server is back to normal.`)
+          .setFooter({ text: 'Permissions fully restored from snapshot • THOR APEX v2.0' })
+          .setTimestamp()
+      ] });
     }
   }
 
-  // Legacy Lockdown shortcut
+  // Legacy /lockdown toggle — delegates to the same safe engine used by /security lockdown|unlock
   if (commandName === 'lockdown') {
     const toggle = interaction.options.getString('toggle', true);
+    const { engageEmergencyLockdown, liftEmergencyLockdown } = require('../security/backupRecovery');
+    await interaction.deferReply({ ephemeral: true });
     if (toggle === 'on') {
-      config.security.lockdown = true; saveGuildConfig(guild.id, config);
-      if (guild.channels?.cache) {
-        for (const [, ch] of guild.channels.cache) {
-          if (ch.isTextBased?.() && ch.permissionOverwrites?.create) {
-            await ch.permissionOverwrites.create(guild.roles?.everyone, { SendMessages: false }).catch(() => {});
-          }
-        }
+      const res = await engageEmergencyLockdown(guild, `${user.tag} (${user.id}) via /lockdown`);
+      if (res.alreadyLocked) {
+        return interaction.editReply('⚠️ Server is already in lockdown. Use `/security unlock` to lift it first.');
       }
-      return safeReply(interaction, '🚨 **SERVER LOCKDOWN ENGAGED!** `@everyone` cannot send messages.');
+      if (!res.success) {
+        return interaction.editReply(`❌ Lockdown failed: ${res.reason || 'Unknown error.'}`);
+      }
+      try {
+        const lockEmbed = new EmbedBuilder()
+          .setColor('#ED4245').setTitle('🚨 Server Lockdown Engaged')
+          .setDescription(`Lockdown engaged via \`/lockdown\` by ${user.tag}.`)
+          .addFields({ name: '🔒 Channels Locked', value: `${res.lockedChannels}`, inline: true })
+          .setTimestamp();
+        await logSecurity(guild, lockEmbed);
+      } catch (_) {}
+      return interaction.editReply(`🚨 **SERVER LOCKDOWN ENGAGED!** Secured **${res.lockedChannels}** channels while preserving original permissions.`);
     } else {
-      config.security.lockdown = false; saveGuildConfig(guild.id, config);
-      if (guild.channels?.cache) {
-        for (const [, ch] of guild.channels.cache) {
-          if (ch.isTextBased?.() && ch.permissionOverwrites?.create) {
-            await ch.permissionOverwrites.create(guild.roles?.everyone, { SendMessages: null }).catch(() => {});
-          }
-        }
+      const res = await liftEmergencyLockdown(guild, `${user.tag} (${user.id}) via /lockdown`);
+      if (res.notLocked) return interaction.editReply('ℹ️ This server is not currently in lockdown.');
+      if (res.noSnapshot) return interaction.editReply('❌ Cannot safely unlock: no valid lockdown snapshot was found.');
+      if (!res.success) return interaction.editReply(`❌ Unlock failed: ${res.reason || 'Unknown error.'}`);
+      try {
+        const liftEmbed = new EmbedBuilder()
+          .setColor('#57F287').setTitle('🔓 Lockdown Lifted')
+          .setDescription(`Lockdown lifted via \`/lockdown\` by ${user.tag}. Restored **${res.unlockedChannels}** channels.`)
+          .setTimestamp();
+        await logSecurity(guild, liftEmbed);
+      } catch (_) {}
+      if (res.partial) {
+        return interaction.editReply(`⚠️ Partially unlocked. Restored **${res.unlockedChannels}** channels. **${res.failedChannels.length}** failed — retry with \`/security unlock\`.`);
       }
-      return safeReply(interaction, '🟢 **Lockdown lifted.** Server channels restored.');
+      return interaction.editReply(`🔓 **Server lockdown disabled.** Restored the saved channel permissions for **${res.unlockedChannels}** channel(s).`);
     }
   }
 
