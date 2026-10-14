@@ -141,6 +141,13 @@ function getDefaultGuildConfig(guildId, guildName = 'Server') {
     serverStats: { enabled: false, memberChannelId: '', botChannelId: '', boostChannelId: '', categoryId: '' },
     integrations: [],
     raidmode: { active: false, originalSlowmodes: {} },
+    music247: {
+      enabled: false,
+      channelId: '',
+      textChannelId: '',
+      reconnectAttempts: 0,
+      lastError: null,
+    },
   };
 }
 
@@ -339,11 +346,21 @@ function saveGuildConfig(guildId, config) {
 }
 
 /**
- * Updates a guild configuration with a callback function.
+ * Updates a guild configuration with a callback function or partial object.
  */
-function updateGuildConfig(guildId, mutatorFn, guildName = '') {
+function updateGuildConfig(guildId, mutatorOrPatch, guildName = '') {
   const current = getGuildConfig(guildId, guildName);
-  mutatorFn(current);
+  if (typeof mutatorOrPatch === 'function') {
+    mutatorOrPatch(current);
+  } else if (mutatorOrPatch && typeof mutatorOrPatch === 'object') {
+    for (const [key, val] of Object.entries(mutatorOrPatch)) {
+      if (val && typeof val === 'object' && !Array.isArray(val) && current[key] && typeof current[key] === 'object') {
+        current[key] = { ...current[key], ...val };
+      } else {
+        current[key] = val;
+      }
+    }
+  }
   saveGuildConfig(guildId, current);
   return current;
 }

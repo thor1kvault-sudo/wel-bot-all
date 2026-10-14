@@ -1628,6 +1628,49 @@ async function dispatchCommand(interaction, context = {}) {
     }
   }
 
+  // Canonical /left command (Group 4: LEFT)
+  if (commandName === 'left') {
+    const sub = interaction.options.getSubcommand();
+    config.goodbye = config.goodbye || {};
+
+    if (sub === 'setup') {
+      const ch = interaction.options.getChannel('channel', true);
+      config.goodbye.channelId = ch.id;
+      config.goodbye.enabled = true;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `👋 Goodbye channel set to <#${ch.id}>.`);
+    }
+    if (sub === 'enable') {
+      config.goodbye.enabled = true;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, '👋 Goodbye messages **ENABLED**.');
+    }
+    if (sub === 'disable') {
+      config.goodbye.enabled = false;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, '⚠️ Goodbye messages **DISABLED**.');
+    }
+    if (sub === 'config') {
+      const gb = config.goodbye || {};
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`👋 Goodbye Configuration — ${guild.name}`)
+        .setDescription(`• **Channel:** ${gb.channelId ? `<#${gb.channelId}>` : '*Auto-detect*'}\n• **Status:** ${gb.enabled ? '🟢 Enabled' : '🔴 Disabled'}\n• **Message:** \`${gb.message || 'Default'}\``)
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+    if (sub === 'test') {
+      const payload = buildGoodbyeMessage(member, guild);
+      return interaction.reply({ ...payload, ephemeral: false });
+    }
+    if (sub === 'message') {
+      const msg = interaction.options.getString('text', true);
+      config.goodbye.message = msg;
+      saveGuildConfig(guild.id, config);
+      return safeReply(interaction, `✅ Goodbye message updated to: **${msg}**`);
+    }
+  }
+
   // 1-Click Server Setup
   if (commandName === 'setup') {
     await interaction.deferReply({ ephemeral: true });
@@ -2224,8 +2267,38 @@ async function dispatchCommand(interaction, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 7. INVITES COMMANDS
+  // 6. INVITES COMMANDS (Group 6: INV)
   // ─────────────────────────────────────────────────────────────
+  if (commandName === 'inv') {
+    const sub = interaction.options.getSubcommand?.() || 'me';
+    const inv = await guild.invites?.fetch().catch(() => null);
+
+    if (sub === 'me') {
+      let total = 0;
+      if (inv) inv.forEach(i => { if (i.inviter?.id === user.id) total += (i.uses || 0); });
+      return safeReply(interaction, `📩 You have **${total}** total invites in **${guild.name}**.`);
+    }
+
+    if (sub === 'check') {
+      const target = interaction.options.getUser('user') || user;
+      let total = 0;
+      if (inv) inv.forEach(i => { if (i.inviter?.id === target.id) total += (i.uses || 0); });
+      return safeReply(interaction, `📩 **${target.tag}** has **${total}** total invites in **${guild.name}**.`);
+    }
+
+    if (sub === 'leaderboard') {
+      if (!inv || inv.size === 0) return safeReply(interaction, 'No invite data found in this server.');
+      const totals = new Map();
+      inv.forEach(i => {
+        if (!i.inviter) return;
+        totals.set(i.inviter.id, (totals.get(i.inviter.id) || 0) + (i.uses || 0));
+      });
+      const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      const desc = sorted.map((e, i) => `${i + 1}. <@${e[0]}> — **${e[1]}** invites`).join('\n');
+      return safeReply(interaction, { embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(`Top Inviters Leaderboard — ${guild.name}`).setDescription(desc || 'No invite data.').setTimestamp()] });
+    }
+  }
+
   if (commandName === 'myinvites') {
     const inv = await guild.invites?.fetch().catch(() => null);
     let total = 0;
@@ -2255,8 +2328,253 @@ async function dispatchCommand(interaction, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 8. MUSIC & RADIO COMMANDS (musicService-backed, Rythm-style)
+  // 2. SONGS & 24/7 MUSIC COMMANDS (Group 2: SONGS)
   // ─────────────────────────────────────────────────────────────
+  if (commandName === 'songs') {
+    const subGroup = interaction.options.getSubcommandGroup(false);
+    const subCmd = interaction.options.getSubcommand(false);
+
+    // ── Subcommand Group: 24-7 ──
+    if (subGroup === '24-7') {
+      const isAuthorized = member.permissions.has(PermissionsBitField.Flags.ManageGuild) ||
+                           member.permissions.has(PermissionsBitField.Flags.Administrator) ||
+                           member.permissions.has(PermissionsBitField.Flags.ManageChannels) ||
+                           guild.ownerId === user.id;
+
+      if (subCmd === 'enable') {
+        if (!isAuthorized) {
+          return safeReply(interaction, '❌ Only server administrators or members with `Manage Server` permission can configure 24/7 music mode.', true);
+        }
+        const targetVc = interaction.options.getChannel('channel') || member?.voice?.channel;
+        if (!targetVc) {
+          return safeReply(interaction, '❌ Please join a voice channel or specify a channel with `/songs 24-7 setup` before enabling 24/7 mode.', true);
+        }
+        await interaction.deferReply();
+        if (!musicService) {
+          return interaction.editReply('❌ Music subsystem is not available.');
+        }
+        const res = await musicService.enable247(guild, targetVc, interaction.channel);
+        if (!res.success) {
+          return interaction.editReply(`❌ Could not enable 24/7 mode: ${res.message}`);
+        }
+        const embed = new EmbedBuilder()
+          .setColor('#57F287')
+          .setTitle('🟢 24/7 Music Mode Enabled')
+          .setDescription(`THOR APEX will now maintain a persistent voice connection 24/7 in **${targetVc.name}** (<#${targetVc.id}>).\n\n• **Silent Standby:** The bot remains silent when the queue is empty (no random music).\n• **Fault Recovery:** Automatic reconnection with exponential backoff on voice drops.\n• **Playback:** Use \`/play\` or \`/songs playback play\` anytime to listen.`)
+          .setFooter({ text: 'THOR APEX • 24/7 Audio' })
+          .setTimestamp();
+        return interaction.editReply({ embeds: [embed] });
+      }
+
+      if (subCmd === 'disable') {
+        if (!isAuthorized) {
+          return safeReply(interaction, '❌ Only server administrators or members with `Manage Server` permission can configure 24/7 music mode.', true);
+        }
+        await interaction.deferReply();
+        if (musicService) {
+          await musicService.disable247(guild.id);
+        }
+        const embed = new EmbedBuilder()
+          .setColor('#ED4245')
+          .setTitle('🔴 24/7 Music Mode Disabled')
+          .setDescription(`24/7 persistent voice connection has been disabled for **${guild.name}**.\nNormal disconnect behavior is restored.`)
+          .setTimestamp();
+        return interaction.editReply({ embeds: [embed] });
+      }
+
+      if (subCmd === 'status') {
+        const status = musicService ? musicService.get247Status(guild.id, guild) : { enabled: false, channelId: '', isConnected: false, status: 'disconnected', isPlaying: false, reconnectAttempts: 0 };
+        const embed = new EmbedBuilder()
+          .setColor(status.enabled ? '#57F287' : '#95A5A6')
+          .setTitle('📻 24/7 Voice Connection Status')
+          .addFields(
+            { name: '24/7 Persistence', value: status.enabled ? '✅ **Enabled**' : '❌ **Disabled**', inline: true },
+            { name: 'Target Voice Channel', value: status.channelName ? `🔊 **${status.channelName}** (<#${status.channelId}>)` : (status.channelId ? `<#${status.channelId}>` : '*(None configured)*'), inline: true },
+            { name: 'Connection State', value: status.isConnected ? '🟢 **Connected (Ready)**' : (status.status === 'connecting' ? '🟡 **Connecting**' : '⚪ **Disconnected**'), inline: true },
+            { name: 'Current Playback', value: status.isPlaying ? `🎶 Streaming: **${status.currentTrack?.title || 'Unknown'}**` : '⏹️ **Silent Standby (Queue Empty)**', inline: true },
+            { name: 'Reconnect Limit / Errors', value: status.lastError ? `⚠️ ${status.lastError}` : `✅ Clean (Attempts: ${status.reconnectAttempts}/5)`, inline: true },
+            { name: 'Hosting / Uptime Note', value: 'Voice connection remains active while bot process runs. Free tier hosting (e.g. Render) may spin down when inactive; keep health ping active for unbroken 24/7 uptime.', inline: false }
+          )
+          .setFooter({ text: 'THOR APEX • SONGS Subsystem' })
+          .setTimestamp();
+        return safeReply(interaction, { embeds: [embed] });
+      }
+
+      if (subCmd === 'setup') {
+        if (!isAuthorized) {
+          return safeReply(interaction, '❌ Only server administrators or members with `Manage Server` permission can configure 24/7 music mode.', true);
+        }
+        const targetVc = interaction.options.getChannel('channel', true);
+        if (musicService) {
+          musicService.setup247(guild, targetVc, interaction.channel);
+        }
+        const embed = new EmbedBuilder()
+          .setColor('#5865F2')
+          .setTitle('⚙️ 24/7 Voice Channel Configured')
+          .setDescription(`Designated 24/7 voice channel set to **${targetVc.name}** (<#${targetVc.id}>).\n\nUse \`/songs 24-7 enable\` to activate persistent connection.`)
+          .setTimestamp();
+        return safeReply(interaction, { embeds: [embed] });
+      }
+    }
+
+    // ── Subcommand Group: playback ──
+    if (subGroup === 'playback') {
+      if (subCmd === 'play') {
+        const vc = member?.voice?.channel;
+        if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
+        await interaction.deferReply();
+        const query = interaction.options.getString('song', true);
+        if (musicService) {
+          const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
+          if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+          if (res.isPlaylist) return interaction.editReply(`🎵 Added **${res.count}** tracks from **${res.playlistName || 'playlist'}** to queue!`);
+          return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position **#${res.position}**).`);
+        }
+        return interaction.editReply('❌ Music engine unavailable.');
+      }
+      if (subCmd === 'pause') {
+        const ok = musicService ? musicService.pause(guild.id) : false;
+        return safeReply(interaction, ok ? '⏸️ Music paused.' : 'Nothing is currently playing.');
+      }
+      if (subCmd === 'resume') {
+        const ok = musicService ? musicService.resume(guild.id) : false;
+        return safeReply(interaction, ok ? '▶️ Music resumed.' : 'Music is not paused.');
+      }
+      if (subCmd === 'skip') {
+        const session = musicService?.sessions?.get(guild.id);
+        const trackTitle = session?.currentTrack?.title || 'current track';
+        const ok = musicService ? musicService.skip(guild.id) : false;
+        return safeReply(interaction, ok ? `⏭️ Skipped: **${trackTitle}**` : 'Queue is empty!');
+      }
+      if (subCmd === 'stop') {
+        if (musicService) musicService.destroySession(guild.id);
+        return safeReply(interaction, '⏹️ Stopped music playback and cleared the session.');
+      }
+      if (subCmd === 'nowplaying') {
+        const session = musicService?.sessions?.get(guild.id);
+        if (!session || !session.currentTrack) return safeReply(interaction, 'Nothing is currently playing.');
+        return safeReply(interaction, { embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('🎵 Now Playing').setDescription(`**[${session.currentTrack.title}](${session.currentTrack.spotifyUrl || 'https://discord.com'})**\nRequested by: <@${session.currentTrack.requestedBy}>`).setFooter({ text: `Volume: ${session.volume}% • Loop: ${session.loopMode}` }).setTimestamp()] });
+      }
+      if (subCmd === 'previous') {
+        const prev = musicService ? musicService.playPrevious(guild.id) : null;
+        if (!prev) return safeReply(interaction, 'No previous tracks in history.');
+        return safeReply(interaction, `⏮️ Replaying: **${prev.title}**`);
+      }
+      if (subCmd === 'playnow') {
+        const vc = member?.voice?.channel;
+        if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
+        await interaction.deferReply();
+        const query = interaction.options.getString('song', true);
+        if (musicService) {
+          const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: true });
+          if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+          return interaction.editReply(`⚡ Now playing: **${res.firstTrack?.title || query}**!`);
+        }
+        return interaction.editReply('❌ Music engine unavailable.');
+      }
+      if (subCmd === 'seek') {
+        const timeStr = interaction.options.getString('time', true);
+        let sec = 0;
+        if (timeStr.includes(':')) {
+          const [m, s] = timeStr.split(':').map(Number);
+          sec = (m || 0) * 60 + (s || 0);
+        } else {
+          sec = parseInt(timeStr, 10) || 0;
+        }
+        await interaction.deferReply();
+        if (musicService) {
+          const res = await musicService.seek(guild.id, sec);
+          if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+          return interaction.editReply(`⏩ Jumped to **${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}** in **${res.track.title}**.`);
+        }
+        return interaction.editReply('❌ Music engine unavailable.');
+      }
+      if (subCmd === 'disconnect') {
+        const cfg = getGuildConfig(guild.id, guild.name);
+        if (cfg?.music247?.enabled) {
+          return safeReply(interaction, '⚠️ 24/7 Music Mode is active for this server! Use `/songs 24-7 disable` to turn off persistent mode and disconnect.', true);
+        }
+        if (musicService) musicService.destroySession(guild.id, true);
+        return safeReply(interaction, '👋 Disconnected from voice channel.');
+      }
+    }
+
+    // ── Subcommand Group: queue ──
+    if (subGroup === 'queue') {
+      const session = musicService?.sessions?.get(guild.id);
+      if (subCmd === 'view') {
+        if (!session || !session.queue || session.queue.length === 0) return safeReply(interaction, 'Music queue is currently empty. Use `/play` to add tracks.');
+        const page = Math.max(1, interaction.options.getInteger?.('page') || 1);
+        const pageSize = 10;
+        const start = (page - 1) * pageSize;
+        const list = session.queue.slice(start, start + pageSize).map((t, i) => `${start + i + 1}. **${t.title}**${t.artist ? ` — *${t.artist}*` : ''}${t.requestedBy ? ` (By: <@${t.requestedBy}>)` : ''}`).join('\n') || 'No tracks on this page.';
+        return safeReply(interaction, { embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(`Music Queue — ${guild.name} (Page ${page})`).setDescription(list).setFooter({ text: `Total: ${session.queue.length} tracks` }).setTimestamp()] });
+      }
+      if (subCmd === 'clear') {
+        const count = musicService ? musicService.clearQueue(guild.id) : 0;
+        return safeReply(interaction, `🗑️ Cleared **${count}** tracks from queue.`);
+      }
+      if (subCmd === 'shuffle') {
+        const count = musicService ? musicService.shuffle(guild.id) : 0;
+        return safeReply(interaction, `🔀 Shuffled **${count}** tracks in queue.`);
+      }
+      if (subCmd === 'loop') {
+        const mode = interaction.options.getString('mode', true);
+        const setMode = musicService ? musicService.setLoop(guild.id, mode) : 'off';
+        return safeReply(interaction, `🔁 Loop mode set to: **${setMode.toUpperCase()}**.`);
+      }
+    }
+
+    // ── Subcommand Group: audio ──
+    if (subGroup === 'audio') {
+      if (subCmd === 'volume') {
+        const level = interaction.options.getInteger('level', true);
+        const actual = musicService ? musicService.setVolume(guild.id, level) : level;
+        return safeReply(interaction, `🔊 Volume adjusted to **${actual}%**.`);
+      }
+      if (subCmd === 'radio') {
+        const vc = member?.voice?.channel;
+        if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
+        const genre = interaction.options.getString('genre', true);
+        await interaction.deferReply();
+        if (musicService) {
+          const radioQueries = { lofi: 'lofi hip hop radio beats to relax study to', edm: 'edm dance party hits', synthwave: 'synthwave chillwave radio', classical: 'classical piano study focus', rock: 'classic rock hits radio' };
+          const q = radioQueries[genre] || 'lofi hip hop radio';
+          const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, q, { playNow: true });
+          if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+          return interaction.editReply(`📻 Started **${genre.toUpperCase()} Radio**: streaming **${res.firstTrack?.title || q}**!`);
+        }
+        return interaction.editReply('❌ Music engine unavailable.');
+      }
+      if (subCmd === 'search') {
+        await interaction.deferReply();
+        const q = interaction.options.getString('query', true);
+        if (audioProvider) {
+          const results = await audioProvider.searchAudioTracks(q, 5);
+          if (!results || results.length === 0) return interaction.editReply(`❌ No tracks found for "${q}".`);
+          const desc = results.map((r, i) => `${i + 1}. **${r.title}**${r.artist ? ` — *${r.artist}*` : ''} (\`${Math.floor((r.durationSec || 0) / 60)}:${String((r.durationSec || 0) % 60).padStart(2, '0')}\`)`).join('\n');
+          return interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(`Search Results for "${q}"`).setDescription(desc).setFooter({ text: 'Use /play with the track title to stream.' })] });
+        }
+        return interaction.editReply('❌ Search provider unavailable.');
+      }
+      if (subCmd === 'status') {
+        const session = musicService?.sessions?.get(guild.id);
+        const connStatus = session?.connection?.state?.status || 'none';
+        const playerStatus = session?.player?.state?.status || 'none';
+        const embed = new EmbedBuilder().setColor('#5865F2').setTitle('🎵 Audio Subsystem Status').addFields({ name: 'Voice Connection', value: `\`${connStatus}\``, inline: true }, { name: 'Player Status', value: `\`${playerStatus}\``, inline: true }, { name: 'Active Queue', value: `${session?.queue?.length || 0} tracks`, inline: true }, { name: 'Current Song', value: session?.currentTrack?.title || 'None', inline: false }).setTimestamp();
+        return safeReply(interaction, { embeds: [embed] });
+      }
+      if (subCmd === 'lyrics') {
+        await interaction.deferReply();
+        const session = musicService?.sessions?.get(guild.id);
+        const songName = interaction.options.getString('song') || session?.currentTrack?.title;
+        if (!songName) return interaction.editReply('❌ No song specified or currently playing.');
+        return interaction.editReply({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle(`Lyrics: ${songName}`).setDescription(`*Lyrics preview for **${songName}***\n\n[Full lyrics available on Genius](https://genius.com)`).setFooter({ text: 'THOR APEX • Lyrics Provider' })] });
+      }
+    }
+  }
+
+  // Standalone playback command /play
   if (commandName === 'play') {
     const vc = member?.voice?.channel;
     if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
@@ -2520,7 +2838,13 @@ async function dispatchCommand(interaction, context = {}) {
 
   // ── disconnect ──
   if (commandName === 'disconnect') {
-    if (musicService) { musicService.destroySession(guild.id); }
+    if (musicService) {
+      const cfg = getGuildConfig(guild.id, guild.name);
+      if (cfg?.music247?.enabled) {
+        return safeReply(interaction, '⚠️ 24/7 Music Mode is active for this server! Use `/songs 24-7 disable` to turn off persistent mode and disconnect.', true);
+      }
+      musicService.destroySession(guild.id, true);
+    }
     else if (stopMusicSession) { stopMusicSession(guild.id); }
     return safeReply(interaction, '👋 Disconnected from voice channel and released all resources.');
   }
@@ -3296,6 +3620,80 @@ async function dispatchCommand(interaction, context = {}) {
         .setDescription(desc)
         .setFooter({ text: 'Safe sandbox execution — no actual server members punished.' })
         .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] });
+    }
+  }
+
+  // Canonical /games command (Group 7: GAMES)
+  if (commandName === 'games') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'coinflip') {
+      const result = Math.random() < 0.5 ? 'Heads' : 'Tails';
+      return safeReply(interaction, `🪙 You flipped a coin and got **${result}**!`, false);
+    }
+
+    if (sub === 'dice') {
+      const sides = interaction.options.getInteger('sides') || 6;
+      const roll = Math.floor(Math.random() * sides) + 1;
+      return safeReply(interaction, `🎲 Rolled a d${sides}: **${roll}**!`, false);
+    }
+
+    if (sub === '8ball') {
+      const question = interaction.options.getString('question', true);
+      const answers = [
+        'It is certain.', 'Without a doubt.', 'You may rely on it.', 'Yes definitely.',
+        'As I see it, yes.', 'Most likely.', 'Outlook good.', 'Yes.', 'Signs point to yes.',
+        'Reply hazy, try again.', 'Ask again later.', 'Better not tell you now.', 'Cannot predict now.',
+        'Concentrate and ask again.', 'Don\'t count on it.', 'My reply is no.', 'My sources say no.',
+        'Outlook not so good.', 'Very doubtful.'
+      ];
+      const answer = answers[Math.floor(Math.random() * answers.length)];
+      const embed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🎱 Magic 8-Ball')
+        .addFields(
+          { name: 'Question', value: question },
+          { name: 'Answer', value: `**${answer}**` }
+        )
+        .setTimestamp();
+      return safeReply(interaction, { embeds: [embed] }, false);
+    }
+
+    if (sub === 'rps') {
+      const choice = interaction.options.getString('choice', true).toLowerCase();
+      const botChoices = ['rock', 'paper', 'scissors'];
+      const botPick = botChoices[Math.floor(Math.random() * botChoices.length)];
+      const icons = { rock: '🪨 Rock', paper: '📄 Paper', scissors: '✂️ Scissors' };
+
+      let resultText = '';
+      if (choice === botPick) resultText = "It's a tie!";
+      else if (
+        (choice === 'rock' && botPick === 'scissors') ||
+        (choice === 'paper' && botPick === 'rock') ||
+        (choice === 'scissors' && botPick === 'paper')
+      ) {
+        resultText = '🎉 You win!';
+      } else {
+        resultText = '🤖 THOR APEX wins!';
+      }
+
+      return safeReply(interaction, `You chose **${icons[choice] || choice}** vs Bot's **${icons[botPick]}**.\n\n**${resultText}**`, false);
+    }
+
+    if (sub === 'points') {
+      config.points = config.points || {};
+      const target = interaction.options.getUser('user') || user;
+      const pts = config.points[target.id] || 0;
+      return safeReply(interaction, `💰 <@${target.id}> currently has **${pts.toLocaleString()}** points.`);
+    }
+
+    if (sub === 'leaderboard') {
+      config.points = config.points || {};
+      const sorted = Object.entries(config.points).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      if (sorted.length === 0) return safeReply(interaction, 'No points data available yet.');
+      const desc = sorted.map(([uid, p], i) => `${i + 1}. <@${uid}> — **${p.toLocaleString()}** pts`).join('\n');
+      const embed = new EmbedBuilder().setColor('#FEE75C').setTitle(`🏆 Points Leaderboard — ${guild.name}`).setDescription(desc).setTimestamp();
       return safeReply(interaction, { embeds: [embed] });
     }
   }

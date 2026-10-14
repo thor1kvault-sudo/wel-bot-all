@@ -453,10 +453,11 @@ async function startBot() {
       try {
         console.log(`📡 Registering ${cmds.length} application commands globally (Discord limit: 100)...`);
 
-        // Clean up stale guild-scoped commands to prevent duplicate entries in Discord command picker
-        for (const guild of client.guilds.cache.values()) {
+        // Clean up stale guild-scoped commands ONLY if a specific target guild is explicitly configured
+        const targetGuildId = process.env.GUILD_ID;
+        if (targetGuildId) {
           try {
-            await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: [] });
+            await rest.put(Routes.applicationGuildCommands(client.user.id, targetGuildId), { body: [] });
           } catch (_) {}
         }
 
@@ -468,6 +469,13 @@ async function startBot() {
           console.error('Detailed Discord API response:', JSON.stringify(err.rawError));
         }
       }
+    }
+
+    // ── Restore Persistent 24/7 Voice Connections Across Configured Servers ──
+    if (musicService && typeof musicService.init247Connections === 'function') {
+      await musicService.init247Connections(client).catch(err => {
+        console.error('[24/7 Music] Startup connection restoration error:', err.message);
+      });
     }
 
     // ── Automated Background Tickers ──
