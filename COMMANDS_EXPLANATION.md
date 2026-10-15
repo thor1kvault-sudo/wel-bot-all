@@ -1,173 +1,175 @@
-# 🛡️ THOR APEX — DISCORD SECURITY, ANTI-NUKE, AUTOMOD & WELCOME BOT
-## Complete Command & Feature Documentation Guide
+# 🛡️ THOR APEX — DISCORD SECURITY, MUSIC, WELCOME & MANAGEMENT BOT
+## Canonical Command Guide & Feature Documentation
+
+THOR APEX is organized into **Seven Core Command Groups**, registered in strict canonical order, validated against Discord API v10 constraints:
+
+1. **SECURITY**
+2. **SONGS**
+3. **WELCOME**
+4. **LEFT**
+5. **LOGS**
+6. **INV**
+7. **GAMES**
+*(Followed by General Utilities)*
 
 ---
 
-### 🛡️ 1. High-Speed Anti-Nuke Security Commands
-* **`/security status`** — Displays real-time security protection status, enforcement policy, and active lockdowns.
-* **`/security audit`** — Audits bot role hierarchy, administrative permissions, and audit log access in this server.
-* **`/security incidents`** — Displays recent intercepted security incidents, actors, detection latencies, and containment results.
-* **`/security test`** — Tests security notification paths and verified event dispatching.
-* **`/antinuke enable`** — Enables real-time sub-second Anti-Nuke protection across channels, roles, webhooks, bans, and bots.
-* **`/antinuke disable`** — Temporarily disables Anti-Nuke protection (Server Owner / Administrator only).
-* **`/antinuke status`** — Displays per-guild burst limits, windows, and current containment action.
-* **`/antinuke config action:<action>`** — Configures automated enforcement response:
-  * `strip_and_ban`: Instantly removes dangerous roles and bans the offender (Recommended).
-  * `ban`: Immediately bans the offender.
-  * `kick`: Kicks the offender from the server.
-  * `quarantine`: Strips all administrative and assigned roles without banning.
-  * `alert`: Logs detection without automated punishment.
-* **`/antinuke threshold action:<action> limit:<number> [window_seconds:<seconds>]`** — Sets customizable burst trigger limits (e.g. max 2 channel deletions within 15 seconds).
-* **`/antinuke trust add user:@User` / `role:@Role`** — Adds a user or role to the Anti-Nuke trusted exemption list.
-* **`/antinuke trust remove user:@User` / `role:@Role`** — Removes an entry from the trusted list.
-* **`/antinuke trust list`** — Lists all authorized trusted users and roles.
-* **`/antinuke lockdown`** — Immediately locks down all channels (denies `@everyone` SendMessages) in emergencies.
-* **`/antinuke unlock`** — Lifts emergency server lockdown and restores normal channel permissions.
+## 🛡️ 1. SECURITY (30 Commands)
 
----
+### Canonical `/security` Command Suite
+* **`/security status`** — Displays real-time security protection overview, active engine status, and thread health.
+* **`/security config view|reset`** — View or restore factory defaults for security configurations.
+* **`/security trust add|remove|list`** — Manage trusted users and roles exempt from anti-nuke and rate-limiting enforcement.
+* **`/security lockdown [channels:all|public|current] [reason:<text>]`** — Thread-safe server lockdown. Restricts `@everyone` permissions while preserving original overwrites and keeping private channels, staff channels, and server logs hidden.
+* **`/security unlock [restore_all:true|false]`** — Reverses lockdown and restores captured baseline overwrites.
+* **`/security diagnostics`** — Displays high-resolution monotonic latency percentiles (p50, p95, p99), audit log latency, and active timers.
+* **`/security antinuke status|configure|test`** — Sub-millisecond Anti-Nuke burst protection across channels, roles, webhooks, bans, and bots.
+* **`/security antimod status|configure|test`** — Multi-window Anti-Mod abuse detection detecting rogue moderators performing high-velocity actions.
+* **`/security antiraid status|configure|test`** — Multi-factor join risk scoring (account age, default avatar, suspicious patterns) with auto-quarantine.
+* **`/security incidents`** — View recent security incident log, detection time, and containment latency.
+* **`/security audit`** — High-level permission hierarchy and audit log integrity check.
+* **`/security test`** — Dry-run security notification pipeline without mutating guild state.
 
-### 🤖 2. Professional AutoMod Commands
-* **`/automod enable`** — Activates AutoMod message and member filtering.
-* **`/automod disable`** — Pauses AutoMod rule enforcement.
-* **`/automod status`** — Displays all active filters (Spam, Duplicates, Mention Spam, Links, NSFW, Blacklist, Caps, Emojis, Alts, Raids).
-* **`/automod blacklist action:add word:<word>`** — Adds a word or phrase to the server blacklist (uses word-boundary regex to prevent false positives).
-* **`/automod blacklist action:remove word:<word>`** — Removes a word from the blacklist.
-* **`/automod blacklist action:list`** — Displays all server blacklisted words.
-* **`/automod whitelist action:add user:@User` / `role:@Role` / `channel:#Channel`** — Exempts a user, role, or channel from AutoMod penalties.
-* **`/automod whitelist action:remove user:@User` / `role:@Role` / `channel:#Channel`** — Revokes an AutoMod exemption.
-
----
-
-### 📁 3. Dedicated 14-Channel Logging System
-* **`/logs setup`** — Automatically creates Category **`📁 SERVER LOGS`** and all **14 dedicated log channels** (idempotent, avoids duplicates):
-  1. `#member-logs` — Member joins, leaves, nickname changes.
-  2. `#message-logs` — Message edits, deletions, and bulk purges.
-  3. `#moderation-logs` — Warns, timeouts, kicks, bans, unbans.
-  4. `#security-logs` — Security alerts and emergency lockdowns.
-  5. `#anti-nuke-logs` — Anti-Nuke triggers, burst intercepts, role strips.
-  6. `#automod-logs` — AutoMod rule triggers, filtered messages, alt detections.
-  7. `#role-logs` — Role creations, deletions, permission grants.
-  8. `#channel-logs` — Channel creations, deletions, overwrite updates.
-  9. `#voice-logs` — Voice joins, leaves, moves, mutes, deafens.
-  10. `#server-settings-logs` — Server name, icon, banner, security changes.
-  11. `#invite-logs` — Invite creations, deletions, usage.
-  12. `#webhook-logs` — Webhook creations, deletions, edits.
-  13. `#bot-logs` — Bot additions, bot removals.
-  14. `#welcome-logs` — Welcome/goodbye card delivery reports & diagnostics.
-* **`/logs status`** — Displays all 14 linked channels.
-* **`/logs configure category:<category> channel:#channel`** — Manually binds a category to any existing channel.
-* **`/logs test`** — Dispatches test embeds across log channels.
-* **`/logs disable category:<category>`** — Mutes logging for a category.
-
----
-
-### 🎉 4. Welcome & Goodbye Commands
-* **`/welcome setup channel:#channel`** — Locks the designated channel for welcome cards.
-* **`/welcome test`** — Sends an interactive preview of the welcome card matching the premium demo layout and runs a full permissions diagnostic.
-* **`/welcome config`** — Displays current welcome card channels, color, banner, logo, and options.
-* **`/welcome banner [image] [url]`** — Sets or syncs welcome banner image (upload file, paste URL, or use "server").
-* **`/welcome enable`** / **`/welcome disable`** — Toggles welcome messages.
-* **`/goodbye setup channel:#channel`** — Locks the channel for member leave/goodbye embeds.
-* **`/goodbye test`** — Sends a preview of the departure embed.
-* **`/goodbye enable`** / **`/goodbye disable`** — Toggles leave messages.
-* **`/setbanner [image] [url]`** — Upload image file from PC/phone or paste link to set welcome card banner (or `url:server` to sync Discord server banner, `url:reset` to clear).
-* **`/setwelcomebanner [image] [url]`** — Alias for `/setbanner`.
-* **`/setlogo [image] [url]`** — Set custom logo/icon for welcome card thumbnail and header (or `url:server` to sync icon).
-* **`/serverbanner [apply_welcome:true|false]`** — View server banner and optionally apply it to the welcome card.
-* **`/setwelcomecolor color:<#hex>`** — Customizes embed sidebar color (e.g. `#FF0000` for Red).
-* **`/setwelcometext`** — Customizes greeting, subtitle, and closing lines.
-* **`/setleavetext`** — Customizes departure message with `{username}`, `{server}`, `{membercount}` placeholders.
-* **`/setautorole role:@Role`** — Selects a default role assigned automatically upon joining.
-
----
-
-### ⚖️ 5. Moderation Commands (Role Hierarchy Protected)
-* **`/warn user:@User reason:<text>`** — Issues an official warning stored in persistent storage.
+### Standalone Security & Moderation Commands
+* **`/automod enable|disable|status|config|whitelist|blacklist|test`** — Rule-based automated filtering (spam, links, caps, invites, mentions).
+* **`/warn user:@User reason:<text>`** — Issues an official recorded warning.
 * **`/warnings user:@User`** — Displays warning history for a member.
 * **`/clearwarnings user:@User`** — Clears all warnings for a member.
-* **`/timeout user:@User duration:<e.g. 10m, 1h, 1d> [reason:<text>]`** — Applies Discord native timeout.
+* **`/timeout user:@User duration:<e.g. 10m, 1h, 1d> [reason:<text>]`** — Discord native communication timeout.
 * **`/untimeout user:@User`** — Removes timeout from a member.
-* **`/kick user:@User [reason:<text>]`** — Kicks a member (enforces role hierarchy).
-* **`/ban user:@User [delete_days:<0-7>] [reason:<text>]`** — Bans a user from the server.
+* **`/kick user:@User [reason:<text>]`** — Kicks member (enforces role hierarchy).
+* **`/ban user:@User [delete_days:<0-7>] [reason:<text>]`** — Bans user from the server.
 * **`/unban userid:<id> [reason:<text>]`** — Unbans a user by their User ID.
-* **`/softban user:@User [reason:<text>]`** — Bans and instantly unbans to purge last 7 days of messages.
-* **`/purge amount:<1-100> [filter:all|bot|links]`** — Bulk deletes messages from the current channel.
+* **`/softban user:@User [reason:<text>]`** — Bans and instantly unbans to purge recent messages.
+* **`/purge amount:<1-100> [filter:all|bot|links]`** — Bulk deletes messages from the channel.
 * **`/slowmode seconds:<0-21600> [channel:#channel]`** — Sets channel slowmode delay.
-* **`/lock [channel:#channel] [reason:<text>]`** — Locks a channel preventing `@everyone` from sending messages.
-* **`/unlock [channel:#channel]`** — Restores chat permissions.
-* **`/nick user:@User [nickname:<name>]`** — Updates or resets a member nickname.
+* **`/lock [channel:#channel] [reason:<text>]`** — Locks single channel.
+* **`/unlock [channel:#channel]`** — Unlocks single channel.
+* **`/nick user:@User [nickname:<name>]`** — Updates or resets member nickname.
 * **`/modlogs user:@User`** — Views complete moderation strike history.
+* **`/antispam enable|disable|status|threshold`** — Fast message velocity spam detection.
+* **`/antilink enable|disable|status|whitelist`** — Unauthorized URL and invite link filter.
+* **`/antiraid enable|disable|status|threshold`** — Fast join velocity and raid suppression.
+* **`/altdetection enable|disable|status|threshold`** — Detects suspicious new or unverified accounts.
+* **`/wordfilter add|remove|list|clear`** — Explicit blacklisted word filtering.
+* **`/lockdown`** — Direct shortcut for server-wide emergency lockdown.
+* **`/whitelist add|remove|list`** — Direct shortcut for security exemptions.
+* **`/threat level|status|threshold`** — Real-time threat assessment score.
+* **`/quarantine user:@User reason:<text> [duration:<minutes>]`** — Strips roles and isolates member into quarantine.
+* **`/quickmod user:@User`** — Interactive 1-click moderation panel with Warn, Timeout, Kick, and Ban buttons.
+* **`/vpncheck user:@User`** — Checks account risk heuristics and proxy indicators.
+* **`/raidmode on|off|status`** — Rapid mass channel slowmode lockdown.
 
 ---
 
-### 🎵 6. Professional Rythm-Style Music Engine & Audio Commands
-* **`/play song:<name or link>`** — Plays YouTube, Spotify (track, album, playlist metadata matching), or SoundCloud audio streams with multi-candidate auto-recovery.
-* **`/playnow song:<name or link>`** — Interrupts or jumps to the front of the queue to play a track immediately.
+## 🎵 2. SONGS (20 Commands)
+
+### Canonical `/songs` Command Tree
+* **`/songs 24-7 enable [channel:#channel]`** — Enables 24/7 persistent voice presence. Bot stays in the voice channel on silent standby when queue is empty.
+* **`/songs 24-7 disable`** — Disables 24/7 mode, restoring normal voice idle timeout disconnect.
+* **`/songs 24-7 status`** — Displays 24/7 configuration, voice channel, reconnect attempts, and connection health.
+* **`/songs 24-7 setup channel:#channel`** — Configures designated 24/7 voice channel without starting random playback.
+* **`/songs playback play|pause|resume|skip|stop|seek|previous|playnow`** — Full playback control tree.
+* **`/songs queue list|clear|shuffle|remove|move|loop`** — Full queue management tree.
+* **`/songs audio volume|radio|nowplaying|status|lyrics`** — Audio status, lyrics, radio, and volume.
+
+### Standalone Music Shortcuts
+* **`/play song:<query or url>`** — Plays YouTube, Spotify (track, album, playlist metadata matching), or SoundCloud audio.
+* **`/playnow song:<query or url>`** — Enqueues track at the top of the queue or interrupts for immediate playback.
 * **`/pause`** — Pauses active playback.
 * **`/resume`** — Resumes paused playback.
-* **`/skip`** — Skips to the next track in queue.
-* **`/previous`** — Replays the previous track from session history (stores up to 25 tracks).
-* **`/stop`** — Stops playback, clears queue, and leaves voice.
-* **`/disconnect`** — Disconnects from voice channel and releases audio player resources.
-* **`/seek time:<timestamp>`** — Performs true audio position seeking (e.g. `1:30`, `0:45`, `90s`) using ffmpeg raw PCM streaming offset.
-* **`/search query:<text>`** — Searches audio platforms for top track matches.
-* **`/nowplaying`** — Shows track details, visual progress bar (`01:23 ▬▬🔘▬▬▬▬ 03:45`), requested by, and audio format.
-* **`/queue view|remove|move|jump|export|clear`** — Comprehensive playlist and music queue editor:
-  * `view`: Paginated view of upcoming tracks.
-  * `remove`: Removes track at specified position.
-  * `move`: Reorders track positions in queue.
-  * `jump`: Skips directly to a position in queue.
-  * `export`: Exports queue to text playlist.
-  * `clear`: Clears all upcoming tracks from queue.
-* **`/clearqueue`** — Instant shortcut to clear all upcoming tracks from queue.
-* **`/volume level:<1-100>`** — Real-time dynamic volume adjustment.
-* **`/loop mode:<off|track|queue>`** — Configures repetition mode (`off`, `track`, or `queue`).
-* **`/shuffle`** — Shuffles the upcoming music queue in place.
-* **`/radio genre:<lofi|gaming|pop|chill>`** — Plays continuous 24/7 internet radio streams.
-* **`/musicstatus`** — Displays real-time music engine status, active sessions, voice latency, and memory footprint.
-* **`/musicupdate status|check|logs|repair|apply`** — Administrator/Owner self-healing & maintenance system:
-  * `status`: Diagnostics on active sessions, installed library versions, and heap memory.
-  * `check`: Checks npm registry for compatible updates.
-  * `logs`: Inspects recent playback incident history.
-  * `repair`: Flushes corrupted audio sessions and reinitializes voice clients.
-  * `apply`: Reports available dependency upgrades.
-* **Interactive Player Card Controls** — Every played song displays an embed with 7 Rythm-style buttons:
-  * `⏮️ Prev` • `▶️/⏸️ Resume/Pause` • `⏭️ Skip` • `⏹️ Stop` • `🔁 Loop` • `🔀 Shuffle` • `📜 Queue`
+* **`/skip`** — Skips to the next track.
+* **`/previous`** — Replays previously played track from session history.
+* **`/stop`** — Clears queue, stops playback, and leaves voice (or remains if 24/7 active).
+* **`/queue [page:<number>]`** — Displays paginated music queue.
+* **`/nowplaying`** — Shows track progress bar, requester, and audio bitrate.
+* **`/radio genre:<lofi|gaming|pop|chill>`** — Streams continuous internet radio.
+* **`/volume level:<1-100>`** — Adjusts volume in real time.
+* **`/loop mode:<off|track|queue>`** — Toggles repeat mode.
+* **`/shuffle`** — Shuffles current queue in place.
+* **`/disconnect`** — Forces bot disconnect from voice channel.
+* **`/search query:<text>`** — Searches audio platforms for top tracks.
+* **`/seek time:<timestamp>`** — Seeks audio position using ffmpeg offset (e.g. `1:30`, `90s`).
+* **`/musicstatus`** — Real-time memory, voice ping, and active session count.
+* **`/musicupdate status|check|logs|repair|apply`** — Self-healing audio diagnostics.
+* **`/lyrics [song:<query>]`** — Fetches live song lyrics.
 
 ---
 
-### ℹ️ 7. Utility Commands
-* **`/ping`** — Displays WebSocket heartbeat and round-trip API latency.
-* **`/uptime`** — Displays continuous online time and process start time.
-* **`/botinfo`** — Displays Node.js version, platform, memory usage, and connected guild counts.
-* **`/serverinfo`** — Displays server owner, member counts, channel counts, and creation timestamp.
-* **`/userinfo [user:@User]`** — Displays profile, account creation date, server join date, and roles.
-* **`/permissions [user:@User]`** — Inspects active Discord channel permissions.
-* **`/help`** — Opens comprehensive interactive command guide.
+## 🎉 3. WELCOME (15 Commands)
+
+* **`/welcome setup|config|test|banner|enable|disable`** — Master welcome card configuration tree.
+* **`/setup`** — Automated interactive server setup wizard.
+* **`/setwelcome [channel:#channel]`** — Sets welcome embed destination channel.
+* **`/setrules channel:#channel`** — Binds server rules channel into welcome cards.
+* **`/setroles channel:#channel`** — Binds roles channel into welcome cards.
+* **`/setgeneral channel:#channel`** — Binds general chat channel into welcome cards.
+* **`/setfun channel:#channel`** — Binds entertainment/bot channel into welcome cards.
+* **`/setedit channel:#channel`** — Binds media/editing channel into welcome cards.
+* **`/setgaming channel:#channel`** — Binds gaming channel into welcome cards.
+* **`/setwelcomecolor color:<#hex>`** — Customizes welcome embed sidebar color.
+* **`/setwelcometext`** — Customizes greeting, subtitle, and footer text.
+* **`/setbanner [image] [url]`** — Sets custom welcome card banner (or `url:server`).
+* **`/setlogo [image] [url]`** — Sets custom server logo/icon for welcome cards.
+* **`/serverbanner [apply_welcome:true|false]`** — Syncs server banner to welcome card.
+* **`/setautorole role:@Role`** — Selects default role auto-assigned to new joiners.
 
 ---
 
-### 🚀 8. Advanced 22-Feature Suite (Security, Automation, Economy & Social)
-* **`/translate text:<text> to:<lang> [from:<lang>]`** — Real-time message translation across languages (powered by MyMemory Translation API).
-* **`/appeal submit|status|review|setup`** — Complete unban and punishment appeal processing system without creating clutter.
-* **`/serverstat setup|update|disable`** — Real-time server stat voice counter channels (`👥 Members`, `🤖 Bots`, `🚀 Boosts`) — creates voice channels only, NO extra text channels!
-* **`/afk set|clear|status`** — Dynamic AFK status system; automatically removes AFK on speaking and reminds members mentioning you.
-* **`/badge give|remove|list`** — Custom server recognition badges and achievements for standout members.
-* **`/dm user|role`** — Direct message announcement dispatcher for staff with safety caps to protect bot rate limits.
-* **`/nightmode setup|toggle|status`** — Scheduled server quiet hours with automated slowmode enforcement and daytime recovery.
-* **`/devmode stats|diagnostics|simulate`** — Deep bot performance metrics (heap, RSS, ping, uptime) and safe dry-run sandboxed event simulations.
-* **`/fun coinflip|dice|8ball|rps`** — Minigames and entertainment suite: coin flips, dice rolls, Magic 8-Ball, and Rock-Paper-Scissors.
-* **`/points check|give|take|leaderboard|reset`** — Built-in server points economy and high-score leaderboard.
-* **`/serverconfig view|export|reset`** — Master configuration dashboard with JSON export and factory default reset capabilities.
-* **`/birthday set|check|upcoming|channel`** — Server birthday tracker with automated hourly celebratory announcement dispatcher.
-* **`/maintenance enable|disable|status`** — Server-level bot maintenance mode with custom explanatory status notices.
-* **`/clone export|import`** — Server configuration template cloning using portable base64 tokens.
-* **`/module enable|disable|list`** — Granular feature toggle switchboard for all bot sub-systems.
-* **`/quickmod user:@User`** — Rapid 1-click interactive moderation panel with instant Warn, Timeout, Kick, and Ban buttons.
-* **`/roleplay hug|pat|slap|highfive|wave`** — Expressive anime and roleplay social interaction embeds.
-* **`/vpncheck user|ip`** — Suspicious account detector (evaluates account age, default avatars, alt scores) and public IP datacenter lookup.
-* **`/raidmode on|off|status`** — Rapid surgical raid response mode: immediately enforces mass channel slowmodes and restores previous values when disabled.
-* **`/lyrics [song:<query>]`** — Searches real-time song lyrics for the currently playing track or any song query.
-* **`/queue view|remove|move|jump|export|clear`** — Comprehensive playlist and music queue editor with drag-and-drop-style reordering and export.
-* **`/integration youtube|twitch|github|list|remove`** — External alert feeds for YouTube uploads, Twitch streams, and GitHub releases configured to existing server channels.
+## 🚪 4. LEFT (4 Commands)
 
+* **`/left setup|config|test|enable|disable|message`** — Master departure notification configuration tree.
+* **`/goodbye [channel:#channel]`** — Sets departure channel.
+* **`/setleave [channel:#channel]`** — Sets departure channel.
+* **`/setleavetext message:<text>`** — Customizes goodbye message text (supports `{username}`, `{server}`, `{membercount}`).
+
+---
+
+## 📁 5. LOGS (1 Command)
+
+* **`/logs setup|status|configure|test|disable`** — Master automated 14-channel server logging system:
+  - Auto-creates Category **`📁 SERVER LOGS`** and all 14 isolated log channels (`#member-logs`, `#message-logs`, `#moderation-logs`, `#security-logs`, `#anti-nuke-logs`, `#automod-logs`, `#role-logs`, `#channel-logs`, `#voice-logs`, `#server-settings-logs`, `#invite-logs`, `#webhook-logs`, `#bot-logs`, `#welcome-logs`).
+
+---
+
+## 🎟️ 6. INV (4 Commands)
+
+* **`/inv check|leaderboard|me`** — Master invite tracking system with invite code attribution.
+* **`/myinvites`** — Displays personal invite statistics (regular, fake, leaves, bonus).
+* **`/invites [user:@User]`** — Displays invite statistics for any member.
+* **`/invitetop`** — Displays top server recruiters leaderboard.
+
+---
+
+## 🎲 7. GAMES (3 Commands)
+
+* **`/games coinflip|dice|8ball|rps|points|leaderboard`** — Minigames and economy suite.
+* **`/fun coinflip|dice|8ball|rps`** — Fast entertainment shortcuts.
+* **`/points check|give|take|leaderboard|reset`** — Built-in server points system.
+
+---
+
+## ℹ️ 8. General Utilities (22 Commands)
+
+* **`/ping`** — WebSocket heartbeat and API round-trip latency.
+* **`/uptime`** — Continuous online time and process metrics.
+* **`/botinfo`** — Node.js runtime, platform, memory usage, and guild counts.
+* **`/serverinfo`** — Guild owner, member counts, channel distribution, and creation date.
+* **`/userinfo [user:@User]`** — Member profile, account age, join date, and permissions.
+* **`/permissions [user:@User]`** — Inspects active channel permissions.
+* **`/help`** — Interactive command browser with category filters.
+* **`/translate text:<text> to:<lang> [from:<lang>]`** — Real-time multi-lingual message translation.
+* **`/appeal submit|status|review|setup`** — Formal punishment appeal system.
+* **`/serverstat setup|update|disable`** — Real-time voice counter channels (`👥 Members`, `🤖 Bots`, `🚀 Boosts`).
+* **`/afk set|clear|status`** — Dynamic AFK status system with mention auto-responses.
+* **`/badge give|remove|list`** — Custom server recognition badges.
+* **`/dm user|role`** — Direct message announcement dispatcher for staff.
+* **`/nightmode setup|toggle|status`** — Scheduled server quiet hours with automated slowmode.
+* **`/devmode stats|diagnostics|simulate`** — Deep bot performance metrics and dry-run simulation.
+* **`/serverconfig view|export|reset`** — Master configuration dashboard with JSON export.
+* **`/birthday set|check|upcoming|channel`** — Server birthday tracker with celebratory announcements.
+* **`/maintenance enable|disable|status`** — Server maintenance mode notice.
+* **`/clone export|import`** — Server configuration template cloning via base64 tokens.
+* **`/module enable|disable|list`** — Granular feature toggle switchboard.
+* **`/roleplay hug|pat|slap|highfive|wave`** — Social anime roleplay actions.
+* **`/integration youtube|twitch|github|list|remove`** — External alert feeds for Twitch, YouTube, and GitHub.

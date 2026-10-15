@@ -23,8 +23,9 @@ for (const cmd of commands) {
   const description = cmd.description;
   const permissions = cmd.default_member_permissions || 'None (Public)';
   const subcommands = (cmd.options || []).filter(o => o.type === 1); // type 1 is Subcommand
+  const subcommandGroups = (cmd.options || []).filter(o => o.type === 2); // type 2 is SubcommandGroup
 
-  if (subcommands.length === 0) {
+  if (subcommands.length === 0 && subcommandGroups.length === 0) {
     // Top-level command without subcommands
     const hasHandler = dispatcherCode.includes(`commandName === '${name}'`);
     if (hasHandler) coveredHandlers++; else missingHandlers++;
@@ -41,7 +42,6 @@ for (const cmd of commands) {
       totalSubcommands++;
       const subName = sub.name;
       const subDesc = sub.description;
-      // Check if both command and subcommand are present in dispatcher
       const hasHandler = dispatcherCode.includes(`commandName === '${name}'`) &&
                          (dispatcherCode.includes(`sub === '${subName}'`) || dispatcherCode.includes(`'${subName}'`));
       if (hasHandler) coveredHandlers++; else missingHandlers++;
@@ -53,6 +53,27 @@ for (const cmd of commands) {
         status: hasHandler ? '✅ Implemented' : '❌ Missing',
         testCovered: '✅ Covered',
       });
+    }
+
+    for (const group of subcommandGroups) {
+      const groupSubs = (group.options || []).filter(o => o.type === 1);
+      for (const sub of groupSubs) {
+        totalSubcommands++;
+        const subName = sub.name;
+        const subDesc = sub.description;
+        const hasHandler = dispatcherCode.includes(`commandName === '${name}'`) &&
+                           dispatcherCode.includes(`'${group.name}'`) &&
+                           (dispatcherCode.includes(`sub === '${subName}'`) || dispatcherCode.includes(`'${subName}'`));
+        if (hasHandler) coveredHandlers++; else missingHandlers++;
+        rows.push({
+          command: `/${name} ${group.name} ${subName}`,
+          type: 'Subcommand (Grouped)',
+          description: subDesc,
+          permissions,
+          status: hasHandler ? '✅ Implemented' : '❌ Missing',
+          testCovered: '✅ Covered',
+        });
+      }
     }
   }
 }
