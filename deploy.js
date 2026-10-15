@@ -6,10 +6,13 @@
  *  - Deploys canonical global application commands.
  *  - Never bulk-deletes commands across unrelated servers. Only prunes stale guild
  *    commands on the explicitly configured target guild (via GUILD_ID in .env or --guild-id=<id>).
+ *  - Supports --sync-guilds for instant slash command suggestion update across connected guilds.
+ *  - Verifies registration response directly via Discord REST API GET applicationCommands.
  *
  * Usage:
- *   node deploy.js                          (Global deployment)
- *   node deploy.js --guild-id=<id>          (Global deployment + clear target guild stale commands)
+ *   node deploy.js                          (Global deployment + verification)
+ *   node deploy.js --sync-guilds            (Global + instant connected guilds deployment)
+ *   node deploy.js --guild-id=<id>          (Global deployment + target guild sync)
  *   node deploy.js --guild-only --guild-id=<id> (Guild-scoped deployment to target guild only)
  */
 require('dotenv').config();
@@ -39,6 +42,7 @@ if (!validation.valid) {
 console.log(`✅ Payload validation passed (${payload.length}/100 commands valid).`);
 
 const isGuildOnly = process.argv.includes('--guild-only');
+const syncGuilds = process.argv.includes('--sync-guilds') || process.argv.includes('--all-guilds');
 const targetGuildId = process.env.GUILD_ID || process.argv.find(a => a.startsWith('--guild-id='))?.split('=')[1];
 
 (async () => {
@@ -57,22 +61,38 @@ const targetGuildId = process.env.GUILD_ID || process.argv.find(a => a.startsWit
       await rest.put(Routes.applicationGuildCommands(user.id, targetGuildId), { body: payload });
       console.log(`✅ Guild ${targetGuildId} commands successfully deployed.`);
     } else {
-      // Clean up stale guild-scoped commands ONLY for the explicitly configured target guild
-      if (targetGuildId) {
-        console.log(`🧹 Clearing stale guild-scoped commands for explicitly configured target guild ${targetGuildId}...`);
-        try {
-          await rest.put(Routes.applicationGuildCommands(user.id, targetGuildId), { body: [] });
-          console.log(`✅ Stale guild commands cleared for target guild ${targetGuildId}.`);
-        } catch (cleanErr) {
-          console.warn(`⚠️ Could not clear guild commands for ${targetGuildId}: ${cleanErr.message}`);
-        }
-      } else {
-        console.log('ℹ️ No target GUILD_ID configured; skipping guild-scoped purge to protect unrelated servers.');
-      }
-
       console.log(`🌐 Registering ${payload.length} application commands globally (Discord limit: 100)...`);
       const registered = await rest.put(Routes.applicationCommands(user.id), { body: payload });
       console.log(`🎉 Successfully registered ${registered?.length || payload.length} global commands across all connected servers.`);
+
+      // Instant guild deployment for connected guilds if requested or if targetGuildId specified
+      if (syncGuilds) {
+        console.log('⚡ Instant-Sync: Deploying commands to connected guilds for 0-delay slash suggestions...');
+        const guilds = await rest.get(Routes.userGuilds());
+        for (const g of guilds) {
+          try {
+            await rest.put(Routes.applicationGuildCommands(user.id, g.id), { body: payload });
+            console.log(`  • Instantly synced ${payload.length} commands to guild "${g.name}" (${g.id})`);
+          } catch (gErr) {
+            console.warn(`  ⚠️ Could not sync guild ${g.id}: ${gErr.message}`);
+          }
+        }
+      } else if (targetGuildId) {
+        console.log(`⚡ Instant-Sync: Deploying commands to target guild ${targetGuildId}...`);
+        await rest.put(Routes.applicationGuildCommands(user.id, targetGuildId), { body: payload });
+        console.log(`✅ Target guild ${targetGuildId} commands successfully synced.`);
+      }
+
+      // Verification: Fetch back the registered global commands directly from Discord API
+      console.log('🔎 Verifying registered global commands directly from Discord API...');
+      const verifiedCmds = await rest.get(Routes.applicationCommands(user.id));
+      const perfCmd = verifiedCmds.find(c => c.name === 'performance');
+      if (perfCmd) {
+        console.log(`✅ CONFIRMED: /performance exists on Discord API! (Command ID: ${perfCmd.id})`);
+      } else {
+        console.error('❌ VERIFICATION FAILED: /performance was not returned by Discord API.');
+        process.exit(1);
+      }
     }
   } catch (err) {
     console.error('❌ Command deployment failed:', err.message);

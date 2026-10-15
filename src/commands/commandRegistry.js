@@ -1034,8 +1034,7 @@ function buildApplicationCommands() {
 
     new SlashCommandBuilder()
       .setName('performance')
-      .setDescription('View bot execution performance, event loop delay, and command latency percentiles')
-      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+      .setDescription('View bot execution performance, event loop delay, and command latency percentiles'),
     
     // ── LEGACY & SHORTCUT COMMANDS PRESERVED ──,
 
