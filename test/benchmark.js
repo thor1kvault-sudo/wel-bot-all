@@ -95,6 +95,7 @@ async function runBenchmark(iterations = 200) {
     { name: '/left config', fn: () => createMockInteraction('left', null, 'config') },
     { name: '/security status', fn: () => createMockInteraction('security', null, 'status') },
     { name: '/songs 24-7 status', fn: () => createMockInteraction('songs', '24-7', 'status') },
+    { name: '/performance', fn: () => createMockInteraction('performance') },
   ];
 
   const results = {};

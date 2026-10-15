@@ -1905,10 +1905,8 @@ async function _dispatchCommandInner(interaction, context = {}) {
   // ─────────────────────────────────────────────────────────────
   if (commandName === 'ping') {
     const wsPing = Math.round(client?.ws?.ping || 0);
-    const startPing = Date.now();
-    await interaction.reply({ content: '🏓 Pinging...' });
-    const roundTrip = Date.now() - startPing;
-    return interaction.editReply(`🏓 **Pong!**\n• WebSocket Gateway: **${wsPing}ms**\n• Round-Trip Latency: **${roundTrip}ms**`);
+    const roundTrip = interaction.createdTimestamp ? Math.max(1, Date.now() - interaction.createdTimestamp) : 1;
+    return safeReply(interaction, `🏓 **Pong!**\n• WebSocket Gateway: **${wsPing}ms**\n• Round-Trip Latency: **${roundTrip}ms**`, false);
   }
 
   if (commandName === 'uptime') {
@@ -1993,14 +1991,17 @@ async function _dispatchCommandInner(interaction, context = {}) {
 
     const report = getPerformanceReport(client, startTime);
     const formatMs = (val) => typeof val === 'number' ? `${val.toFixed(2)} ms` : 'N/A';
-    const globalLat = report.commands.globalLatencyMs;
+    const internalLat = report.commands.internalLatencyMs || report.commands.globalLatencyMs;
+    const netLat = report.commands.networkLatencyMs;
+    const totalLat = report.commands.totalLatencyMs;
     const el = report.eventLoopDelayMs;
 
     let slowestText = 'None recorded yet';
     if (report.commands.slowestCommands.length > 0) {
-      slowestText = report.commands.slowestCommands.map((c, i) =>
-        `**${i + 1}.** \`/${c.command}\` — p95: **${c.p95}ms** (p50: ${c.p50}ms, n=${c.count})`
-      ).join('\n');
+      slowestText = report.commands.slowestCommands.map((c, i) => {
+        const prelimNote = c.isPreliminary ? ' *(preliminary sample)*' : '';
+        return `**${i + 1}.** \`/${c.command}\` — CPU: **${c.p95}ms** | REST API: **${c.networkP95}ms** | Total: **${c.totalP95}ms** *(n=${c.count}${prelimNote})*`;
+      }).join('\n');
     }
 
     let errorText = '✅ Zero recent errors';
@@ -2019,12 +2020,14 @@ async function _dispatchCommandInner(interaction, context = {}) {
       )
       .addFields(
         {
-          name: '📡 Network vs Internal Latency',
+          name: '📡 Network vs Internal Latency Profile',
           value:
-            `• **Discord WebSocket Ping:** \`${report.wsPing >= 0 ? report.wsPing + ' ms' : 'N/A'}\` *(network round-trip)*\n` +
-            `• **Internal Command p50:** \`${formatMs(globalLat.p50)}\` *(bot engine processing)*\n` +
-            `• **Internal Command p95:** \`${formatMs(globalLat.p95)}\` *(95th percentile)*\n` +
-            `• **Internal Command p99:** \`${formatMs(globalLat.p99)}\` *(tail latency)*`,
+            `• **Discord WebSocket Ping:** \`${report.wsPing >= 0 ? report.wsPing + ' ms' : 'N/A'}\` *(gateway heartbeat)*\n` +
+            `• **Discord REST API Network (p95):** \`${formatMs(netLat?.p95)}\` *(outgoing HTTPS request round-trip)*\n` +
+            `• **Internal Command p50:** \`${formatMs(internalLat.p50)}\` *(pure bot CPU/cache logic)*\n` +
+            `• **Internal Command p95:** \`${formatMs(internalLat.p95)}\` *(target: <5 ms)*\n` +
+            `• **Internal Command p99:** \`${formatMs(internalLat.p99)}\` *(tail CPU latency)*\n` +
+            `• **Total End-to-End Latency (p95):** \`${formatMs(totalLat?.p95)}\` *(internal + network round-trip)*`,
           inline: false,
         },
         {
@@ -2037,7 +2040,7 @@ async function _dispatchCommandInner(interaction, context = {}) {
           inline: true,
         },
         {
-          name: '🐢 Slowest Commands (p95)',
+          name: '🐢 Slowest Commands (by Internal Processing)',
           value: slowestText,
           inline: false,
         },
@@ -4081,15 +4084,28 @@ async function dispatchCommand(interaction, context = {}) {
   try {
     const res = await _dispatchCommandInner(interaction, context);
     const endPerf = performance.now();
-    const internalMs = endPerf - startPerf;
-    const ackMs = ackPerf ? (ackPerf - startPerf) : internalMs;
-    recordCommandExecution(commandName, internalMs, ackMs, true);
+    const internalHandlerMs = ackPerf ? (ackPerf - startPerf) : (endPerf - startPerf);
+    const totalResponseMs = endPerf - startPerf;
+    const apiNetworkMs = Math.max(0, totalResponseMs - internalHandlerMs);
+    recordCommandExecution(commandName, {
+      internalMs: internalHandlerMs,
+      totalMs: totalResponseMs,
+      networkMs: apiNetworkMs,
+      success: true,
+    });
     return res;
   } catch (err) {
     const endPerf = performance.now();
-    const internalMs = endPerf - startPerf;
-    const ackMs = ackPerf ? (ackPerf - startPerf) : internalMs;
-    recordCommandExecution(commandName, internalMs, ackMs, false, err?.message);
+    const internalHandlerMs = ackPerf ? (ackPerf - startPerf) : (endPerf - startPerf);
+    const totalResponseMs = endPerf - startPerf;
+    const apiNetworkMs = Math.max(0, totalResponseMs - internalHandlerMs);
+    recordCommandExecution(commandName, {
+      internalMs: internalHandlerMs,
+      totalMs: totalResponseMs,
+      networkMs: apiNetworkMs,
+      success: false,
+      errorMsg: err?.message,
+    });
     throw err;
   }
 }

@@ -1,6 +1,14 @@
 /**
  * High-Resolution Performance & Event-Loop Monitoring System
- * Tracks internal command latencies (p50, p95, p99), event loop delay, memory, and API overhead.
+ *
+ * Separates and tracks:
+ *  1. Internal Engine Processing Time (Pure bot CPU/cache logic before dispatching response)
+ *  2. Interaction Acknowledgement / Deferral Latency
+ *  3. Discord HTTPS REST API Network Round-Trip Latency
+ *  4. Total End-to-End Command Response Duration
+ *  5. Node.js Event Loop Delay Percentiles (p50, p95, p99, max)
+ *  6. Memory Profile (RSS, Heap Used/Total) & Error Health
+ *
  * Zero-allocation in hot paths using fixed-capacity circular ring buffers.
  */
 
@@ -58,30 +66,68 @@ class LatencyRingBuffer {
 
 // Global metrics state
 const commandMetrics = new Map();
-const globalLatency = new LatencyRingBuffer(500);
+const globalInternalLatency = new LatencyRingBuffer(500);
+const globalTotalLatency = new LatencyRingBuffer(500);
+const globalNetworkLatency = new LatencyRingBuffer(500);
+
 const recentErrors = [];
 const MAX_ERRORS = 10;
 let totalCommandsExecuted = 0;
 let totalErrorsEncountered = 0;
 
-function getCommandRing(cmdName) {
-  let ring = commandMetrics.get(cmdName);
-  if (!ring) {
-    ring = new LatencyRingBuffer(RING_BUFFER_SIZE);
-    commandMetrics.set(cmdName, ring);
+function getCommandMetrics(cmdName) {
+  let m = commandMetrics.get(cmdName);
+  if (!m) {
+    m = {
+      internalRing: new LatencyRingBuffer(RING_BUFFER_SIZE),
+      totalRing: new LatencyRingBuffer(RING_BUFFER_SIZE),
+      networkRing: new LatencyRingBuffer(RING_BUFFER_SIZE),
+    };
+    commandMetrics.set(cmdName, m);
   }
-  return ring;
+  return m;
 }
 
 /**
- * Records an executed command's metrics
+ * Records an executed command's metrics with strict separation of internal CPU execution
+ * vs Discord REST API network latency and total duration.
+ *
+ * Supports both invocation styles:
+ *  Style A: recordCommandExecution(name, { internalMs, totalMs, networkMs, success, errorMsg })
+ *  Style B: recordCommandExecution(name, internalOrTotalMs, ackMs, success, errorMsg)
  */
-function recordCommandExecution(commandName, internalMs, ackMs = 0, success = true, errorMsg = null) {
+function recordCommandExecution(commandName, paramA, paramB = 0, paramC = true, paramD = null) {
   totalCommandsExecuted++;
-  globalLatency.push(internalMs);
 
-  const ring = getCommandRing(commandName);
-  ring.push(internalMs);
+  let internalMs = 0;
+  let totalMs = 0;
+  let networkMs = 0;
+  let success = true;
+  let errorMsg = null;
+
+  if (typeof paramA === 'object' && paramA !== null) {
+    internalMs = Number(paramA.internalMs || 0);
+    totalMs = Number(paramA.totalMs || internalMs);
+    networkMs = Number(paramA.networkMs ?? Math.max(0, totalMs - internalMs));
+    success = paramA.success !== false;
+    errorMsg = paramA.errorMsg || null;
+  } else {
+    internalMs = Number(paramA || 0);
+    const rawVal2 = Number(paramB || 0);
+    totalMs = rawVal2 > internalMs ? rawVal2 : internalMs;
+    networkMs = Math.max(0, totalMs - internalMs);
+    success = paramC !== false;
+    errorMsg = paramD || null;
+  }
+
+  globalInternalLatency.push(internalMs);
+  globalTotalLatency.push(totalMs);
+  globalNetworkLatency.push(networkMs);
+
+  const cmd = getCommandMetrics(commandName);
+  cmd.internalRing.push(internalMs);
+  cmd.totalRing.push(totalMs);
+  cmd.networkRing.push(networkMs);
 
   if (!success) {
     totalErrorsEncountered++;
@@ -95,7 +141,8 @@ function recordCommandExecution(commandName, internalMs, ackMs = 0, success = tr
 }
 
 /**
- * Returns complete performance snapshot
+ * Returns complete performance snapshot separating internal engine processing
+ * from Discord network latency.
  */
 function getPerformanceReport(client = null, startTime = Date.now()) {
   const mem = process.memoryUsage();
@@ -113,15 +160,31 @@ function getPerformanceReport(client = null, startTime = Date.now()) {
     elDelayMax = Number((elHistogram.max / 1e6).toFixed(2));
   }
 
-  // Calculate top slowest commands by p95
+  // Calculate command stats ranked by internal processing p95
   const commandStats = [];
-  for (const [cmd, ring] of commandMetrics.entries()) {
-    const stats = ring.getPercentiles();
-    commandStats.push({ command: cmd, ...stats });
+  for (const [cmd, metrics] of commandMetrics.entries()) {
+    const internalStats = metrics.internalRing.getPercentiles();
+    const totalStats = metrics.totalRing.getPercentiles();
+    const networkStats = metrics.networkRing.getPercentiles();
+
+    commandStats.push({
+      command: cmd,
+      count: internalStats.count,
+      isPreliminary: internalStats.count < 5,
+      p50: internalStats.p50,
+      p95: internalStats.p95,
+      p99: internalStats.p99,
+      totalP50: totalStats.p50,
+      totalP95: totalStats.p95,
+      networkP50: networkStats.p50,
+      networkP95: networkStats.p95,
+    });
   }
   commandStats.sort((a, b) => b.p95 - a.p95);
 
-  const globalStats = globalLatency.getPercentiles();
+  const internalGlobal = globalInternalLatency.getPercentiles();
+  const totalGlobal = globalTotalLatency.getPercentiles();
+  const networkGlobal = globalNetworkLatency.getPercentiles();
 
   return {
     uptime: uptimeSec,
@@ -140,7 +203,10 @@ function getPerformanceReport(client = null, startTime = Date.now()) {
     commands: {
       totalExecuted: totalCommandsExecuted,
       totalErrors: totalErrorsEncountered,
-      globalLatencyMs: globalStats,
+      internalLatencyMs: internalGlobal,
+      totalLatencyMs: totalGlobal,
+      networkLatencyMs: networkGlobal,
+      globalLatencyMs: internalGlobal, // Backward-compatibility
       slowestCommands: commandStats.slice(0, 5),
     },
     recentErrors: [...recentErrors],
@@ -148,9 +214,21 @@ function getPerformanceReport(client = null, startTime = Date.now()) {
 }
 
 function getCommandStats(commandName) {
-  const ring = commandMetrics.get(commandName);
-  if (!ring) return null;
-  return { command: commandName, ...ring.getPercentiles() };
+  const metrics = commandMetrics.get(commandName);
+  if (!metrics) return null;
+  const internal = metrics.internalRing.getPercentiles();
+  const total = metrics.totalRing.getPercentiles();
+  const network = metrics.networkRing.getPercentiles();
+  return {
+    command: commandName,
+    count: internal.count,
+    p50: internal.p50,
+    p95: internal.p95,
+    p99: internal.p99,
+    internal,
+    total,
+    network,
+  };
 }
 
 module.exports = {
