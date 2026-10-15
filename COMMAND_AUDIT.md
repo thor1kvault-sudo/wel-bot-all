@@ -1,12 +1,12 @@
 # COMMAND COVERAGE AUDIT REPORT — THOR APEX BOT v2.0
 
-Generated automatically on: 2026-10-15T00:08:15.091Z
+Generated automatically on: 2026-10-15T01:05:04.802Z
 
 ## Executive Summary
-- **Total Application Commands Declared:** 99
+- **Total Application Commands Declared:** 100
 - **Total Subcommands Declared:** 0
-- **Total Executable Endpoints:** 99
-- **Implemented Handlers:** 99 / 99 (**100%**)
+- **Total Executable Endpoints:** 100
+- **Implemented Handlers:** 100 / 100 (**100%**)
 - **Missing Handlers:** 0
 - **Acknowledgement Safety Net:** ✅ Active (guarantees interaction response deadline met)
 
@@ -99,6 +99,7 @@ Generated automatically on: 2026-10-15T00:08:15.091Z
 | `/userinfo` | Command | View member profile, roles, creation date, and join position | `None (Public)` | ✅ Implemented | ✅ Covered |
 | `/permissions` | Command | Inspect bot and member permissions in the current channel | `None (Public)` | ✅ Implemented | ✅ Covered |
 | `/help` | Command | Display comprehensive guide to all bot commands | `None (Public)` | ✅ Implemented | ✅ Covered |
+| `/performance` | Command | View bot execution performance, event loop delay, and command latency percentiles | `8` | ✅ Implemented | ✅ Covered |
 | `/panel` | Command | Open the THOR APEX interactive admin control centre | `32` | ✅ Implemented | ✅ Covered |
 | `/translate` | Command | Translate text into another language | `None (Public)` | ✅ Implemented | ✅ Covered |
 | `/appeal` | Command | Unban and punishment appeal system | `None (Public)` | ✅ Implemented | ✅ Covered |

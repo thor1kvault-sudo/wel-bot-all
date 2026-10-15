@@ -149,9 +149,10 @@ THOR APEX is organized into **Seven Core Command Groups**, registered in strict 
 
 ---
 
-## ℹ️ 8. General Utilities (22 Commands)
+## ℹ️ 8. General Utilities (23 Commands)
 
 * **`/ping`** — WebSocket heartbeat and API round-trip latency.
+* **`/performance`** — Real-time performance monitor & telemetry: distinguishes Discord WebSocket ping (network latency) from internal command processing (p50/p95/p99), event-loop delay, RSS/heap memory, and recent errors (Owner/Admin only).
 * **`/uptime`** — Continuous online time and process metrics.
 * **`/botinfo`** — Node.js runtime, platform, memory usage, and guild counts.
 * **`/serverinfo`** — Guild owner, member counts, channel distribution, and creation date.

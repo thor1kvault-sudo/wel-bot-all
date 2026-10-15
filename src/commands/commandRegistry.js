@@ -1031,6 +1031,11 @@ function buildApplicationCommands() {
     new SlashCommandBuilder()
       .setName('help')
       .setDescription('Display comprehensive guide to all bot commands'),
+
+    new SlashCommandBuilder()
+      .setName('performance')
+      .setDescription('View bot execution performance, event loop delay, and command latency percentiles')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
     
     // ── LEGACY & SHORTCUT COMMANDS PRESERVED ──,
 
