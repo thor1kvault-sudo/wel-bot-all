@@ -204,6 +204,8 @@ test('24-7: status returns comprehensive telemetry and connection health', async
   assert.strictEqual(status.channelName, '24/7 Lounge');
   assert.strictEqual(typeof status.isConnected, 'boolean');
   assert.strictEqual(typeof status.status, 'string');
+  assert.strictEqual(typeof status.stateLabel, 'string');
+  assert.ok(['Disabled', 'Connecting', 'Connected and ready', 'Reconnecting', 'Failed'].includes(status.stateLabel));
   assert.strictEqual(status.isPlaying, false);
 
   musicService.destroySession(guild.id, true);

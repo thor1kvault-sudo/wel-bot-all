@@ -432,6 +432,36 @@ async function startBot() {
   client.on('error', err => console.error(redactSecrets(`[Discord Client Error]: ${err?.message || err}`)));
   client.on('warn',  info => console.warn(redactSecrets(`[Discord Client Warn]: ${info}`)));
 
+  // ── Voice Gateway Packet Forwarder & Safe Diagnostics ──
+  // Ensures VOICE_SERVER_UPDATE and VOICE_STATE_UPDATE packets are always dispatched
+  // to client.voice adapters even if member caching lags, preventing Signalling stalls.
+  client.on('raw', (packet) => {
+    if (!packet || !packet.t) return;
+    if (packet.t === 'VOICE_SERVER_UPDATE' && packet.d) {
+      if (client.voice && typeof client.voice.onVoiceServer === 'function') {
+        try { client.voice.onVoiceServer(packet.d); } catch (_) {}
+      }
+      if (musicService && typeof musicService.getSession === 'function') {
+        const session = musicService.getSession(packet.d.guild_id);
+        if (session) {
+          session.receivedServerUpdate = true;
+          session.voiceGatewayEndpoint = packet.d.endpoint || null;
+        }
+      }
+    } else if (packet.t === 'VOICE_STATE_UPDATE' && packet.d && packet.d.user_id === client.user?.id) {
+      if (client.voice && typeof client.voice.onVoiceStateUpdate === 'function') {
+        try { client.voice.onVoiceStateUpdate(packet.d); } catch (_) {}
+      }
+      if (musicService && typeof musicService.getSession === 'function') {
+        const session = musicService.getSession(packet.d.guild_id);
+        if (session) {
+          session.receivedStateUpdate = true;
+          session.voiceGatewaySessionId = packet.d.session_id || null;
+        }
+      }
+    }
+  });
+
   client.once('clientReady', async () => {
     console.log('=======================================================');
     console.log('THOR APEX All-in-One Bot is ONLINE!');

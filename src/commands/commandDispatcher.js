@@ -2383,17 +2383,35 @@ async function dispatchCommand(interaction, context = {}) {
       }
 
       if (subCmd === 'status') {
-        const status = musicService ? musicService.get247Status(guild.id, guild) : { enabled: false, channelId: '', isConnected: false, status: 'disconnected', isPlaying: false, reconnectAttempts: 0 };
+        const status = musicService ? musicService.get247Status(guild.id, guild) : { enabled: false, channelId: '', isConnected: false, status: 'disconnected', stateLabel: 'Disabled', isPlaying: false, reconnectAttempts: 0 };
+        const colorMap = {
+          'Connected and ready': '#57F287',
+          'Connecting': '#FEE75C',
+          'Reconnecting': '#E67E22',
+          'Failed': '#ED4245',
+          'Disabled': '#95A5A6',
+        };
+        const stateEmojiMap = {
+          'Connected and ready': '🟢',
+          'Connecting': '🟡',
+          'Reconnecting': '🟠',
+          'Failed': '🔴',
+          'Disabled': '⚪',
+        };
+        const activeLabel = status.stateLabel || (status.enabled ? (status.isConnected ? 'Connected and ready' : 'Connecting') : 'Disabled');
+        const color = colorMap[activeLabel] || '#5865F2';
+        const emoji = stateEmojiMap[activeLabel] || '⚪';
+
         const embed = new EmbedBuilder()
-          .setColor(status.enabled ? '#57F287' : '#95A5A6')
+          .setColor(color)
           .setTitle('📻 24/7 Voice Connection Status')
           .addFields(
             { name: '24/7 Persistence', value: status.enabled ? '✅ **Enabled**' : '❌ **Disabled**', inline: true },
             { name: 'Target Voice Channel', value: status.channelName ? `🔊 **${status.channelName}** (<#${status.channelId}>)` : (status.channelId ? `<#${status.channelId}>` : '*(None configured)*'), inline: true },
-            { name: 'Connection State', value: status.isConnected ? '🟢 **Connected (Ready)**' : (status.status === 'connecting' ? '🟡 **Connecting**' : '⚪ **Disconnected**'), inline: true },
+            { name: 'Connection State', value: `${emoji} **${activeLabel}** (\`${status.status}\`)`, inline: true },
             { name: 'Current Playback', value: status.isPlaying ? `🎶 Streaming: **${status.currentTrack?.title || 'Unknown'}**` : '⏹️ **Silent Standby (Queue Empty)**', inline: true },
             { name: 'Reconnect Limit / Errors', value: status.lastError ? `⚠️ ${status.lastError}` : `✅ Clean (Attempts: ${status.reconnectAttempts}/5)`, inline: true },
-            { name: 'Hosting / Uptime Note', value: 'Voice connection remains active while bot process runs. Free tier hosting (e.g. Render) may spin down when inactive; keep health ping active for unbroken 24/7 uptime.', inline: false }
+            { name: 'Hosting / Uptime Note', value: 'Discord voice audio transmission requires UDP egress (ports 50000-65535) and Voice Gateway v8 with DAVE encryption. On hosts with UDP egress disabled (e.g. Render free web services), voice media packets cannot be routed.', inline: false }
           )
           .setFooter({ text: 'THOR APEX • SONGS Subsystem' })
           .setTimestamp();

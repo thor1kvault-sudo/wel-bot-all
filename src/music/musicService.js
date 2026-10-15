@@ -7,8 +7,40 @@ const {
   entersState,
   StreamType,
   NoSubscriberBehavior,
+  VoiceConnection,
 } = require('@discordjs/voice');
 const { PermissionsBitField } = require('discord.js');
+
+// ── Patch @discordjs/voice Signalling Race Condition ──
+// When Discord sends VOICE_SERVER_UPDATE before VOICE_STATE_UPDATE,
+// the default VoiceConnection implementation deadlocks in Signalling because
+// addStatePacket does not trigger configureNetworking(). We patch both handlers to
+// ensure configureNetworking() is invoked as soon as both packets are present.
+if (VoiceConnection && VoiceConnection.prototype) {
+  const origAddStatePacket = VoiceConnection.prototype.addStatePacket;
+  VoiceConnection.prototype.addStatePacket = function (packet) {
+    origAddStatePacket.call(this, packet);
+    if (this.packets?.server?.endpoint && this.state.status === VoiceConnectionStatus.Signalling) {
+      try {
+        this.configureNetworking();
+      } catch (err) {
+        console.error('[THOR-VOICE] configureNetworking on addStatePacket:', err.message);
+      }
+    }
+  };
+
+  const origAddServerPacket = VoiceConnection.prototype.addServerPacket;
+  VoiceConnection.prototype.addServerPacket = function (packet) {
+    origAddServerPacket.call(this, packet);
+    if (this.packets?.state && packet.endpoint && this.state.status === VoiceConnectionStatus.Signalling) {
+      try {
+        this.configureNetworking();
+      } catch (err) {
+        console.error('[THOR-VOICE] configureNetworking on addServerPacket:', err.message);
+      }
+    }
+  };
+}
 
 const { isSpotifyUrl, resolveSpotify } = require('./spotifyResolver');
 const { searchAudioTracks, matchPlayableTrack, resolveAudioStream, ensureClientReady } = require('./audioProvider');
@@ -383,9 +415,25 @@ async function ensureVoiceConnection(guild, vc) {
   // 2. Reuse active connection if already on this channel
   if (session.connection && session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
     if (session.connection.joinConfig?.channelId === vc.id) {
-      ensureAudioPlayer(session, guild.id);
-      try { session.connection.subscribe(session.player); } catch (_) {}
-      return { success: true, connection: session.connection };
+      if (session.connection.state.status === VoiceConnectionStatus.Ready) {
+        ensureAudioPlayer(session, guild.id);
+        try { session.connection.subscribe(session.player); } catch (_) {}
+        session.detailedStatus = 'connected_ready';
+        return { success: true, connection: session.connection };
+      }
+      // If currently connecting or signalling, await Ready instead of duplicating connection
+      try {
+        const waitMs = (process.env.NODE_ENV === 'test' || !guild.voiceAdapterCreator) ? 100 : 15_000;
+        await entersState(session.connection, VoiceConnectionStatus.Ready, waitMs);
+        ensureAudioPlayer(session, guild.id);
+        try { session.connection.subscribe(session.player); } catch (_) {}
+        session.detailedStatus = 'connected_ready';
+        return { success: true, connection: session.connection };
+      } catch (_) {
+        // Stalled existing connection on this channel; clean destroy before re-joining
+        try { session.connection.destroy(); } catch (_) {}
+        session.connection = null;
+      }
     } else {
       // Different channel: clean destroy old before joining new
       try { session.connection.destroy(); } catch (_) {}
@@ -393,22 +441,50 @@ async function ensureVoiceConnection(guild, vc) {
     }
   }
 
-  // 3. Establish Voice Connection
+  // 3. Establish Voice Connection with high-resolution state diagnostics
   try {
+    session.detailedStatus = 'connecting';
+    session.lastStateChange = Date.now();
+    session.stateTransitions = session.stateTransitions || [];
+
     session.connection = joinVoiceChannel({
       channelId: vc.id,
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: false,
-      debug: true,
+      debug: false,
     });
 
     session.connection.on('stateChange', (oldState, newState) => {
-      console.log(`[THOR-VOICE] Guild ${guild.id}: ${oldState.status} -> ${newState.status}`);
+      const now = Date.now();
+      const durationMs = now - (session.lastStateChange || now);
+      session.lastStateChange = now;
+      session.stateTransitions.push({
+        from: oldState.status,
+        to: newState.status,
+        durationMs,
+        timestamp: new Date(now).toISOString(),
+      });
+      if (session.stateTransitions.length > 20) session.stateTransitions.shift();
+
+      console.log(`[THOR-VOICE] Guild ${guild.id} (Channel: ${vc.id}): ${oldState.status} -> ${newState.status} (${durationMs}ms in ${oldState.status})`);
+
+      if (newState.status === VoiceConnectionStatus.Ready) {
+        session.detailedStatus = 'connected_ready';
+        session.reconnectAttempts = 0;
+        session.lastError = null;
+      } else if (newState.status === VoiceConnectionStatus.Signalling || newState.status === VoiceConnectionStatus.Connecting) {
+        session.detailedStatus = 'connecting';
+      } else if (newState.status === VoiceConnectionStatus.Disconnected) {
+        session.detailedStatus = session.is247 ? 'reconnecting' : 'disconnected';
+      } else if (newState.status === VoiceConnectionStatus.Destroyed) {
+        session.detailedStatus = 'disconnected';
+      }
     });
 
     session.connection.on('error', (err) => {
-      console.error(`[THOR-VOICE Error] Guild ${guild.id}:`, err.message);
+      console.error(`[THOR-VOICE Error] Guild ${guild.id} (Channel: ${vc.id}):`, err.message);
+      session.lastError = err.message;
       logIncident('ERROR', 'VOICE_ERR', `Voice error in guild ${guild.id}: ${err.message}`);
     });
 
@@ -416,6 +492,8 @@ async function ensureVoiceConnection(guild, vc) {
       console.log(`[THOR-VOICE] Connection READY in guild ${guild.id}. Ping:`, session.connection.ping);
       logIncident('INFO', 'VOICE_READY', `Voice connection ready in guild ${guild.id}`);
       session.reconnectAttempts = 0;
+      session.detailedStatus = 'connected_ready';
+      session.lastError = null;
       if (session.player) {
         try { session.connection.subscribe(session.player); } catch (_) {}
       }
@@ -430,6 +508,7 @@ async function ensureVoiceConnection(guild, vc) {
       } catch (_) {
         logIncident('WARN', 'VOICE_DISCONNECT', `Voice disconnected unexpectedly in guild ${guild.id}`);
         if (session.is247) {
+          session.detailedStatus = 'reconnecting';
           handle247Reconnect(guild, session.voiceChannel);
         } else {
           destroySession(guild.id);
@@ -449,30 +528,50 @@ async function ensureVoiceConnection(guild, vc) {
       try { session.connection.subscribe(session.player); } catch (_) {}
     }
 
-    // Await Ready state (with grace fallback for mock environments)
+    // Await Ready state (with grace fallback for mock unit-test environments)
     try {
       const waitMs = (process.env.NODE_ENV === 'test' || !guild.voiceAdapterCreator) ? 100 : 15_000;
       await entersState(session.connection, VoiceConnectionStatus.Ready, waitMs);
       console.log(`[THOR-VOICE] Voice connection successfully entered READY in guild ${guild.id}`);
+      session.detailedStatus = 'connected_ready';
+      session.reconnectAttempts = 0;
+      session.lastError = null;
     } catch (connErr) {
       const curStatus = session.connection ? session.connection.state.status : 'unknown';
       if (process.env.NODE_ENV === 'test') {
         // In unit tests without live Discord Gateway/UDP servers, allow mock connection
         return { success: true, connection: session.connection };
       }
-      console.error(`[THOR-VOICE] Connection did not become Ready in 15s (status: ${curStatus}):`, connErr.message);
-      logIncident('ERROR', 'VOICE_READY_TIMEOUT', `Voice connection not ready in 15s in guild ${guild.id}: ${connErr.message}`);
+
+      session.detailedStatus = 'failed';
+      let errorReason = '';
+      if (curStatus === 'signalling') {
+        errorReason = `Voice connection timed out in state 'signalling'. ` +
+                      `Discord Gateway did not complete voice server routing / session authentication.`;
+      } else if (curStatus === 'connecting') {
+        errorReason = `Voice connection reached 'connecting' but Discord voice UDP audio transmission could not be negotiated. ` +
+                      `Host environment (Render Web Service) restricts raw outbound UDP packets on ports 50000-65535 required for Discord voice.`;
+      } else {
+        errorReason = `Voice connection failed in state '${curStatus}': ${connErr.message}`;
+      }
+
+      console.error(`[THOR-VOICE] Connection not ready in guild ${guild.id}: ${errorReason}`);
+      logIncident('ERROR', 'VOICE_READY_TIMEOUT', `Guild ${guild.id}: ${errorReason}`);
+      session.lastError = errorReason;
+
       if (session.connection && session.connection.state.status !== VoiceConnectionStatus.Ready) {
         return {
           success: false,
-          message: `Voice connection timed out in state \`${curStatus}\`. ` +
-                   `Discord voice UDP audio transmission could not be negotiated. (Host network may restrict UDP).`,
+          status: curStatus,
+          message: errorReason,
         };
       }
     }
 
     return { success: true, connection: session.connection };
   } catch (err) {
+    session.detailedStatus = 'failed';
+    session.lastError = err.message;
     logIncident('ERROR', 'VOICE_CONNECT_ERR', err.message);
     return { success: false, message: `Could not join voice channel: ${err.message}` };
   }
@@ -836,6 +935,7 @@ function setup247(guild, vc, textChannel = null) {
 
 /**
  * Retrieves comprehensive 24/7 status report for a guild
+ * Distinguishes: Disabled, Connecting, Connected and ready, Reconnecting, Failed
  */
 function get247Status(guildId, guild = null) {
   const { getGuildConfig } = require('../config/guildConfig');
@@ -847,16 +947,33 @@ function get247Status(guildId, guild = null) {
   const targetChannelId = config?.music247?.channelId || session?.voiceChannel?.id || '';
   const channel = guild?.channels?.cache?.get(targetChannelId) || session?.voiceChannel;
 
+  let stateLabel = 'Disabled';
+  if (!config?.music247?.enabled) {
+    stateLabel = 'Disabled';
+  } else if (isConnected) {
+    stateLabel = 'Connected and ready';
+  } else if (session?.reconnectTimeout || (session?.reconnectAttempts && session.reconnectAttempts > 0 && connStatus !== VoiceConnectionStatus.Ready)) {
+    stateLabel = 'Reconnecting';
+  } else if (connStatus === VoiceConnectionStatus.Signalling || connStatus === VoiceConnectionStatus.Connecting || session?.detailedStatus === 'connecting') {
+    stateLabel = 'Connecting';
+  } else if (config?.music247?.lastError || connStatus === VoiceConnectionStatus.Destroyed || session?.detailedStatus === 'failed') {
+    stateLabel = 'Failed';
+  } else {
+    stateLabel = 'Connecting';
+  }
+
   return {
     enabled: Boolean(config?.music247?.enabled),
     channelId: targetChannelId,
     channelName: channel?.name || null,
     isConnected,
     status: connStatus,
+    stateLabel,
     reconnectAttempts: session?.reconnectAttempts || 0,
     isPlaying: Boolean(session?.isPlaying),
     currentTrack: session?.currentTrack || null,
-    lastError: config?.music247?.lastError || null,
+    lastError: config?.music247?.lastError || session?.lastError || null,
+    transitions: session?.stateTransitions?.slice(-5) || [],
   };
 }
 

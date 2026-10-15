@@ -40,7 +40,10 @@
   - Subcommands cannot be mixed with top-level argument options
   - Required options cannot follow optional options
 
-### B. 24/7 Persistent Music Engine
+### B. 24/7 Persistent Music Engine & Voice Protocol
+- **DAVE E2EE Protocol & Voice Gateway v8:** Upgraded `@discordjs/voice` to `^0.19.2` and integrated `@snazzah/davey` for Discord mandatory end-to-end voice encryption and Node.js `>=22.12.0` compatibility.
+- **Signalling Race Condition Mitigation:** Patched `VoiceConnection.prototype.addStatePacket` and `addServerPacket` to prevent signalling deadlocks when `VOICE_SERVER_UPDATE` arrives before `VOICE_STATE_UPDATE`.
+- **Gateway Packet Forwarding:** Safeguarded gateway raw packet routing in `index.js` for `VOICE_SERVER_UPDATE` and `VOICE_STATE_UPDATE`.
 - **Silent Standby:** When queue empties, player remains connected in silence without playing random unprompted tracks.
 - **Single Connection Reuse:** Reuses active voice connection without orphan connection leaks.
 - **Bounded Exponential Backoff:** Reconnects up to 5 times on unexpected disconnects; halts cleanly if the voice channel was deleted.
