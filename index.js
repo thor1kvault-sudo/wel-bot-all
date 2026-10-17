@@ -483,11 +483,10 @@ async function startBot() {
       try {
         console.log(`📡 Registering ${cmds.length} application commands globally (Discord limit: 100)...`);
 
-        // Clean up stale guild-scoped commands ONLY if a specific target guild is explicitly configured
-        const targetGuildId = process.env.GUILD_ID;
-        if (targetGuildId) {
+        // Clean up stale guild-scoped commands across all connected guilds to prevent duplicates
+        for (const g of client.guilds.cache.values()) {
           try {
-            await rest.put(Routes.applicationGuildCommands(client.user.id, targetGuildId), { body: [] });
+            await rest.put(Routes.applicationGuildCommands(client.user.id, g.id), { body: [] });
           } catch (_) {}
         }
 

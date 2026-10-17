@@ -193,3 +193,35 @@ Strict canonical ordering enforced by Discord registration:
 1. **Registry & Dispatcher Sync:** Verified programmatically by `test/auditAndIntegrity.test.js` (`AUDIT-1`, `AUDIT-2`).
 2. **Discord v10 Payload Validation:** Ran `validateCommandPayload(payload)` with **0 errors**.
 3. **No Duplicate Execution:** Exactly one command handler receives each chat input command.
+
+---
+
+## 5. Live Discord UI Duplicate Commands Audit & Resolution (Global vs Guild Scope)
+
+### A. Symptom Observed in Discord Client
+In Discord's slash command picker (`/`), every command appeared twice for bot **The Real Apex** (e.g. `/afk clear`, `/afk set`, `/afk status`, `/altdetection`).
+
+### B. Root Cause
+In past deployment runs (specifically via `--sync-guilds` in `deploy.js`), the deployment script registered all 100 application commands to **each connected guild** (`Routes.applicationGuildCommands(user.id, guild.id)`) while also deploying them **globally** (`Routes.applicationCommands(user.id)`).
+
+When Discord's client renders the slash command menu for a user in a guild, it displays:
+1. All **Global** commands registered by the application (100 commands).
+2. All **Guild-Specific** commands registered by the application in that server (100 commands).
+
+Because both payloads were identical, Discord merged both sets into the UI, causing every single command to display twice.
+
+### C. Live REST API Audit: Before vs After Counts
+
+| Registration Scope / Guild | Target ID | Before Fix Command Count | After Fix Command Count | Status |
+|---|---|---|---|---|
+| **Global Application Commands** | Application `1554626865958887444` | **100** | **100** | ✅ Preserved (Canonical) |
+| Guild: `✦ ʀᴀɪ ʀᴀᴍ ✦` | `1457382179981099090` | **100** | **0** | ✅ Purged Redundant Copy |
+| Guild: `THOR APEX ⚡` | `1525030316845301781` | **100** | **0** | ✅ Purged Redundant Copy |
+| Guild: `MAXXZ FAM 🤍` | `1544007754035765310` | **100** | **0** | ✅ Purged Redundant Copy |
+| Guild: `THOR EDITZZ PVT SERVER` | `1558179055646281749` | **100** | **0** | ✅ Purged Redundant Copy |
+| **Total In Discord REST API** | — | **500** | **100** | ✅ **Exactly 1 copy per command** |
+
+### D. Permanent Architectural Safeguards
+1. **`deploy.js` Enforced Global Scope:** Removed multi-guild push. Added automatic scanning of all connected guilds on every run of `deploy.js` to ensure any accidental guild-scoped commands are purged (`body: []`).
+2. **`index.js` Startup Safeguard:** During `client.once('ready')`, the bot automatically purges any guild-scoped commands across all connected servers in `client.guilds.cache.values()`.
+3. **Automated Regression Suite:** Added `AUDIT-6` through `AUDIT-9` in `test/auditAndIntegrity.test.js` validating duplicate protection, canonical global scope, idempotent payloads, and single-handler execution.

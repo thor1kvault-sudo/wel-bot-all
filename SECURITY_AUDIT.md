@@ -14,7 +14,7 @@ This security audit and remediation report covers the deep structural analysis, 
 3. **AutoMod Pipeline (`src/automod/autoModEngine.js`):** Eliminated unbounded memory growth in message history, added secret and token redaction in logged infraction embeds, and enforced single-action containment per event.
 4. **Command Authorization & Dispatcher Security (`src/commands/commandDispatcher.js`):** Verified server-side Discord permission checks (`PermissionFlagsBits.Administrator`, `ManageGuild`, `BanMembers`, etc.) inside handlers rather than relying on client-side slash visibility.
 
-All 218 test cases across 8 test suites pass with 100% success rate.
+All 222 test cases across 9 test suites pass with 100% success rate.
 
 ---
 
@@ -146,13 +146,18 @@ The Anti-Nuke subsystem detects suspicious bursts of destructive actions across 
 
 ---
 
-## 5. Command Permissions & Security Dispatcher Audit
+## 5. Command Permissions, Registration Scoping & Security Dispatcher Audit
 
+### A. Server-Side Permission Enforcement
 All 100 slash commands registered in `src/commands/commandRegistry.js` were audited for strict server-side authorization:
 - **Zero Reliance on Client Filtering:** Even if a user bypasses Discord UI restrictions, `commandDispatcher.js` and individual handlers enforce `interaction.member.permissions.has(...)`.
 - **Administrative Endpoints:** Commands such as `/security`, `/automod`, `/welcome config`, `/antiraid`, and `/backup` enforce `PermissionFlagsBits.Administrator` or `PermissionFlagsBits.ManageGuild`.
 - **Moderation Endpoints:** Commands like `/ban`, `/kick`, `/timeout`, `/warn`, `/mute` enforce corresponding Discord permission flags (`BanMembers`, `KickMembers`, `ModerateMembers`).
 - **Owner Diagnostics:** Owner-only commands verify `interaction.user.id === process.env.OWNER_ID` or server ownership before returning diagnostic data.
+
+### B. Global vs Guild Scope Collision Elimination
+- **Defect:** Prior deployment iterations inadvertently pushed full application payloads into individual guild scopes (`Routes.applicationGuildCommands(user.id, guild.id)`) across connected servers while also maintaining global registration (`Routes.applicationCommands(user.id)`). Discord client merges global + guild commands for an application, which caused every slash command to display twice in the picker.
+- **Resolution:** Established single canonical global scope (`Routes.applicationCommands`). Built automated purge logic into `deploy.js` and `index.js` startup that sweeps all connected guilds and wipes stale guild-scoped commands (`body: []`). Verified 0 guild commands across all guilds directly via Discord REST API.
 
 ---
 
@@ -170,8 +175,8 @@ Full automated testing was conducted using the native Node.js test runner (`node
 | `test/securityEngine.test.js` | 7 | 7 | 0 | Thread-safe locks, threshold counters, containment actions |
 | `test/dragLogs.test.js` | 6 | 6 | 0 | Voice drag detection, voice channel audit logs |
 | `test/dragLogsEdgeCases.test.js` | 5 | 5 | 0 | Missing permissions, rapid drag spam, debounce timers |
-| `test/auditAndIntegrity.test.js` | 5 | 5 | 0 | 100-limit payload, single handlers, secret redaction, sweeper |
-| **Total** | **218** | **218** | **0** | **100% Pass Rate across all suites** |
+| `test/auditAndIntegrity.test.js` | 9 | 9 | 0 | 100-limit payload, subcommands, scope guards, single handlers |
+| **Total** | **222** | **222** | **0** | **100% Pass Rate across all suites** |
 
 ---
 

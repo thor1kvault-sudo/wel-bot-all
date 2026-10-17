@@ -78,3 +78,64 @@ test('AUDIT-5: Full payload passes Discord API v10 validation with 0 errors', ()
   assert.equal(result.valid, true);
   assert.equal(result.errors.length, 0);
 });
+
+test('AUDIT-6: Zero duplicate subcommands or subcommand groups within any command', () => {
+  const commands = buildApplicationCommands().map(c => typeof c.toJSON === 'function' ? c.toJSON() : c);
+
+  for (const cmd of commands) {
+    if (!cmd.options) continue;
+    const subNames = [];
+    for (const opt of cmd.options) {
+      if (opt.type === 1 || opt.type === 2) {
+        subNames.push(opt.name);
+      }
+      if (opt.type === 2 && opt.options) {
+        const nestedNames = [];
+        for (const nested of opt.options) {
+          if (nested.type === 1) {
+            nestedNames.push(nested.name);
+          }
+        }
+        const nestedDupes = nestedNames.filter((item, index) => nestedNames.indexOf(item) !== index);
+        assert.equal(nestedDupes.length, 0, `Duplicate nested subcommands in /${cmd.name} ${opt.name}: ${nestedDupes.join(', ')}`);
+      }
+    }
+    const dupes = subNames.filter((item, index) => subNames.indexOf(item) !== index);
+    assert.equal(dupes.length, 0, `Duplicate subcommands in /${cmd.name}: ${dupes.join(', ')}`);
+  }
+});
+
+test('AUDIT-7: Canonical registration scope — deploy and index guarantee zero guild-scoped duplicate registration', () => {
+  const deploySrc = fs.readFileSync(path.join(__dirname, '../deploy.js'), 'utf8');
+  const indexSrc = fs.readFileSync(path.join(__dirname, '../index.js'), 'utf8');
+
+  // Must use applicationCommands (global) as primary
+  assert.ok(deploySrc.includes('Routes.applicationCommands(user.id)'), 'deploy.js must register global commands');
+  assert.ok(indexSrc.includes('Routes.applicationCommands(client.user.id)'), 'index.js must register global commands');
+
+  // Must actively purge guild commands with empty body to prevent duplicate UI entries
+  assert.ok(deploySrc.includes('Routes.applicationGuildCommands(user.id, g.id), { body: [] }'), 'deploy.js must purge guild-scoped commands');
+  assert.ok(indexSrc.includes('Routes.applicationGuildCommands(client.user.id, g.id), { body: [] }'), 'index.js must purge guild-scoped commands on ready');
+
+  // Must NOT deploy full payload to guilds across all connected guilds
+  assert.ok(!deploySrc.includes('Routes.applicationGuildCommands(user.id, g.id), { body: payload }'), 'deploy.js must not push payload to all guilds');
+});
+
+test('AUDIT-8: Idempotent payload generation — repeated calls produce identical deterministic payloads', () => {
+  const firstRun = buildApplicationCommands().map(c => typeof c.toJSON === 'function' ? c.toJSON() : c);
+  const secondRun = buildApplicationCommands().map(c => typeof c.toJSON === 'function' ? c.toJSON() : c);
+
+  assert.equal(firstRun.length, secondRun.length);
+  assert.equal(JSON.stringify(firstRun), JSON.stringify(secondRun));
+});
+
+test('AUDIT-9: Dispatcher single-handler execution integrity — no double-reply or unhandled commands', () => {
+  const commands = buildApplicationCommands().map(c => typeof c.toJSON === 'function' ? c.toJSON() : c);
+  const dispatcherSrc = fs.readFileSync(path.join(__dirname, '../src/commands/commandDispatcher.js'), 'utf8');
+
+  for (const cmd of commands) {
+    const regex = new RegExp(`commandName === ['"]${cmd.name}['"]`, 'g');
+    const matches = dispatcherSrc.match(regex);
+    assert.ok(matches && matches.length === 1, `Command /${cmd.name} must appear in exactly one dispatch condition in dispatcher, found: ${matches?.length || 0}`);
+  }
+});

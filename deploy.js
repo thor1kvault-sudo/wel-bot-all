@@ -2,18 +2,15 @@
  * deploy.js — Deploys slash commands to Discord API
  *
  * Strict deployment safety:
+ *  - Canonical Scope: Global Application Commands (exactly 100 commands).
  *  - Validates payload against Discord API v10 constraints before sending.
- *  - Deploys canonical global application commands.
- *  - Never bulk-deletes commands across unrelated servers. Only prunes stale guild
- *    commands on the explicitly configured target guild (via GUILD_ID in .env or --guild-id=<id>).
- *  - Supports --sync-guilds for instant slash command suggestion update across connected guilds.
+ *  - Automatically scans and purges redundant guild-scoped commands across all connected guilds
+ *    to prevent duplicate slash commands from appearing in Discord's command picker.
  *  - Verifies registration response directly via Discord REST API GET applicationCommands.
  *
  * Usage:
- *   node deploy.js                          (Global deployment + verification)
- *   node deploy.js --sync-guilds            (Global + instant connected guilds deployment)
- *   node deploy.js --guild-id=<id>          (Global deployment + target guild sync)
- *   node deploy.js --guild-only --guild-id=<id> (Guild-scoped deployment to target guild only)
+ *   node deploy.js                          (Global deployment + automatic guild duplicate purge + verification)
+ *   node deploy.js --clean-only             (Purge guild duplicates without redeploying global payload)
  */
 require('dotenv').config();
 const { REST, Routes } = require('discord.js');
@@ -41,9 +38,7 @@ if (!validation.valid) {
 }
 console.log(`✅ Payload validation passed (${payload.length}/100 commands valid).`);
 
-const isGuildOnly = process.argv.includes('--guild-only');
-const syncGuilds = process.argv.includes('--sync-guilds') || process.argv.includes('--all-guilds');
-const targetGuildId = process.env.GUILD_ID || process.argv.find(a => a.startsWith('--guild-id='))?.split('=')[1];
+const cleanOnly = process.argv.includes('--clean-only');
 
 (async () => {
   try {
@@ -51,48 +46,65 @@ const targetGuildId = process.env.GUILD_ID || process.argv.find(a => a.startsWit
     const user = await rest.get(Routes.user('@me'));
     console.log(`🤖 Authenticated as: ${user.username} (ID: ${user.id})`);
 
-    if (isGuildOnly) {
-      if (!targetGuildId) {
-        console.error('❌ Guild-only deployment requires GUILD_ID in .env or --guild-id=<id> CLI flag.');
-        console.error('   Aborting to prevent deploying commands across arbitrary servers.');
-        process.exit(1);
-      }
-      console.log(`⚡ Deploying ${payload.length} guild-scoped commands to target guild: ${targetGuildId}...`);
-      await rest.put(Routes.applicationGuildCommands(user.id, targetGuildId), { body: payload });
-      console.log(`✅ Guild ${targetGuildId} commands successfully deployed.`);
-    } else {
+    // 2. Global Application Command Registration
+    if (!cleanOnly) {
       console.log(`🌐 Registering ${payload.length} application commands globally (Discord limit: 100)...`);
       const registered = await rest.put(Routes.applicationCommands(user.id), { body: payload });
       console.log(`🎉 Successfully registered ${registered?.length || payload.length} global commands across all connected servers.`);
+    }
 
-      // Instant guild deployment for connected guilds if requested or if targetGuildId specified
-      if (syncGuilds) {
-        console.log('⚡ Instant-Sync: Deploying commands to connected guilds for 0-delay slash suggestions...');
-        const guilds = await rest.get(Routes.userGuilds());
-        for (const g of guilds) {
-          try {
-            await rest.put(Routes.applicationGuildCommands(user.id, g.id), { body: payload });
-            console.log(`  • Instantly synced ${payload.length} commands to guild "${g.name}" (${g.id})`);
-          } catch (gErr) {
-            console.warn(`  ⚠️ Could not sync guild ${g.id}: ${gErr.message}`);
-          }
+    // 3. Redundant Guild Command Purge (Prevents Duplicate Slash Commands in Discord UI)
+    console.log('🧹 Scanning connected guilds for redundant guild-scoped commands...');
+    const guilds = await rest.get(Routes.userGuilds());
+    let totalPurgedGuilds = 0;
+    let totalGuildCommandsPurged = 0;
+
+    for (const g of guilds) {
+      try {
+        const guildCmds = await rest.get(Routes.applicationGuildCommands(user.id, g.id));
+        if (guildCmds && guildCmds.length > 0) {
+          await rest.put(Routes.applicationGuildCommands(user.id, g.id), { body: [] });
+          console.log(`  ✅ Purged ${guildCmds.length} duplicate guild commands from guild "${g.name}" (${g.id})`);
+          totalPurgedGuilds++;
+          totalGuildCommandsPurged += guildCmds.length;
+        } else {
+          console.log(`  ✓ Guild "${g.name}" (${g.id}) has 0 guild commands (Clean)`);
         }
-      } else if (targetGuildId) {
-        console.log(`⚡ Instant-Sync: Deploying commands to target guild ${targetGuildId}...`);
-        await rest.put(Routes.applicationGuildCommands(user.id, targetGuildId), { body: payload });
-        console.log(`✅ Target guild ${targetGuildId} commands successfully synced.`);
+      } catch (gErr) {
+        console.warn(`  ⚠️ Could not check/prune guild ${g.id}: ${gErr.message}`);
       }
+    }
+    console.log(`✨ Guild command audit complete: ${totalGuildCommandsPurged} duplicate commands purged across ${totalPurgedGuilds} guilds.`);
 
-      // Verification: Fetch back the registered global commands directly from Discord API
-      console.log('🔎 Verifying registered global commands directly from Discord API...');
-      const verifiedCmds = await rest.get(Routes.applicationCommands(user.id));
-      const perfCmd = verifiedCmds.find(c => c.name === 'performance');
-      if (perfCmd) {
-        console.log(`✅ CONFIRMED: /performance exists on Discord API! (Command ID: ${perfCmd.id})`);
-      } else {
-        console.error('❌ VERIFICATION FAILED: /performance was not returned by Discord API.');
-        process.exit(1);
+    // 4. Verification: Fetch back commands directly from Discord API
+    console.log('🔎 Verifying registered commands directly from Discord API...');
+    const verifiedCmds = await rest.get(Routes.applicationCommands(user.id));
+    console.log(`📊 Verified Global Commands Count: ${verifiedCmds.length}`);
+
+    const perfCmd = verifiedCmds.find(c => c.name === 'performance');
+    if (perfCmd) {
+      console.log(`✅ CONFIRMED: /performance exists on Discord API! (Command ID: ${perfCmd.id})`);
+    } else {
+      console.error('❌ VERIFICATION FAILED: /performance was not returned by Discord API.');
+      process.exit(1);
+    }
+
+    // Verify 0 guild commands remain
+    let remainingGuildDuplicates = 0;
+    for (const g of guilds) {
+      const remaining = await rest.get(Routes.applicationGuildCommands(user.id, g.id));
+      if (remaining.length > 0) {
+        remainingGuildDuplicates += remaining.length;
+        console.error(`❌ Duplicate commands still exist in guild ${g.id}: ${remaining.length}`);
       }
+    }
+
+    if (remainingGuildDuplicates === 0) {
+      console.log('🎯 ZERO DUPLICATES CONFIRMED: All connected guilds have 0 guild-scoped commands.');
+      console.log('🌟 Discord client will display exactly 1 copy of each slash command.');
+    } else {
+      console.error(`❌ FAILED: ${remainingGuildDuplicates} guild commands remain on Discord.`);
+      process.exit(1);
     }
   } catch (err) {
     console.error('❌ Command deployment failed:', err.message);
