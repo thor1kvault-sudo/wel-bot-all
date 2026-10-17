@@ -1146,6 +1146,9 @@ async function startBot() {
 
         // /panel lockdown toggle
         if (id === 'panel_lockdown') {
+          if (!interaction.member?.permissions?.has(PermissionsBitField.Flags.Administrator) && !interaction.member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+            return interaction.reply({ content: '❌ You lack `Administrator` or `ManageGuild` permission to toggle lockdown.', ephemeral: true });
+          }
           const { engageEmergencyLockdown, liftEmergencyLockdown } = require('./src/security/backupRecovery');
           await interaction.deferReply({ ephemeral: true });
           if (!config.security?.lockdown) {
