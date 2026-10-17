@@ -166,6 +166,7 @@ function buildMockGuild(guildId, channelDefs = [], categoryDefs = []) {
       permissionOverwrites: {
         cache: owCache,
         edit: async (role, perms, opts) => {
+          if (def.editError) throw def.editError;
           if (def.editShouldThrow) throw new Error('Simulated edit error');
           log.push({ op: 'edit', role, perms, opts });
         },
@@ -903,4 +904,91 @@ test('LU-18: Total lockdown failure (all channels fail) returns success: false w
 
   const cfg = getGuildConfig(guildId);
   assert.equal(cfg.security.lockdown, false, 'Lockdown flag must not be set if all channels failed');
+});
+
+test('LU-19: Community Onboarding (code 350005) channels are recorded as exemptChannels, not failedChannels', async () => {
+  const guildId = nextId();
+  const onboardingError = new Error('Onboarding requires at least one channel where @everyone can read and send messages');
+  onboardingError.code = 350005;
+
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_announcements', name: 'announcements' },
+    { id: 'ch_general', name: '🌷・General', editError: onboardingError },
+  ]);
+
+  const res = await engageEmergencyLockdown(guild, 'Admin');
+
+  assert.equal(res.success, true);
+  assert.equal(res.lockedChannels, 1, 'Should lock announcements channel');
+  assert.equal(res.exemptChannels?.length, 1, 'General channel must be marked as exempt');
+  assert.equal(res.exemptChannels[0].id, 'ch_general');
+  assert.equal(res.failedChannels.length, 0, 'Onboarding exemption must NOT count as a failed channel');
+  assert.equal(res.partial, false, 'Lockdown should be reported as fully complete since all non-exempt channels were secured');
+
+  const cfg = getGuildConfig(guildId);
+  assert.equal(cfg.security.lockdown, true);
+  assert.ok(cfg.security.preLockdownSnapshot['ch_announcements'], 'Secured channel must be in snapshot');
+  assert.equal(cfg.security.preLockdownSnapshot['ch_general'], undefined, 'Exempt channel must not be in snapshot');
+  assert.ok(Array.isArray(cfg.security.lastLockdownExemptions));
+  assert.equal(cfg.security.lastLockdownExemptions[0].id, 'ch_general');
+});
+
+test('LU-20: Panic Mode is strictly isolated from normal lockdown snapshots and recovery data', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_main', name: 'main' },
+  ]);
+
+  // 1. Engage normal lockdown
+  const lockRes = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(lockRes.success, true);
+
+  const cfgAfterLock = getGuildConfig(guildId);
+  assert.equal(cfgAfterLock.security.lockdown, true);
+  assert.ok(cfgAfterLock.security.preLockdownSnapshot['ch_main']);
+
+  // 2. Activate Panic Mode
+  const { handlePanicMode } = require('../src/security/highSecuritySuite');
+  const actor = { id: 'admin_1', tag: 'Admin#0001' };
+  const panicRes = await handlePanicMode(guild, actor, 'activate');
+  assert.equal(panicRes.success, true);
+
+  const cfgAfterPanic = getGuildConfig(guildId);
+  assert.equal(cfgAfterPanic.security.lockdown, true, 'Panic activation must not alter lockdown flag');
+  assert.ok(cfgAfterPanic.security.preLockdownSnapshot['ch_main'], 'Panic activation must preserve lockdown snapshot');
+  assert.equal(cfgAfterPanic.security.panicMode?.active, true, 'Panic mode stored in distinct panicMode key');
+
+  // 3. Lift Panic Mode
+  const liftPanicRes = await handlePanicMode(guild, actor, 'lift');
+  assert.equal(liftPanicRes.success, true);
+
+  const cfgAfterPanicLift = getGuildConfig(guildId);
+  assert.equal(cfgAfterPanicLift.security.lockdown, true, 'Lifting panic must not alter lockdown state');
+  assert.ok(cfgAfterPanicLift.security.preLockdownSnapshot['ch_main'], 'Lifting panic must preserve lockdown snapshot');
+
+  // 4. Lift normal lockdown
+  const unlockRes = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(unlockRes.success, true);
+  assert.equal(unlockRes.unlockedChannels, 1);
+
+  const finalCfg = getGuildConfig(guildId);
+  assert.equal(finalCfg.security.lockdown, false);
+});
+
+test('LU-21: Non-onboarding unexpected channel errors correctly trigger partial: true and failedChannels', async () => {
+  const guildId = nextId();
+  const permissionError = new Error('Missing Permissions');
+  permissionError.code = 50013;
+
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_good', name: 'good-chat' },
+    { id: 'ch_perm_fail', name: 'restricted-chat', editError: permissionError },
+  ]);
+
+  const res = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.lockedChannels, 1);
+  assert.equal(res.partial, true, 'Real permission failures must be flagged as partial');
+  assert.equal(res.failedChannels.length, 1);
+  assert.equal(res.failedChannels[0].id, 'ch_perm_fail');
 });

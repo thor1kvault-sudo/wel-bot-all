@@ -32,18 +32,20 @@ This guide provides a comprehensive, plain-English explanation for every single 
 * **Example:** `/security status`
 
 ### `/security lockdown`
-* **Purpose:** Immediately restrict `@everyone` send and connect permissions across public channels during an emergency attack, while strictly preserving private/staff channels and saving baseline overwrites for atomic recovery.
+* **Purpose:** Restricts `@everyone` channel access during a security emergency while automatically preserving private staff/log channels and exempting channels required by Discord Community Onboarding / Server Guide (e.g. `🌷・General`). Saves a full permission snapshot for safe atomic recovery.
 * **Permissions:** `Administrator` or `Manage Guild`
 * **Effect:** State-changing (Secures public text & voice channels).
 * **Options:** None.
 * **Example:** `/security lockdown`
+* **Response Details:** Clearly reports Channels Secured, Channels Exempted (and why), Channels Skipped, and any Channels Failed, along with whether the lockdown is fully or partially complete.
 
 ### `/security unlock`
-* **Purpose:** Lifts emergency lockdown and restores original channel permissions exactly as saved prior to lockdown. Automatically handles partial channel restoration and allows retrying failed channels.
+* **Purpose:** Safely lifts emergency lockdown and restores original channel permissions exactly as saved prior to lockdown. Reports all restored channels and any channels that still need recovery, preserving recovery snapshots for safe retries without data corruption.
 * **Permissions:** `Administrator` or `Manage Guild`
 * **Effect:** State-changing (Restores original channel permissions).
 * **Options:** None.
 * **Example:** `/security unlock`
+* **Response Details:** Reports Channels Restored, Channels Failed (with retry capability), and confirms whether recovery is fully complete.
 
 ### `/security webhooks`
 * **Purpose:** Audit all webhooks across the entire server to detect unauthorized, orphan, or malicious webhooks created during account hijacks. Features an interactive 1-click **`[Delete All Rogue Webhooks]`** button (Zero Extra Channels created).

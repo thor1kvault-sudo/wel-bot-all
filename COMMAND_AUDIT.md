@@ -51,8 +51,8 @@ Strict canonical ordering enforced by Discord registration:
    - `incidents`: View recent security incident intercept history
    - `audit`: High-level permission hierarchy & health check
    - `test`: Dry-run security notification pipeline safely
-   - `lockdown`: Restrict configured channels during a security emergency
-   - `unlock`: Restore permissions changed by the lockdown system
+   - `lockdown`: Restrict configured channels during an emergency, safely exempting Discord onboarding channels
+   - `unlock`: Restore permissions changed by the lockdown system, reporting any channels needing recovery
    - `webhooks`: Scan and clean unauthorized, malicious, or orphan webhooks (Zero Extra Channels)
    - `posture`: Evaluate server security posture score (0-100) and vulnerability checklist
    - `panic`: Emergency panic button - strip admin perms from sub-roles and halt joins

@@ -243,22 +243,36 @@ async function _dispatchCommandInner(interaction, context = {}) {
       ] });
     }
 
+    const fields = [
+      { name: '🔒 Channels Secured', value: `**${res.lockedChannels}**`, inline: true },
+      { name: '⏭️ Skipped (Private/Logs)', value: `**${res.skippedChannels || 0}**`, inline: true },
+    ];
+
+    if (res.exemptChannels?.length > 0) {
+      fields.push({
+        name: '🛡️ Exempt Channels (Discord Onboarding / Server Guide)',
+        value: res.exemptChannels.map(e => `• <#${e.id}> (` + `${e.name}` + `)` + `\n  └ *Preserved for Community Onboarding*`).join('\n'),
+        inline: false,
+      });
+    }
+
+    if (res.failedChannels?.length > 0) {
+      fields.push({
+        name: '❌ Failed Channels (Unexpected Errors)',
+        value: res.failedChannels.map(f => `• <#${f.id}> (` + `${f.name}` + `): ${f.error}`).join('\n'),
+        inline: false,
+      });
+    }
+
     try {
       const lockEmbed = new EmbedBuilder()
         .setColor(res.partial ? '#FEE75C' : '#ED4245')
-        .setTitle(res.partial ? '⚠️ Server Lockdown Partially Engaged' : '🚨 Server Lockdown Engaged')
+        .setTitle(res.partial ? '⚠️ Server Lockdown Partially Engaged' : '🚨 Server Lockdown Fully Engaged')
         .setDescription(`Emergency server lockdown has been ${res.partial ? 'partially ' : ''}activated. Public text and voice channels restricted.`)
         .addFields(
-          { name: '🔒 Channels Locked', value: `**${res.lockedChannels}**`, inline: true },
-          { name: '⏭️ Channels Skipped (Pre-locked/Private)', value: `**${res.skippedChannels || 0}**`, inline: true },
-          ...(res.partial ? [{ name: '❌ Channels Failed', value: `**${res.failedChannels?.length || 0}**`, inline: true }] : []),
-          { name: '👤 Engaged By', value: `${u.tag} (\`${u.id}\`)`, inline: false },
-          { name: '⏱️ Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
-          ...(res.failedChannels?.length > 0 ? [{
-            name: '⚠️ Failed Channels',
-            value: res.failedChannels.slice(0, 10).map(f => `• <#${f.id}> (\`${f.name}\`) — ${f.error}`).join('\n').substring(0, 1024),
-            inline: false,
-          }] : [])
+          ...fields,
+          { name: '👤 Engaged By', value: `${u.tag} (` + `${u.id}` + `)`, inline: true },
+          { name: '⏱️ Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
         )
         .setFooter({ text: 'THOR APEX Security Engine • Run /security unlock to lift' })
         .setTimestamp();
@@ -266,20 +280,13 @@ async function _dispatchCommandInner(interaction, context = {}) {
     } catch (_) {}
 
     if (res.partial) {
-      const failList = res.failedChannels.slice(0, 10)
-        .map(f => `• <#${f.id}> (\`${f.name}\`) — ${f.error}`)
-        .join('\n');
       return int.editReply({ embeds: [
         new EmbedBuilder()
           .setColor('#FEE75C')
           .setTitle('⚠️ Server Lockdown Partially Engaged')
-          .setDescription(`Secured **${res.lockedChannels}** channels. **${res.failedChannels.length}** channel(s) could not be locked due to missing permissions or hierarchy.`)
-          .addFields(
-            { name: '🔒 Secured Channels', value: `**${res.lockedChannels}**`, inline: true },
-            { name: '⏭️ Skipped (Private)', value: `**${res.skippedChannels || 0}**`, inline: true },
-            { name: '❌ Failed Channels', value: failList || 'See security logs', inline: false }
-          )
-          .setFooter({ text: 'Permissions snapshot saved for locked channels • THOR APEX v2.0' })
+          .setDescription(`Secured **${res.lockedChannels}** channels. **${res.failedChannels.length}** channel(s) failed due to permission or API errors.`)
+          .addFields(fields)
+          .setFooter({ text: 'Snapshot saved for locked channels • Safe to retry after checking permissions' })
           .setTimestamp()
       ] });
     }
@@ -288,11 +295,8 @@ async function _dispatchCommandInner(interaction, context = {}) {
       new EmbedBuilder()
         .setColor('#ED4245')
         .setTitle('🚨 Server Lockdown Engaged')
-        .setDescription(`Server lockdown is **ACTIVE**. The original channel permissions have been saved and will be fully restored when you run \`/security unlock\`.`)
-        .addFields(
-          { name: '🔒 Channels Secured', value: `**${res.lockedChannels}**`, inline: true },
-          { name: '⏭️ Pre-locked / Private (Preserved)', value: `**${res.skippedChannels || 0}**`, inline: true }
-        )
+        .setDescription(`Server lockdown is **ACTIVE**. Public text and voice channels are secured.\nOriginal permissions have been snapshot and will be fully restored when you run \`/security unlock\`.`)
+        .addFields(fields)
         .setFooter({ text: 'Original permissions snapshot saved • THOR APEX v2.0' })
         .setTimestamp()
     ] });

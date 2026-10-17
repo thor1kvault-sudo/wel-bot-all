@@ -14,7 +14,7 @@ This security audit and remediation report covers the deep structural analysis, 
 3. **AutoMod Pipeline (`src/automod/autoModEngine.js`):** Eliminated unbounded memory growth in message history, added secret and token redaction in logged infraction embeds, and enforced single-action containment per event.
 4. **Command Authorization & Dispatcher Security (`src/commands/commandDispatcher.js`):** Verified server-side Discord permission checks (`PermissionFlagsBits.Administrator`, `ManageGuild`, `BanMembers`, etc.) inside handlers rather than relying on client-side slash visibility.
 
-All 222 test cases across 9 test suites pass with 100% success rate.
+All 228 test cases across 10 test suites pass with 100% success rate.
 
 ---
 
@@ -79,6 +79,26 @@ All 222 test cases across 9 test suites pass with 100% success rate.
 - **Root Cause:** The bot state reflected a lockdown was active, but zero channels were actually secured on Discord. When `/security unlock` was later called, it found an empty snapshot.
 - **Code Fix:** Replaced all direct config mutations with asynchronous calls to `engageEmergencyLockdown(guild, actorId, reason)` and `liftEmergencyLockdown(guild, actorId)`.
 - **Verification:** Tested in `test/lockdownUnlock.test.js` (`LU-18`) and `test/auditAndIntegrity.test.js`.
+
+---
+
+### D. Issue 4: Discord Community Onboarding & Server Guide Exemption (API Error 350005)
+- **Component:** `src/security/backupRecovery.js` (`engageEmergencyLockdown`)
+- **Original Issue:** During lockdown, the bot secured 24 channels but reported 1 channel failed: `🌷・General` (Channel ID: `1525030317730172950`).
+- **Root Cause:** In Discord Community servers with Server Guide / Onboarding enabled (`GUILD_ONBOARDING`), Discord enforces that at least one default channel allows `@everyone` to View and Send messages. Denying `SendMessages` on the primary default channel throws Discord REST API error code **`350005: Onboarding requires at least one channel where @everyone can read and send messages`**. The bot previously treated this mandatory platform constraint as an unexpected channel failure.
+- **Code Fix:**
+  1. Caught error code `350005` in `engageEmergencyLockdown`.
+  2. Deleted the channel from the lockdown snapshot and added it to `exemptChannels` with a clear explanation: `"Discord Server Guide / Onboarding requirement (Community onboarding mandates at least one sendable channel)"`.
+  3. Ensured that if all non-exempt channels are locked and `failedChannels.length === 0`, lockdown is reported as **Fully Successful** (`partial: false`).
+  4. Updated result embeds to clearly distinguish **Secured Channels**, **Exempt Channels**, **Skipped Channels (Private/Logs)**, and **Failed Channels**.
+- **Verification:** Tested via `LU-19` in `test/lockdownUnlock.test.js`.
+
+---
+
+### E. Issue 5: Panic Mode Snapshot & State Isolation
+- **Component:** `src/security/highSecuritySuite.js` (`handlePanicMode`) vs `src/security/backupRecovery.js`
+- **Isolation Guarantee:** `/security panic` modifies **Guild Role Permissions** (`config.security.panicMode`), while `/security lockdown` modifies **Channel Permission Overwrites** (`config.security.preLockdownSnapshot`). The two systems use completely separate configuration keys and state machines, ensuring Panic Mode activation or restoration never corrupts or overwrites channel recovery snapshots.
+- **Verification:** Tested via `LU-20` in `test/lockdownUnlock.test.js`.
 
 ---
 
@@ -169,14 +189,15 @@ Full automated testing was conducted using the native Node.js test runner (`node
 |---|---|---|---|---|
 | `test/allCommands.test.js` | 69 | 69 | 0 | Command routing, parameter validation, handler isolation |
 | `test/musicService.test.js` | 100 | 100 | 0 | Audio streaming, queue management, voice state recovery |
+| `test/lockdownUnlock.test.js` | 33 | 33 | 0 | Overwrite preservation, onboarding exemptions, panic isolation, retries |
 | `test/securityOverhaul.test.js` | 17 | 17 | 0 | High-res timers, anti-mod abuse, telemetry, anti-raid |
-| `test/lockdownUnlock.test.js` | 18 | 18 | 0 | Overwrite preservation, snapshot recovery, partial retry |
 | `test/sevenGroupsAnd247.test.js` | 11 | 11 | 0 | Seven-group ordering, Discord v10 payload limits, 24/7 reconnects |
+| `test/auditAndIntegrity.test.js` | 9 | 9 | 0 | 100-limit payload, subcommands, scope guards, single handlers |
 | `test/securityEngine.test.js` | 7 | 7 | 0 | Thread-safe locks, threshold counters, containment actions |
 | `test/dragLogs.test.js` | 6 | 6 | 0 | Voice drag detection, voice channel audit logs |
 | `test/dragLogsEdgeCases.test.js` | 5 | 5 | 0 | Missing permissions, rapid drag spam, debounce timers |
-| `test/auditAndIntegrity.test.js` | 9 | 9 | 0 | 100-limit payload, subcommands, scope guards, single handlers |
-| **Total** | **222** | **222** | **0** | **100% Pass Rate across all suites** |
+| `test/highSecuritySuite.test.js` | 3 | 3 | 0 | Webhook scanner, posture evaluation, panic containment |
+| **Total** | **228** | **228** | **0** | **100% Pass Rate across all suites** |
 
 ---
 

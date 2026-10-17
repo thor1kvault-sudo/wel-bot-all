@@ -222,6 +222,7 @@ async function engageEmergencyLockdown(
 
     const everyoneId = guild.roles.everyone.id;
     const snapshot = {};
+    const exemptChannels = [];
     const failedChannels = [];
     let lockedCount  = 0;
     let skippedCount = 0;
@@ -290,7 +291,25 @@ async function engageEmergencyLockdown(
       } catch (err) {
         // Could not lock this channel — remove from snapshot so unlock won't touch it
         delete snapshot[ch.id];
-        failedChannels.push({ id: ch.id, name: ch.name || ch.id, error: err.message || String(err) });
+
+        // Check if Discord rejected lockdown due to Community Onboarding / Server Guide requirements
+        const isDiscordOnboardingError =
+          err?.code === 350005 ||
+          err?.code === '350005' ||
+          err?.rawError?.code === 350005 ||
+          (typeof err?.message === 'string' && /onboarding/i.test(err.message)) ||
+          (typeof err?.message === 'string' && /default channel/i.test(err.message));
+
+        if (isDiscordOnboardingError) {
+          exemptChannels.push({
+            id: ch.id,
+            name: ch.name || ch.id,
+            reason: 'Discord Server Guide / Onboarding requirement (Community onboarding mandates at least one sendable channel)',
+            isCommunityOnboarding: true,
+          });
+        } else {
+          failedChannels.push({ id: ch.id, name: ch.name || ch.id, error: err.message || String(err) });
+        }
       }
     }
 
@@ -318,10 +337,17 @@ async function engageEmergencyLockdown(
 
     saveGuildConfigAsync(guild.id, config);
 
+    if (exemptChannels.length > 0) {
+      config.security.lastLockdownExemptions = exemptChannels;
+    } else {
+      delete config.security.lastLockdownExemptions;
+    }
+
     return {
       success: true,
       lockedChannels: lockedCount,
       skippedChannels: skippedCount,
+      exemptChannels,
       failedChannels,
       partial: failedChannels.length > 0,
     };
