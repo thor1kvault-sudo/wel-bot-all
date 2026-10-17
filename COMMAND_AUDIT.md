@@ -53,6 +53,9 @@ Strict canonical ordering enforced by Discord registration:
    - `test`: Dry-run security notification pipeline safely
    - `lockdown`: Restrict configured channels during a security emergency
    - `unlock`: Restore permissions changed by the lockdown system
+   - `webhooks`: Scan and clean unauthorized, malicious, or orphan webhooks (Zero Extra Channels)
+   - `posture`: Evaluate server security posture score (0-100) and vulnerability checklist
+   - `panic`: Emergency panic button - strip admin perms from sub-roles and halt joins
    - Group `antinuke`: `status`, `configure`, `test`
    - Group `antimod`: `status`, `configure`, `test`
    - Group `antomod`: `status`, `configure`, `test` (alias)

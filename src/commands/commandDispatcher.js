@@ -411,6 +411,29 @@ async function _dispatchCommandInner(interaction, context = {}) {
         return executeUnlockOperation(interaction, guild, user, member);
       }
 
+      if (sub === 'webhooks') {
+        const { scanWebhooks } = require('../security/highSecuritySuite');
+        await interaction.deferReply({ ephemeral: true });
+        const res = await scanWebhooks(guild, member);
+        if (!res.success) return interaction.editReply(`❌ ${res.error}`);
+        return interaction.editReply({ embeds: [res.embed], components: res.components || [] });
+      }
+
+      if (sub === 'posture') {
+        const { evaluateSecurityPosture } = require('../security/highSecuritySuite');
+        const res = evaluateSecurityPosture(guild);
+        return safeReply(interaction, { embeds: [res.embed], components: res.components || [], ephemeral: true });
+      }
+
+      if (sub === 'panic') {
+        const action = interaction.options.getString('action') || 'status';
+        const { handlePanicMode } = require('../security/highSecuritySuite');
+        await interaction.deferReply({ ephemeral: true });
+        const res = await handlePanicMode(guild, user, action);
+        if (!res.success) return interaction.editReply(`❌ ${res.error}`);
+        return interaction.editReply({ embeds: [res.embed], components: res.components || [] });
+      }
+
       if (sub === 'status') {
         const s = config.security || {};
         const t = s.thresholds || {};

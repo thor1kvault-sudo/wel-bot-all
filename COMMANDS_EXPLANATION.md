@@ -45,6 +45,27 @@ This guide provides a comprehensive, plain-English explanation for every single 
 * **Options:** None.
 * **Example:** `/security unlock`
 
+### `/security webhooks`
+* **Purpose:** Audit all webhooks across the entire server to detect unauthorized, orphan, or malicious webhooks created during account hijacks. Features an interactive 1-click **`[Delete All Rogue Webhooks]`** button (Zero Extra Channels created).
+* **Permissions:** `Manage Webhooks` or `Manage Guild`
+* **Effect:** Informational with optional 1-click cleanup.
+* **Options:** None.
+* **Example:** `/security webhooks`
+
+### `/security posture`
+* **Purpose:** Dynamic 8-factor security health assessment giving the server a safety rating from **0 to 100** and a letter grade (A+ to F). Evaluates 2FA, verification levels, media filters, bot hierarchy, and provides a **`[1-Click Quick Harden]`** button.
+* **Permissions:** `Manage Guild`
+* **Effect:** Informational with optional 1-click hardening.
+* **Options:** None.
+* **Example:** `/security posture`
+
+### `/security panic`
+* **Purpose:** High-emergency panic switch. Immediately quarantines dangerous permissions (`Administrator`, `ManageRoles`, `ManageChannels`, `BanMembers`) from all roles situated below the bot to instantly halt an active rogue admin raid. Saves full snapshots and provides a 1-click **`[Deactivate & Restore Roles]`** button.
+* **Permissions:** `Administrator`
+* **Effect:** High-urgency containment (Temporary role permission quarantine).
+* **Options:** `action` (`activate`, `lift`, `status`).
+* **Example:** `/security panic action:activate`
+
 ### `/security diagnostics`
 * **Purpose:** Displays internal event pipeline latency metrics (p50, p95, p99 measured via `process.hrtime.bigint()`), WebSocket heartbeat, memory footprint, and bot permission posture.
 * **Permissions:** `Manage Guild`

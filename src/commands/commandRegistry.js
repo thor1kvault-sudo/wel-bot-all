@@ -34,6 +34,15 @@ function buildApplicationCommands() {
       // Lockdown and recovery subcommands
       .addSubcommand(s => s.setName('lockdown').setDescription('Engage emergency lockdown while preserving private & log channels'))
       .addSubcommand(s => s.setName('unlock').setDescription('Lift emergency lockdown and restore saved permissions'))
+      // High-Security Suite extensions (Zero extra channels)
+      .addSubcommand(s => s.setName('webhooks').setDescription('Scan and clean unauthorized, malicious, or orphan webhooks'))
+      .addSubcommand(s => s.setName('posture').setDescription('Evaluate server security posture score (0-100) and vulnerability check'))
+      .addSubcommand(s => s.setName('panic').setDescription('Emergency panic button - strip admin perms from sub-roles and halt joins')
+        .addStringOption(o => o.setName('action').setDescription('Panic action to perform').setRequired(false).addChoices(
+          { name: '🚨 Activate Panic Containment', value: 'activate' },
+          { name: '🔓 Lift Panic & Restore Permissions', value: 'lift' },
+          { name: '📊 View Panic Status', value: 'status' }
+        )))
       // Anti-nuke subcommand group
       .addSubcommandGroup(g => g.setName('antinuke').setDescription('High-speed anti-nuke protection')
         .addSubcommand(s => s.setName('status').setDescription('View anti-nuke protection status, limits and active thresholds'))

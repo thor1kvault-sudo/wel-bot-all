@@ -1157,6 +1157,42 @@ async function startBot() {
           }
         }
 
+        // Security Suite: Clean Rogue Webhooks
+        if (id === 'sec_clean_webhooks') {
+          if (!interaction.member?.permissions?.has(PermissionsBitField.Flags.ManageWebhooks)) {
+            return interaction.reply({ content: '❌ You lack `ManageWebhooks` permission.', ephemeral: true });
+          }
+          await interaction.deferReply({ ephemeral: true });
+          const { cleanWebhooks } = require('./src/security/highSecuritySuite');
+          const res = await cleanWebhooks(guild, interaction.user);
+          if (!res.success) return interaction.editReply(`❌ Webhook cleanup failed: ${res.error}`);
+          return interaction.editReply(`🗑️ Successfully deleted **${res.deleted}** rogue/orphan webhook(s). Failed: **${res.failed}**.`);
+        }
+
+        // Security Suite: Quick-Harden
+        if (id === 'sec_quick_harden') {
+          if (!interaction.member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+            return interaction.reply({ content: '❌ You lack `ManageGuild` permission.', ephemeral: true });
+          }
+          await interaction.deferReply({ ephemeral: true });
+          const { quickHarden } = require('./src/security/highSecuritySuite');
+          const res = await quickHarden(guild, interaction.user);
+          if (!res.success) return interaction.editReply(`❌ Quick-Harden failed: ${res.error}`);
+          return interaction.editReply(`🛡️ **Quick-Harden Applied Successfully:**\n${res.changes.map(c => `• ${c}`).join('\n')}`);
+        }
+
+        // Security Suite: Lift Panic Mode
+        if (id === 'sec_panic_lift') {
+          if (!interaction.member?.permissions?.has(PermissionsBitField.Flags.Administrator)) {
+            return interaction.reply({ content: '❌ Only Administrators can deactivate Panic Mode.', ephemeral: true });
+          }
+          await interaction.deferReply({ ephemeral: true });
+          const { handlePanicMode } = require('./src/security/highSecuritySuite');
+          const res = await handlePanicMode(guild, interaction.user, 'lift');
+          if (!res.success) return interaction.editReply(`❌ Could not lift Panic Mode: ${res.error}`);
+          return interaction.editReply({ embeds: [res.embed] });
+        }
+
         // /panel release quarantine
         if (id === 'panel_release_quarantine') {
           const result = await releaseAllQuarantine(guild, `Panel release by ${interaction.user.tag}`);
