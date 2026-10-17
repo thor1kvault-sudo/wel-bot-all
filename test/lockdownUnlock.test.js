@@ -795,3 +795,112 @@ test('PP-12: isExplicitlyHidden and isCategoryHidden helper accuracy', () => {
   assert.equal(isChannelHiddenFromEveryone(chCat,      guild, evId), true);
   assert.equal(isChannelHiddenFromEveryone(chPublic,   guild, evId), false);
 });
+
+test('LU-15: Lockdown with partial channel permission failure captures failedChannels and partial flag', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_good', editShouldThrow: false },
+    { id: 'ch_bad',  editShouldThrow: true },
+  ]);
+
+  const res = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.partial, true);
+  assert.equal(res.lockedChannels, 1);
+  assert.equal(res.failedChannels.length, 1);
+  assert.equal(res.failedChannels[0].id, 'ch_bad');
+
+  const cfg = getGuildConfig(guildId);
+  assert.ok(Array.isArray(cfg.security.lastLockdownFailures));
+  assert.equal(cfg.security.lastLockdownFailures[0].id, 'ch_bad');
+});
+
+test('LU-16: Unlock preserves unrelated role overwrites on channel during set()', async () => {
+  const guildId = nextId();
+  const originalAllow = F.ViewChannel | F.SendMessages;
+  const staffRoleId = `role_staff_${guildId}`;
+
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = true;
+  cfg.security.preLockdownSnapshot = {
+    'ch_test': {
+      id: guildId,
+      type: 0,
+      allow: originalAllow.toString(),
+      deny: '0',
+    },
+  };
+  saveGuildConfigAsync(guildId, cfg);
+
+  let setOverwrites = null;
+  const owCache = new Map();
+  owCache.set(guildId, mockOW(guildId, originalAllow, 0n));
+  owCache.set(staffRoleId, {
+    id: staffRoleId,
+    type: 0,
+    allow: { bitfield: F.ViewChannel | F.SendMessages },
+    deny: { bitfield: 0n },
+  });
+
+  const guild = {
+    id: guildId, name: 'T', ownerId: `o_${guildId}`,
+    channels: { cache: new Map([['ch_test', {
+      id: 'ch_test', name: 'test',
+      permissionOverwrites: {
+        cache: owCache,
+        edit: async () => {},
+        set: async (overwrites) => { setOverwrites = overwrites; },
+        delete: async () => {},
+      },
+    }]]) },
+    roles: { everyone: { id: guildId }, cache: new Map() },
+    members: { me: { permissions: { has: () => true } } },
+  };
+
+  const res = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.ok(setOverwrites);
+  assert.equal(setOverwrites.length, 2, 'Must contain both @everyone and staff role overwrites');
+  const staffOW = setOverwrites.find(o => o.id === staffRoleId);
+  assert.ok(staffOW, 'Staff role overwrite must be preserved by set()');
+});
+
+test('LU-17: Unlock retry works when previous unlock was partial', async () => {
+  const guildId = nextId();
+  const cfg = getGuildConfig(guildId);
+  cfg.security = cfg.security || {};
+  cfg.security.lockdown = true;
+  cfg.security.preLockdownSnapshot = {
+    'ch_recovered': { id: guildId, type: 0, allow: '0', deny: '0' },
+  };
+  saveGuildConfigAsync(guildId, cfg);
+
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_recovered', editShouldThrow: false, deleteShouldThrow: false },
+  ]);
+
+  const res = await liftEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, true);
+  assert.equal(res.unlockedChannels, 1);
+  const after = getGuildConfig(guildId);
+  assert.equal(after.security.lockdown, false, 'Full success resets lockdown to false');
+  assert.equal(Object.keys(after.security.preLockdownSnapshot).length, 0);
+});
+
+test('LU-18: Total lockdown failure (all channels fail) returns success: false with clear reason', async () => {
+  const guildId = nextId();
+  const { guild } = buildMockGuild(guildId, [
+    { id: 'ch_bad1', editShouldThrow: true },
+    { id: 'ch_bad2', editShouldThrow: true },
+  ]);
+
+  const res = await engageEmergencyLockdown(guild, 'Admin');
+  assert.equal(res.success, false);
+  assert.equal(res.lockedChannels, 0);
+  assert.equal(res.failedChannels.length, 2);
+  assert.ok(res.reason.includes('Failed to secure any channels'));
+
+  const cfg = getGuildConfig(guildId);
+  assert.equal(cfg.security.lockdown, false, 'Lockdown flag must not be set if all channels failed');
+});

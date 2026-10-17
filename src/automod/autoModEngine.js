@@ -25,11 +25,28 @@ const PHISHING_PATTERNS = [
   /(?:[a-z0-9-]+\.)?(?:bit\.ly|is\.gd|cutt\.ly)\/[a-zA-Z0-9]{4,}/i,
 ];
 
-// Per-user message history: Map<"guildId:userId", { timestamps: number[], lastMessages: string[] }>
+// Per-user message history: Map<"guildId:userId", { timestamps: number[], lastMessages: string[], lastActivity: number }>
 const userMessageHistory = new Map();
 
 // Join raid tracker: Map<guildId, number[]>
 const raidJoinTracker = new Map();
+
+// Bounded state sweeper: evicts inactive user histories and stale join timestamps every 60s
+const autoModMemorySweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [key, hist] of userMessageHistory.entries()) {
+    hist.timestamps = (hist.timestamps || []).filter(t => now - t < 60000);
+    if ((now - (hist.lastActivity || 0) > 300000) && hist.timestamps.length === 0) {
+      userMessageHistory.delete(key);
+    }
+  }
+  for (const [guildId, joins] of raidJoinTracker.entries()) {
+    const fresh = joins.filter(t => now - t < 60000);
+    if (fresh.length === 0) raidJoinTracker.delete(guildId);
+    else raidJoinTracker.set(guildId, fresh);
+  }
+}, 60000);
+if (autoModMemorySweeper.unref) autoModMemorySweeper.unref();
 
 // Processed message IDs set to prevent duplicate punishments (bounded ring cache)
 const processedMessagesRing = new Set();
@@ -199,7 +216,8 @@ async function applyAutoModPunishment(member, actionType, reason, message = null
     .setTimestamp();
 
   if (message?.content) {
-    const snippet = message.content.length > 500 ? message.content.slice(0, 500) + '...' : message.content;
+    const rawSnippet = message.content.length > 500 ? message.content.slice(0, 500) + '...' : message.content;
+    const snippet = redactSecrets(rawSnippet);
     embed.addFields({ name: 'Content Snippet', value: `\`\`\`${snippet}\`\`\`` });
   }
 
@@ -227,9 +245,10 @@ async function processMessage(message) {
 
   let userHist = userMessageHistory.get(histKey);
   if (!userHist) {
-    userHist = { timestamps: [], lastMessages: [] };
+    userHist = { timestamps: [], lastMessages: [], lastActivity: now };
     userMessageHistory.set(histKey, userHist);
   }
+  userHist.lastActivity = now;
 
   // 1. Anti-Spam (Message Flood)
   if (am.antiSpam?.enabled) {
@@ -409,8 +428,8 @@ async function processMemberJoin(member) {
     raidJoinTracker.set(guild.id, joins);
 
     if (joins.length >= thr) {
-      config.security.lockdown = true;
-      saveGuildConfig(guild.id, config);
+      const { engageEmergencyLockdown } = require('../security/backupRecovery');
+      await engageEmergencyLockdown(guild, 'AutoMod Anti-Raid System', 'AutoMod Anti-Raid Join Flood Triggered').catch(() => {});
 
       const embed = new EmbedBuilder()
         .setColor('#FF0000')

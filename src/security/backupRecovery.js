@@ -222,6 +222,7 @@ async function engageEmergencyLockdown(
 
     const everyoneId = guild.roles.everyone.id;
     const snapshot = {};
+    const failedChannels = [];
     let lockedCount  = 0;
     let skippedCount = 0;
 
@@ -253,8 +254,20 @@ async function engageEmergencyLockdown(
         continue;
       }
 
+      // ── Check bot permissions on this specific channel ─────────────────────
+      if (typeof ch.permissionsFor === 'function') {
+        const botPerms = ch.permissionsFor(me);
+        if (botPerms && !botPerms.has(PermissionsBitField.Flags.ManageChannels)) {
+          failedChannels.push({ id: ch.id, name: ch.name || ch.id, error: 'Bot lacks ManageChannels in this channel' });
+          continue;
+        }
+      }
+
       const editFn = ch.permissionOverwrites?.edit || ch.permissionOverwrites?.create;
-      if (typeof editFn !== 'function') continue;
+      if (typeof editFn !== 'function') {
+        failedChannels.push({ id: ch.id, name: ch.name || ch.id, error: 'No edit function on channel' });
+        continue;
+      }
 
       // ── Snapshot the full current @everyone overwrite ──────────────────────
       snapshot[ch.id] = currentOW
@@ -274,10 +287,21 @@ async function engageEmergencyLockdown(
       try {
         await editFn.call(ch.permissionOverwrites, guild.roles.everyone, denyOptions, { reason });
         lockedCount++;
-      } catch (_) {
+      } catch (err) {
         // Could not lock this channel — remove from snapshot so unlock won't touch it
         delete snapshot[ch.id];
+        failedChannels.push({ id: ch.id, name: ch.name || ch.id, error: err.message || String(err) });
       }
+    }
+
+    if (lockedCount === 0 && failedChannels.length > 0) {
+      return {
+        success: false,
+        reason: 'Failed to secure any channels. Check bot channel permissions.',
+        lockedChannels: 0,
+        skippedChannels: skippedCount,
+        failedChannels,
+      };
     }
 
     // Persist state atomically
@@ -285,11 +309,22 @@ async function engageEmergencyLockdown(
     config.security.lockdownEngagedAt = Date.now();
     config.security.lockdownEngagedBy = engagedByLabel;
     config.security.preLockdownSnapshot = snapshot;
+    if (failedChannels.length > 0) {
+      config.security.lastLockdownFailures = failedChannels;
+    } else {
+      delete config.security.lastLockdownFailures;
+    }
     delete config.security.preLockdownOverwrites; // clear any stale legacy key
 
     saveGuildConfigAsync(guild.id, config);
 
-    return { success: true, lockedChannels: lockedCount, skippedChannels: skippedCount };
+    return {
+      success: true,
+      lockedChannels: lockedCount,
+      skippedChannels: skippedCount,
+      failedChannels,
+      partial: failedChannels.length > 0,
+    };
   } finally {
     release();
   }
@@ -300,16 +335,16 @@ async function engageEmergencyLockdown(
  * permission overwrites that were saved during engageEmergencyLockdown.
  *
  * SAFETY GUARANTEES:
- *   - Returns notLocked:true  if the server is not currently in lockdown.
+ *   - Returns notLocked:true  if the server is not currently in lockdown and has no pending snapshot.
  *   - Returns noSnapshot:true if no valid snapshot exists (refuses to guess).
  *   - Only modifies channels present in the snapshot.
  *   - Channels with allow=0 / deny=0 have their overwrite DELETED (not reset
  *     to null via edit), fully restoring category inheritance.
- *   - Channels with a non-zero saved overwrite use permissionOverwrites.set()
- *     (or full-bitfield edit) to atomically restore the exact allow+deny pair.
+ *   - Channels with a non-zero saved overwrite preserve all existing role and member
+ *     overwrites atomically, restoring ONLY the @everyone overwrite bitfield.
  *   - Failures are collected; restoration continues for all remaining channels.
  *   - On partial failure the snapshot is PRESERVED so the admin can retry.
- *   - Clears lockdown state only after all channels have been attempted.
+ *   - Clears lockdown state only after all channels have been successfully restored.
  *
  * @returns {{
  *   success, unlockedChannels, failedChannels, partial,
@@ -333,8 +368,13 @@ async function liftEmergencyLockdown(
     const config = getGuildConfig(guild.id, guild.name);
     config.security = config.security || {};
 
-    // ── Guard: not in lockdown ─────────────────────────────────────────────
-    if (!config.security.lockdown) {
+    const hasRemainingSnapshot = !!(
+      (config.security.preLockdownSnapshot && Object.keys(config.security.preLockdownSnapshot).length > 0) ||
+      (config.security.preLockdownOverwrites && Object.keys(config.security.preLockdownOverwrites).length > 0)
+    );
+
+    // ── Guard: not in lockdown and no pending snapshot to retry ─────────────
+    if (!config.security.lockdown && !hasRemainingSnapshot) {
       return {
         success: false,
         notLocked: true,
@@ -370,11 +410,24 @@ async function liftEmergencyLockdown(
 
     for (const [chId, savedOW] of Object.entries(effectiveSnapshot)) {
       const ch = guild.channels.cache.get(chId);
-      if (!ch) continue; // channel deleted — silently skip
+      if (!ch) {
+        // Channel was deleted while in lockdown; remove from snapshot so retry doesn't hang
+        delete effectiveSnapshot[chId];
+        continue;
+      }
 
       if (typeof ch.permissionOverwrites?.edit !== 'function') {
         failedChannels.push({ id: chId, name: ch.name || chId, error: 'No edit function on channel' });
         continue;
+      }
+
+      // Check bot permission in channel if available
+      if (typeof ch.permissionsFor === 'function') {
+        const botPerms = ch.permissionsFor(me);
+        if (botPerms && !botPerms.has(PermissionsBitField.Flags.ManageChannels)) {
+          failedChannels.push({ id: chId, name: ch.name || chId, error: 'Bot lacks ManageChannels in this channel' });
+          continue;
+        }
       }
 
       try {
@@ -399,9 +452,6 @@ async function liftEmergencyLockdown(
           }
         } else {
           // There was an explicit overwrite before lockdown — restore it exactly.
-          // We use permissionOverwrites.set() if available (atomic full replace),
-          // otherwise fall back to a structured edit that covers all five flags
-          // lockdown may have touched, restoring each to its original value.
           const bit = (flag) => {
             if ((savedDeny  & flag) !== 0n) return false;  // was explicitly denied
             if ((savedAllow & flag) !== 0n) return true;   // was explicitly allowed
@@ -409,9 +459,18 @@ async function liftEmergencyLockdown(
           };
 
           if (typeof ch.permissionOverwrites.set === 'function') {
-            // Atomic: replace the entire allow/deny bitfield in one call
+            // Atomic: preserve other role and member overwrites so they are never wiped!
+            const otherOverwrites = Array.from(ch.permissionOverwrites.cache ? ch.permissionOverwrites.cache.values() : [])
+              .filter(ov => ov.id !== everyoneRole.id)
+              .map(ov => ({
+                id: ov.id,
+                type: ov.type,
+                allow: ov.allow?.bitfield ?? BigInt(ov.allow || '0'),
+                deny: ov.deny?.bitfield ?? BigInt(ov.deny || '0'),
+              }));
+
             await ch.permissionOverwrites.set(
-              [{ id: everyoneRole.id, type: 0, allow: savedAllow, deny: savedDeny }],
+              [{ id: everyoneRole.id, type: 0, allow: savedAllow, deny: savedDeny }, ...otherOverwrites],
               reason,
             );
           } else {
@@ -439,13 +498,10 @@ async function liftEmergencyLockdown(
 
     const partial = failedChannels.length > 0;
 
-    // Persist outcome
-    config.security.lockdown        = false;
-    config.security.lockdownLiftedAt = Date.now();
-    config.security.lockdownLiftedBy = liftedByLabel;
-
+    // Persist outcome safely
     if (partial) {
-      // Preserve snapshot so admin can retry the failed channels
+      // PRESERVE lockdown state so admin can retry lifting the remaining failed channels
+      config.security.lockdown = true;
       config.security.lastUnlockFailures = failedChannels.map(
         f => ({ id: f.id, name: f.name, error: f.error }),
       );
@@ -456,6 +512,10 @@ async function liftEmergencyLockdown(
       }
       config.security.preLockdownSnapshot = remainingSnapshot;
     } else {
+      // Full unlock success!
+      config.security.lockdown         = false;
+      config.security.lockdownLiftedAt = Date.now();
+      config.security.lockdownLiftedBy = liftedByLabel;
       config.security.preLockdownSnapshot = {};
       delete config.security.lastUnlockFailures;
     }

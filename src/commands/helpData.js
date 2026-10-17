@@ -56,28 +56,26 @@ const STATIC_HELP_CATEGORIES = {
     label: 'Security & Anti-Nuke',
     title: '🛡️ Security & Anti-Nuke Commands',
     description:
-      '`/security status` — View security protection overview\n' +
-      '`/security audit` — Security configuration health check\n' +
-      '`/security incidents` — View recent incident history\n' +
-      '`/security test` — Test security alert dispatch path\n' +
-      '`/antinuke enable` — Enable anti-nuke protection\n' +
-      '`/antinuke disable` — Disable anti-nuke protection\n' +
-      '`/antinuke status` — View anti-nuke status & thresholds\n' +
-      '`/antinuke config` — Set enforcement action (ban, kick, quarantine…)\n' +
-      '`/antinuke threshold` — Set burst limit for event categories\n' +
-      '`/antinuke trust` — Manage trusted users/roles who bypass anti-nuke\n' +
-      '`/antinuke lockdown` — Engage emergency server lockdown\n' +
-      '`/antinuke unlock` — Lift emergency lockdown\n' +
-      '`/lockdown` — Toggle server-wide lockdown (legacy shortcut)\n' +
-      '`/whitelist` — Interactive whitelist management for security\n' +
-      '`/quarantine status` — View current quarantine status\n' +
-      '`/quarantine release` — Release quarantined members\n' +
-      '`/threat` — Instantly switch server DEFCON threat level\n' +
-      '`/raidmode on` — Activate raid countermeasures\n' +
-      '`/raidmode off` — Deactivate raid mode & restore channels\n' +
-      '`/raidmode status` — View current raid mode status\n' +
-      '`/vpncheck user` — Analyze account risk & suspicion score\n' +
-      '`/vpncheck ip` — Check IP for VPN/proxy/datacenter flags',
+      '`/security status` — View current server security and protection status\n' +
+      '`/security lockdown` — Restrict configured channels during a security emergency\n' +
+      '`/security unlock` — Restore permissions changed by the lockdown system\n' +
+      '`/security diagnostics` — View measured internal pipeline latency & telemetry\n' +
+      '`/security incidents` — View recent security incident intercept history\n' +
+      '`/security audit` — High-level permission hierarchy & health check\n' +
+      '`/security test` — Dry-run security notification pipeline safely\n' +
+      '`/security antinuke status` — View Anti-Nuke settings and detection health\n' +
+      '`/security antinuke configure` — Configure Anti-Nuke thresholds and response actions\n' +
+      '`/security antinuke test` — Simulate detection scenario without destructive actions\n' +
+      '`/security antimod status|configure|test` — Anti-moderator abuse protection\n' +
+      '`/security antiraid status|configure|test` — Anti-raid join flood & risk scoring\n' +
+      '`/security trust add|remove|list` — Manage trusted identities exempt from security\n' +
+      '`/security config view|reset` — View complete config or reset to factory defaults\n' +
+      '`/lockdown` — Quick toggle for server-wide emergency lockdown (on/off)\n' +
+      '`/whitelist` — Quick shortcut to manage trusted security identities\n' +
+      '`/threat` — Switch server DEFCON threat level (1: Emergency, 2: High, 3: Normal)\n' +
+      '`/quarantine` — View and manage quarantined members (status/release)\n' +
+      '`/raidmode` — Manual rapid raid defense countermeasures\n' +
+      '`/vpncheck` — Analyze account risk score or lookup IP flags',
     color: '#ED4245',
   },
   automod: {
@@ -85,19 +83,23 @@ const STATIC_HELP_CATEGORIES = {
     label: 'AutoMod',
     title: '🤖 AutoMod Engine Commands',
     description:
-      '`/automod enable` — Enable AutoMod or a specific filter rule\n' +
-      '`/automod disable` — Disable AutoMod or a specific filter rule\n' +
+      '`/automod status` — View active AutoMod rules and their settings\n' +
+      '`/automod config` — Interactive dashboard to configure spam, mention, link & keyword rules\n' +
+      '`/automod enable [rule]` — Enable AutoMod engine or a specific filter rule\n' +
+      '`/automod disable [rule]` — Disable AutoMod engine or a specific filter rule\n' +
       '`/automod enableall` — Enable all 12 detection rules at once\n' +
-      '`/automod disableall` — Disable all rules at once\n' +
-      '`/automod status` — View all active filter rules & thresholds\n' +
-      '`/automod config` — Interactive AutoMod dashboard\n' +
-      '`/automod test` — Run safe diagnostic & simulation suite\n' +
-      '`/automod blacklist` — Manage word blacklist (add/remove/list)\n' +
-      '`/automod whitelist` — Manage AutoMod exemptions (users/roles/channels)\n' +
-      '`/automod punishment` — Customize punishment per rule (delete/warn/timeout/kick/ban)\n\n' +
-      '**Legacy shortcuts:**\n' +
-      '`/antispam` `/antilink` `/antiraid` `/altdetection` `/wordfilter` `/addword` `/removeword`\n\n' +
-      '**12 Detection Filters:** Anti-Spam, Duplicate Messages, Mention Spam, @everyone, Discord Invites, External Links, NSFW Links, Word Blacklist, Caps Filter, Emoji Spam, Alt Detection, Anti-Raid',
+      '`/automod disableall` — Disable all 12 detection rules at once\n' +
+      '`/automod whitelist action:add|remove|list` — Manage AutoMod exemptions for users/roles/channels\n' +
+      '`/automod blacklist action:add|remove|list` — Manage word blacklist (add/remove/list words)\n' +
+      '`/automod test` — Run safe diagnostic & filter simulation without punishing real users\n' +
+      '`/automod punishment rule:<rule> action:<action>` — Customize punishment (delete, warn, timeout, kick, ban, log)\n\n' +
+      '**Quick Toggle Shortcuts:**\n' +
+      '`/antispam` — Toggle rapid message velocity spam filter\n' +
+      '`/antilink` — Toggle external URL & link filter\n' +
+      '`/antiraid` — Toggle join-flood raid filter\n' +
+      '`/altdetection` — Toggle new / unverified account detection\n' +
+      '`/wordfilter` — Toggle profanity and word blacklist filter\n\n' +
+      '**12 Automated Detection Filters:** Anti-Spam, Duplicate Messages, Mention Spam, @everyone Ping, Discord Invites, External Links, NSFW Links, Word Blacklist, Caps Lock, Emoji Spam, Alt Account Detection, Anti-Raid',
     color: '#57F287',
   },
   logs: {
