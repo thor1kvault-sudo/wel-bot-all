@@ -43,12 +43,32 @@ if (VoiceConnection && VoiceConnection.prototype) {
 }
 
 const { isSpotifyUrl, resolveSpotify } = require('./spotifyResolver');
-const { searchAudioTracks, matchPlayableTrack, resolveAudioStream, ensureClientReady } = require('./audioProvider');
+const { searchAudioTracks, matchPlayableTrack, resolveAudioStream, ensureClientReady, isYouTubeUrl } = require('./audioProvider');
 const { renderPlayerCard } = require('./musicPlayerCard');
 const { logIncident } = require('./musicUpdateMonitor');
+const voiceAssistant = require('./voiceAssistant');
 
 // Multi-guild isolated playback sessions
 const sessions = new Map();
+
+// In-memory search cache for interactive song selection (2-minute TTL)
+const searchCache = new Map();
+
+function setSearchCache(guildId, userId, results) {
+  const key = `${guildId}_${userId}`;
+  searchCache.set(key, { results, expiresAt: Date.now() + 120_000 });
+}
+
+function getSearchCache(guildId, userId) {
+  const key = `${guildId}_${userId}`;
+  const entry = searchCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    searchCache.delete(key);
+    return null;
+  }
+  return entry.results;
+}
 
 /**
  * Retrieves or instantiates an isolated music session for a guild
@@ -79,6 +99,7 @@ function getSession(guildId, guildName = 'Server') {
       reconnectAttempts: 0,
       maxReconnectAttempts: 5,
       reconnectTimeout: null,
+      voiceAssistant: voiceAssistant.getVoiceState(guildId),
       getPlaybackSeconds() {
         if (!this.isPlaying || !this.startTime) return 0;
         const now = this.isPaused ? this.pauseTime : Date.now();
@@ -132,6 +153,9 @@ function destroySession(guildId, force = false) {
     } catch (_) {}
     session.connection = null;
   }
+
+  // Cleanup voice assistant listeners and active receivers
+  voiceAssistant.cleanupVoiceAssistant(guildId);
 
   sessions.delete(guildId);
   logIncident('INFO', 'SESSION_DESTROY', `Cleaned up audio session for guild ${guildId}`);
@@ -497,6 +521,22 @@ async function ensureVoiceConnection(guild, vc) {
       if (session.player) {
         try { session.connection.subscribe(session.player); } catch (_) {}
       }
+      // Attach voice receiver if voice assistant is active
+      const vaState = voiceAssistant.getVoiceState(guild.id);
+      if (vaState.enabled) {
+        voiceAssistant.attachVoiceReceiver(session.connection, guild.id, {
+          sessions,
+          enqueueTrack,
+          pause,
+          resume,
+          skip,
+          playPrevious,
+          destroySession,
+          setVolume,
+          setLoop,
+          shuffle,
+        });
+      }
     });
 
     session.connection.on(VoiceConnectionStatus.Disconnected, async () => {
@@ -581,7 +621,7 @@ async function ensureVoiceConnection(guild, vc) {
  * Resolves queries and adds tracks to the guild queue.
  * Automatically handles Spotify links (tracks, albums, playlists) and normal text queries.
  */
-async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = false } = {}) {
+async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = false, exactTrack = null } = {}) {
   const session = getSession(guild.id, guild.name);
   session.textChannel = textChannel;
   session.voiceChannel = vc;
@@ -591,12 +631,27 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
     return connResult;
   }
 
-  // 4. Resolve Tracks from Query (Spotify vs Native Provider)
+  // 4. Resolve Tracks from Query (Exact Selection vs Spotify vs YouTube vs Native Provider)
   let tracksToAdd = [];
   let isPlaylist = false;
   let playlistName = null;
+  let sourceNote = null;
 
-  if (isSpotifyUrl(query)) {
+  if (exactTrack) {
+    // Preserve the user's exact explicit selection without fuzzy modification
+    tracksToAdd = [{
+      title: exactTrack.title,
+      artist: exactTrack.artist || 'Unknown',
+      album: exactTrack.album || '',
+      durationSec: exactTrack.durationSec || 0,
+      thumbnail: exactTrack.thumbnail || null,
+      streamUrl: exactTrack.streamUrl || null,
+      requestedBy: user.id,
+      source: exactTrack.source || 'selection',
+      spotifyUrl: exactTrack.spotifyUrl || null,
+      youtubeUrl: exactTrack.youtubeUrl || null,
+    }];
+  } else if (isSpotifyUrl(query)) {
     const spotifyRes = await resolveSpotify(query, 50);
     if (!spotifyRes || !spotifyRes.tracks || spotifyRes.tracks.length === 0) {
       return { success: false, message: 'Could not resolve any playable metadata for the provided Spotify link.' };
@@ -616,6 +671,25 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       source: 'spotify',
       spotifyUrl: t.spotifyUrl,
     }));
+  } else if (isYouTubeUrl(query)) {
+    const searchRes = await searchAudioTracks(query, 1);
+    if (!searchRes || searchRes.length === 0) {
+      return { success: false, message: `Could not resolve YouTube link "${query}".` };
+    }
+    const ytMeta = searchRes[0];
+    tracksToAdd = [{
+      title: ytMeta.title,
+      artist: ytMeta.artist,
+      album: '',
+      durationSec: ytMeta.durationSec,
+      thumbnail: ytMeta.thumbnail,
+      streamUrl: null,
+      youtubeUrl: ytMeta.youtubeUrl || query,
+      requestedBy: user.id,
+      source: 'youtube_meta',
+      youtubeBlocked: true,
+    }];
+    sourceNote = 'YouTube link recognized. Direct YouTube extraction is blocked by Google CDN; streaming authorized equivalent.';
   } else {
     // Ordinary Search or direct link
     const searchRes = await searchAudioTracks(query, 1);
@@ -633,6 +707,7 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       streamUrl: best.streamUrl,
       requestedBy: user.id,
       source: best.source,
+      youtubeUrl: best.youtubeUrl || null,
     }];
   }
 
@@ -661,6 +736,7 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
     isPlaylist,
     playlistName,
     position: targetPosition,
+    sourceNote,
   };
 }
 
@@ -1003,6 +1079,78 @@ async function init247Connections(client) {
   }
 }
 
+/**
+ * Favorites Management Helpers
+ */
+function addFavorite(guildId, userId, track) {
+  if (!track || !track.title) return { success: false, message: 'Invalid track data.' };
+  const { getGuildConfig, updateGuildConfig } = require('../config/guildConfig');
+  const cfg = getGuildConfig(guildId);
+  const userFavs = cfg.musicFavorites?.[userId] || [];
+
+  if (userFavs.some(f => f.title.toLowerCase() === track.title.toLowerCase())) {
+    return { success: false, message: `**${track.title}** is already in your favorites.` };
+  }
+
+  const newFav = {
+    title: track.title,
+    artist: track.artist || 'Unknown',
+    durationSec: track.durationSec || 0,
+    thumbnail: track.thumbnail || null,
+    streamUrl: track.streamUrl || null,
+    spotifyUrl: track.spotifyUrl || null,
+    source: track.source || 'unknown',
+    addedAt: Date.now(),
+  };
+
+  const updated = [newFav, ...userFavs].slice(0, 50);
+  updateGuildConfig(guildId, (c) => {
+    if (!c.musicFavorites) c.musicFavorites = {};
+    c.musicFavorites[userId] = updated;
+  });
+
+  return { success: true, count: updated.length, track: newFav };
+}
+
+function removeFavorite(guildId, userId, indexOrTitle) {
+  const { getGuildConfig, updateGuildConfig } = require('../config/guildConfig');
+  const cfg = getGuildConfig(guildId);
+  const userFavs = cfg.musicFavorites?.[userId] || [];
+  if (userFavs.length === 0) return { success: false, message: 'Your favorites list is empty.' };
+
+  let removed = null;
+  let remaining = [];
+
+  if (typeof indexOrTitle === 'number') {
+    if (indexOrTitle < 1 || indexOrTitle > userFavs.length) {
+      return { success: false, message: `Invalid favorite number (1-${userFavs.length}).` };
+    }
+    removed = userFavs[indexOrTitle - 1];
+    remaining = userFavs.filter((_, idx) => idx !== indexOrTitle - 1);
+  } else {
+    const q = String(indexOrTitle).toLowerCase().trim();
+    const idx = userFavs.findIndex(f => f.title.toLowerCase().includes(q));
+    if (idx === -1) {
+      return { success: false, message: `No favorite found matching "${indexOrTitle}".` };
+    }
+    removed = userFavs[idx];
+    remaining = userFavs.filter((_, i) => i !== idx);
+  }
+
+  updateGuildConfig(guildId, (c) => {
+    if (!c.musicFavorites) c.musicFavorites = {};
+    c.musicFavorites[userId] = remaining;
+  });
+
+  return { success: true, removed, count: remaining.length };
+}
+
+function getFavorites(guildId, userId) {
+  const { getGuildConfig } = require('../config/guildConfig');
+  const cfg = getGuildConfig(guildId);
+  return cfg.musicFavorites?.[userId] || [];
+}
+
 module.exports = {
   sessions,
   getSession,
@@ -1030,4 +1178,17 @@ module.exports = {
   get247Status,
   handle247Reconnect,
   init247Connections,
+  // Search Cache
+  searchCache,
+  setSearchCache,
+  getSearchCache,
+  // Favorites
+  addFavorite,
+  removeFavorite,
+  getFavorites,
+  // Voice Assistant
+  voiceAssistant,
+  enableVoiceAssistant: (g, c, u, t) => voiceAssistant.enableVoiceAssistant(g, c, u, { sessions, enqueueTrack, pause, resume, skip, playPrevious, destroySession, setVolume, setLoop, shuffle }, t),
+  disableVoiceAssistant: voiceAssistant.disableVoiceAssistant,
+  getVoiceState: voiceAssistant.getVoiceState,
 };

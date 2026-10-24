@@ -77,7 +77,7 @@ test('II-3: renderProgressBar clamps progress within bar bounds', () => {
   assert.doesNotThrow(() => renderProgressBar(500, 300, 14));
 });
 
-test('II-4: renderPlayerCard returns embed + 2 ActionRows', () => {
+test('II-4: renderPlayerCard returns embed + 4 ActionRows in premium mode and 2 ActionRows in compact mode', () => {
   const session = musicService.getSession('guild_card_test');
   session.currentTrack = { title: 'Test Song', artist: 'Test Artist', durationSec: 240, thumbnail: null, requestedBy: 'user1' };
   session.isPlaying = true;
@@ -88,12 +88,20 @@ test('II-4: renderPlayerCard returns embed + 2 ActionRows', () => {
   session.volume = 80;
   session.startTime = Date.now() - 30000;
 
-  const card = renderPlayerCard(session);
-  assert.ok(card.embeds && card.embeds.length === 1, 'Should have exactly 1 embed');
-  assert.ok(card.components && card.components.length === 2, 'Should have exactly 2 ActionRows');
-  // Row 1 should have 4 buttons, Row 2 should have 3 buttons
-  assert.strictEqual(card.components[0].components.length, 4, 'Row 1 must have 4 buttons');
-  assert.strictEqual(card.components[1].components.length, 3, 'Row 2 must have 3 buttons');
+  // Upgraded Premium 4-Row layout (matching Section 3)
+  const fullCard = renderPlayerCard(session);
+  assert.ok(fullCard.embeds && fullCard.embeds.length === 1, 'Should have exactly 1 embed');
+  assert.ok(fullCard.components && fullCard.components.length === 4, 'Premium panel must have exactly 4 ActionRows');
+  assert.strictEqual(fullCard.components[0].components.length, 5, 'Row 1 (Playback) must have 5 buttons');
+  assert.strictEqual(fullCard.components[1].components.length, 4, 'Row 2 (Music) must have 4 buttons');
+  assert.strictEqual(fullCard.components[2].components.length, 4, 'Row 3 (Controls) must have 4 buttons');
+  assert.strictEqual(fullCard.components[3].components.length, 2, 'Row 4 (Library) must have 2 buttons');
+
+  // Compact 2-Row layout for backward compatibility
+  const compactCard = renderPlayerCard(session, { compact: true });
+  assert.strictEqual(compactCard.components.length, 2, 'Compact panel should have exactly 2 ActionRows');
+  assert.strictEqual(compactCard.components[0].components.length, 4, 'Compact Row 1 must have 4 buttons');
+  assert.strictEqual(compactCard.components[1].components.length, 3, 'Compact Row 2 must have 3 buttons');
 });
 
 test('II-5: renderPlayerCard disables Prev button when history is empty', () => {

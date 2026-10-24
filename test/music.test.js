@@ -1,4 +1,4 @@
-﻿/**
+/**
  * THOR APEX - Music Subsystem Unit Tests
  */
 const test   = require('node:test');
@@ -209,3 +209,51 @@ test('M-25: Multi-guild isolation - mutations in one guild do not affect another
   assert.strictEqual(sB.volume, 100);
   assert.strictEqual(sB.loopMode, 'off');
 });
+
+// 9. Favorites System
+test('M-26: addFavorite stores track for user and rejects duplicates', () => {
+  const gId = 'guild_fav_test_1_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const uId = 'user_fav_1';
+  const track = { title: 'Starboy', artist: 'The Weeknd', durationSec: 230, source: 'soundcloud' };
+
+  const res1 = musicService.addFavorite(gId, uId, track);
+  assert.strictEqual(res1.success, true);
+  assert.strictEqual(res1.track.title, 'Starboy');
+
+  // Attempt duplicate
+  const res2 = musicService.addFavorite(gId, uId, track);
+  assert.strictEqual(res2.success, false);
+  assert.ok(res2.message.includes('already in your favorites'));
+});
+
+test('M-27: removeFavorite removes by 1-based index or search query', () => {
+  const gId = 'guild_fav_test_2_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const uId = 'user_fav_2';
+  musicService.addFavorite(gId, uId, { title: 'Song Alpha' });
+  musicService.addFavorite(gId, uId, { title: 'Song Beta' });
+
+  // Remove by index
+  const r1 = musicService.removeFavorite(gId, uId, 1);
+  assert.strictEqual(r1.success, true);
+
+  // Remove by title
+  const r2 = musicService.removeFavorite(gId, uId, 'Alpha');
+  assert.strictEqual(r2.success, true);
+});
+
+test('M-28: getFavorites returns user list or empty array', () => {
+  const favs = musicService.getFavorites('guild_non_existent', 'user_none');
+  assert.ok(Array.isArray(favs));
+  assert.strictEqual(favs.length, 0);
+});
+
+// 10. Search Cache
+test('M-29: searchCache stores and retrieves results accurately', () => {
+  const results = [{ title: 'Result 1' }, { title: 'Result 2' }];
+  musicService.setSearchCache('g_cache', 'u_cache', results);
+  const fetched = musicService.getSearchCache('g_cache', 'u_cache');
+  assert.ok(fetched);
+  assert.strictEqual(fetched.length, 2);
+  assert.strictEqual(fetched[0].title, 'Result 1');
+});
+

@@ -148,6 +148,11 @@ function getDefaultGuildConfig(guildId, guildName = 'Server') {
       reconnectAttempts: 0,
       lastError: null,
     },
+    voiceAssistant: {
+      enabled: false,
+      channelId: '',
+    },
+    musicFavorites: {},
   };
 }
 
@@ -354,7 +359,17 @@ function updateGuildConfig(guildId, mutatorOrPatch, guildName = '') {
     mutatorOrPatch(current);
   } else if (mutatorOrPatch && typeof mutatorOrPatch === 'object') {
     for (const [key, val] of Object.entries(mutatorOrPatch)) {
-      if (val && typeof val === 'object' && !Array.isArray(val) && current[key] && typeof current[key] === 'object') {
+      if (key.includes('.')) {
+        const parts = key.split('.');
+        let target = current;
+        for (let i = 0; i < parts.length - 1; i++) {
+          if (!target[parts[i]] || typeof target[parts[i]] !== 'object') {
+            target[parts[i]] = {};
+          }
+          target = target[parts[i]];
+        }
+        target[parts[parts.length - 1]] = val;
+      } else if (val && typeof val === 'object' && !Array.isArray(val) && current[key] && typeof current[key] === 'object') {
         current[key] = { ...current[key], ...val };
       } else {
         current[key] = val;

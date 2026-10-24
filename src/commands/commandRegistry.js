@@ -518,6 +518,53 @@ function buildApplicationCommands() {
             s.setName('disconnect')
               .setDescription('Disconnect bot from voice channel')
           )
+          .addSubcommand(s =>
+            s.setName('panel')
+              .setDescription('Display the interactive music control centre and player deck')
+          )
+          .addSubcommand(s =>
+            s.setName('history')
+              .setDescription('Display listening history of recently played tracks')
+          )
+      )
+      .addSubcommandGroup(g =>
+        g.setName('voice')
+          .setDescription('Opt-in "Hey Apex" voice assistant controls')
+          .addSubcommand(s =>
+            s.setName('enable')
+              .setDescription('Enable "Hey Apex" voice assistant in your current voice channel')
+          )
+          .addSubcommand(s =>
+            s.setName('disable')
+              .setDescription('Disable "Hey Apex" voice assistant and stop audio capture')
+          )
+          .addSubcommand(s =>
+            s.setName('status')
+              .setDescription('Inspect voice assistant status, listening state, DAVE and STT telemetry')
+          )
+      )
+      .addSubcommandGroup(g =>
+        g.setName('favorites')
+          .setDescription('Personal music library & favorites')
+          .addSubcommand(s =>
+            s.setName('add')
+              .setDescription('Add current track or specified song to favorites')
+              .addStringOption(o => o.setName('song').setDescription('Song title or URL (leave empty for current playing track)').setRequired(false))
+          )
+          .addSubcommand(s =>
+            s.setName('remove')
+              .setDescription('Remove a track from your favorites')
+              .addStringOption(o => o.setName('target').setDescription('Favorite number or song title').setRequired(true))
+          )
+          .addSubcommand(s =>
+            s.setName('list')
+              .setDescription('List all your saved favorite tracks')
+          )
+          .addSubcommand(s =>
+            s.setName('play')
+              .setDescription('Stream your saved favorites into the voice channel')
+              .addIntegerOption(o => o.setName('number').setDescription('Specific favorite track number (leave empty to play all)').setRequired(false))
+          )
       )
       .addSubcommandGroup(g =>
         g.setName('queue')

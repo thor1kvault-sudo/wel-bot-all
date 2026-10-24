@@ -311,7 +311,7 @@ async function searchAudioTracks(query, limit = 5, guildId = null) {
         confidence:     0.85,
       }];
     }
-    throw new Error('YouTube streaming is currently unavailable (HTTP 403 from Google CDN). The track will be matched against SoundCloud.');
+    throw new Error('Unable to retrieve metadata for this YouTube link. The video may be private, deleted, or unavailable.');
   }
 
   // ── 4. Text search: SoundCloud primary ────────────────────────

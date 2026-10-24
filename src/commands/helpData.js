@@ -162,6 +162,10 @@ const STATIC_HELP_CATEGORIES = {
       '`/loop` — Set repeat mode (off/track/queue)\n' +
       '`/volume` — Adjust music volume (1–100)\n' +
       '`/seek` — Seek to a playback position (e.g. 1:30 or 90s)\n' +
+      '`/songs playback panel` — Launch the interactive Music Control Centre\n' +
+      '`/songs playback history` — View recently played tracks history\n' +
+      '`/songs voice enable|disable|status` — "Hey Apex" opt-in voice assistant controls\n' +
+      '`/songs favorites add|remove|list|play` — Personal library & favorites\n' +
       '`/radio` — Play 24/7 radio stream (Lofi, Gaming, Pop, Chill)\n' +
       '`/lyrics` — Search real-time lyrics for any song\n' +
       '`/musicstatus` — Music engine & voice connection diagnostics\n' +

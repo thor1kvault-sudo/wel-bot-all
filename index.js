@@ -1084,6 +1084,193 @@ async function startBot() {
               .setTimestamp();
             return safeReply(interaction, { embeds: [embed] });
           }
+          if (id === 'btn_m_disconnect') {
+            const cfg = getGuildConfig(interaction.guildId, interaction.guild?.name);
+            if (cfg?.music247?.enabled) {
+              return safeReply(interaction, '⚠️ 24/7 Music Mode is active for this server! Use `/songs 24-7 disable` to turn off persistent mode first.', true);
+            }
+            if (musicService) musicService.destroySession(interaction.guildId, true);
+            else stopMusicSession(interaction.guildId);
+            return safeReply(interaction, '👋 Disconnected from voice channel and cleared audio session.');
+          }
+          if (id === 'btn_m_clear') {
+            const count = musicService ? musicService.clearQueue(interaction.guildId) : 0;
+            return safeReply(interaction, `🧹 Cleared **${count}** tracks from the queue.`);
+          }
+          if (id === 'btn_m_volume') {
+            const session = musicService?.sessions?.get(interaction.guildId);
+            const currentVol = session?.volume || 100;
+            const nextVol = currentVol === 100 ? 75 : currentVol === 75 ? 50 : currentVol === 50 ? 25 : 100;
+            musicService?.setVolume(interaction.guildId, nextVol);
+            return safeReply(interaction, `🔊 Playback volume adjusted to **${nextVol}%**.`);
+          }
+          if (id === 'btn_m_fav') {
+            const session = musicService?.sessions?.get(interaction.guildId);
+            if (!session || !session.currentTrack) return safeReply(interaction, 'Nothing is currently playing to favorite.');
+            const res = musicService.addFavorite(interaction.guildId, interaction.user.id, session.currentTrack);
+            if (!res.success) return safeReply(interaction, `⚠️ ${res.message}`);
+            return safeReply(interaction, `⭐ Added **${res.track.title}** to your favorites! (${res.count} total)`);
+          }
+          if (id === 'btn_m_voice') {
+            const isAuthorized = interaction.user.id === interaction.guild?.ownerId ||
+              interaction.member?.permissions?.has(PermissionsBitField.Flags.ManageGuild) ||
+              interaction.member?.permissions?.has(PermissionsBitField.Flags.Administrator) ||
+              interaction.member?.permissions?.has(PermissionsBitField.Flags.MuteMembers);
+            if (!isAuthorized) {
+              return safeReply(interaction, '❌ You lack `ManageGuild` or voice moderation permissions to toggle the Voice Assistant.', true);
+            }
+
+            const vState = musicService?.getVoiceState(interaction.guildId);
+            if (vState?.enabled) {
+              musicService.disableVoiceAssistant(interaction.guildId);
+              return safeReply(interaction, '🔇 **"Hey Apex" Voice Assistant is now DISABLED.** Audio capture stopped.');
+            } else {
+              const res = musicService?.enableVoiceAssistant(interaction.guild, vc, interaction.user, interaction.channel);
+              if (!res?.success) {
+                return safeReply(interaction, `⚠️ ${res?.message || 'Voice Assistant requires a configured STT provider in .env.'}`, true);
+              }
+              return safeReply(interaction, `🎙️ **"Hey Apex" Voice Assistant is now ENABLED in <#${vc.id}>.** Say *"Hey Apex, pause"* or *"Hey Apex, next"*. (Opt-in active, transient processing only)`);
+            }
+          }
+          if (id === 'btn_m_favorites') {
+            const favs = musicService ? musicService.getFavorites(interaction.guildId, interaction.user.id) : [];
+            if (favs.length === 0) return safeReply(interaction, '⭐ Your favorites list is currently empty. Use the ⭐ Favorite button to save tracks.');
+            const lines = favs.slice(0, 10).map((f, i) => `${i + 1}. **${f.title}**${f.artist ? ` — *${f.artist}*` : ''}`);
+            const embed = new EmbedBuilder()
+              .setColor('#FEE75C')
+              .setTitle(`⭐ ${interaction.user.username}'s Favorites`)
+              .setDescription(lines.join('\n'))
+              .setFooter({ text: `${favs.length} total saved tracks • Choose below to stream immediately` });
+            const menu = new StringSelectMenuBuilder()
+              .setCustomId('select_m_fav_play')
+              .setPlaceholder('Select a favorite track to stream...')
+              .addOptions(
+                favs.slice(0, 10).map((f, i) => ({
+                  label: `${i + 1}. ${f.title.slice(0, 95)}`,
+                  description: f.artist?.slice(0, 45) || 'Unknown Artist',
+                  value: `fav_${i}`,
+                  emoji: '⭐',
+                }))
+              );
+            const row = new ActionRowBuilder().addComponents(menu);
+            return safeReply(interaction, { embeds: [embed], components: [row] }, true);
+          }
+          if (id === 'btn_m_history') {
+            const session = musicService?.sessions?.get(interaction.guildId);
+            const hist = session?.history || [];
+            if (hist.length === 0) return safeReply(interaction, '🕒 No previously played tracks recorded for this session.');
+            const lines = hist.slice(0, 10).map((t, i) => `${i + 1}. **${t.title}**${t.artist ? ` — *${t.artist}*` : ''}`);
+            const embed = new EmbedBuilder()
+              .setColor('#5865F2')
+              .setTitle('🕒 Listening History (Last Tracks)')
+              .setDescription(lines.join('\n'))
+              .setFooter({ text: `Total: ${hist.length} tracks • Use ⏮️ Prev button to replay last track` });
+            return safeReply(interaction, { embeds: [embed] }, true);
+          }
+          if (id === 'btn_m_search') {
+            const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+            const modal = new ModalBuilder()
+              .setCustomId('modal_m_search')
+              .setTitle('Search & Play Music');
+            const input = new TextInputBuilder()
+              .setCustomId('input_m_search_query')
+              .setLabel('Song title, artist, or URL')
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder('e.g. Bohemian Rhapsody, Lofi Chill...')
+              .setRequired(true)
+              .setMaxLength(200);
+            modal.addComponents(new ActionRowBuilder().addComponents(input));
+            return interaction.showModal(modal);
+          }
+        }
+      }
+
+      // ── Music Select Menu Handlers ──
+      if (interaction.isStringSelectMenu()) {
+        const id = interaction.customId;
+        if (id === 'select_m_search_result') {
+          const vc = interaction.member?.voice?.channel;
+          if (!vc) return safeReply(interaction, 'Join a Voice Channel first to play music!', true);
+          const selectedVal = interaction.values[0];
+          const idx = parseInt(selectedVal.replace('search_idx_', ''), 10);
+          const cached = musicService?.getSearchCache(interaction.guildId, interaction.user.id);
+          if (!cached || !cached[idx]) {
+            return safeReply(interaction, '⚠️ Search selection expired. Please perform a new search.', true);
+          }
+          const chosen = cached[idx];
+          await interaction.deferReply();
+          const res = await musicService.enqueueTrack(
+            interaction.guild,
+            vc,
+            interaction.user,
+            interaction.channel,
+            chosen.title,
+            { exactTrack: chosen }
+          );
+          if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+          return interaction.editReply(`▶️ Queued your exact selection: **${chosen.title}**${chosen.artist ? ` by **${chosen.artist}**` : ''} (Position **#${res.position}**).`);
+        }
+
+        if (id === 'select_m_fav_play') {
+          const vc = interaction.member?.voice?.channel;
+          if (!vc) return safeReply(interaction, 'Join a Voice Channel first to play music!', true);
+          const selectedVal = interaction.values[0];
+          const idx = parseInt(selectedVal.replace('fav_', ''), 10);
+          const favs = musicService?.getFavorites(interaction.guildId, interaction.user.id);
+          if (!favs || !favs[idx]) {
+            return safeReply(interaction, '⚠️ Favorite track not found.', true);
+          }
+          const chosen = favs[idx];
+          await interaction.deferReply();
+          const res = await musicService.enqueueTrack(
+            interaction.guild,
+            vc,
+            interaction.user,
+            interaction.channel,
+            chosen.title,
+            { exactTrack: chosen }
+          );
+          if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+          return interaction.editReply(`⭐ Playing favorite: **${chosen.title}**!`);
+        }
+      }
+
+      // ── Music Modal Handlers ──
+      if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'modal_m_search') {
+          const vc = interaction.member?.voice?.channel;
+          if (!vc) return interaction.reply({ content: 'Join a Voice Channel first to play music!', ephemeral: true });
+          const query = interaction.fields.getTextInputValue('input_m_search_query');
+          await interaction.deferReply({ ephemeral: true });
+          try {
+            const provider = require('./src/music/audioProvider');
+            const results = await provider.searchAudioTracks(query, 5, interaction.guildId);
+            if (!results || results.length === 0) {
+              return interaction.editReply(`❌ No tracks found for "${query}".`);
+            }
+            musicService?.setSearchCache(interaction.guildId, interaction.user.id, results);
+            const lines = results.map((r, i) => `${i + 1}. **${r.title}**${r.artist ? ` — *${r.artist}*` : ''} (\`${Math.floor((r.durationSec || 0) / 60)}:${String((r.durationSec || 0) % 60).padStart(2, '0')}\`)`);
+            const embed = new EmbedBuilder()
+              .setColor('#5865F2')
+              .setTitle(`🔍 Search Results: "${query}"`)
+              .setDescription(lines.join('\n'))
+              .setFooter({ text: 'Choose the exact version you want to play below:' });
+            const menu = new StringSelectMenuBuilder()
+              .setCustomId('select_m_search_result')
+              .setPlaceholder('Select exact version to stream...')
+              .addOptions(
+                results.slice(0, 5).map((r, i) => ({
+                  label: `${i + 1}. ${r.title.slice(0, 95)}`,
+                  description: `${r.artist?.slice(0, 45) || 'Unknown'} • ${Math.floor((r.durationSec || 0) / 60)}:${String((r.durationSec || 0) % 60).padStart(2, '0')}`,
+                  value: `search_idx_${i}`,
+                  emoji: '🎵',
+                }))
+              );
+            const row = new ActionRowBuilder().addComponents(menu);
+            return interaction.editReply({ embeds: [embed], components: [row] });
+          } catch (err) {
+            return interaction.editReply(`❌ Search error: ${err.message}`);
+          }
         }
       }
 
