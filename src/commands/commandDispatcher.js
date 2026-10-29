@@ -42,6 +42,34 @@ const {
   STATIC_HELP_SELECT_OPTIONS,
 } = require('./helpData');
 
+function renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user) {
+  musicService?.setSearchCache(guild.id, user.id, res.candidates);
+  const lines = res.candidates.slice(0, 5).map((r, i) =>
+    `**${i + 1}.** ${r.title}${r.artist ? ` — *${r.artist}*` : ''}${r.durationSec ? ` \`${Math.floor(r.durationSec / 60)}:${String(r.durationSec % 60).padStart(2, '0')}\`` : ''}`
+  );
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('select_m_search_result')
+    .setPlaceholder('Choose the exact track version to stream...')
+    .addOptions(
+      res.candidates.slice(0, 5).map((r, i) => ({
+        label: `${i + 1}. ${r.title.slice(0, 95)}`,
+        description: `${r.artist?.slice(0, 45) || 'Unknown'} • ${Math.floor((r.durationSec || 0) / 60)}:${String((r.durationSec || 0) % 60).padStart(2, '0')}`,
+        value: `search_idx_${i}`,
+        emoji: '🎵',
+      }))
+    );
+  const row = new ActionRowBuilder().addComponents(menu);
+  const ytNote = res.canonicalYouTube
+    ? `🎥 **Original Track (YouTube):** [${res.canonicalYouTube.title}](${res.canonicalYouTube.youtubeUrl})\n*(Direct YouTube audio extraction in Discord is blocked; choose an authorized SoundCloud version below)*\n\n`
+    : '';
+  const embed = new EmbedBuilder()
+    .setColor('#5865F2')
+    .setTitle(`Select Version for: "${query}"`)
+    .setDescription(`${ytNote}No confident original match was identified automatically. Please select which candidate version you want to play:\n\n${lines.join('\n')}`)
+    .setFooter({ text: 'Select an option below to queue your exact choice' });
+  return interaction.editReply({ embeds: [embed], components: [row] });
+}
+
 async function _dispatchCommandInner(interaction, context = {}) {
   const { commandName, guild, member, user } = interaction;
   if (!guild) {
@@ -2289,7 +2317,12 @@ async function _dispatchCommandInner(interaction, context = {}) {
         const query = interaction.options.getString('song', true);
         if (musicService) {
           const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
-          if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+          if (!res.success) {
+            if (res.requiresChoice && res.candidates?.length > 0) {
+              return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+            }
+            return interaction.editReply(`❌ ${res.message}`);
+          }
           if (res.isPlaylist) return interaction.editReply(`🎵 Added **${res.count}** tracks from **${res.playlistName || 'playlist'}** to queue!`);
           return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position **#${res.position}**).`);
         }
@@ -2330,7 +2363,12 @@ async function _dispatchCommandInner(interaction, context = {}) {
         const query = interaction.options.getString('song', true);
         if (musicService) {
           const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: true });
-          if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+          if (!res.success) {
+            if (res.requiresChoice && res.candidates?.length > 0) {
+              return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+            }
+            return interaction.editReply(`❌ ${res.message}`);
+          }
           return interaction.editReply(`⚡ Now playing: **${res.firstTrack?.title || query}**!`);
         }
         return interaction.editReply('❌ Music engine unavailable.');
@@ -2628,7 +2666,12 @@ async function _dispatchCommandInner(interaction, context = {}) {
     if (musicService) {
       // BUG FIX: pass { playNow: false } object — raw boolean was silently swallowed by JS destructuring
       const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
-      if (!res.success) return interaction.editReply(`❌ ${res.message}`);
+      if (!res.success) {
+        if (res.requiresChoice && res.candidates?.length > 0) {
+          return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+        }
+        return interaction.editReply(`❌ ${res.message}`);
+      }
       if (res.isPlaylist) {
         return interaction.editReply(`🎵 Added **${res.count}** tracks from **${res.playlistName || 'playlist'}** to the queue!`);
       }

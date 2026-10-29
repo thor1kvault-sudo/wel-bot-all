@@ -43,7 +43,10 @@ if (VoiceConnection && VoiceConnection.prototype) {
 }
 
 const { isSpotifyUrl, resolveSpotify } = require('./spotifyResolver');
-const { searchAudioTracks, matchPlayableTrack, resolveAudioStream, ensureClientReady, isYouTubeUrl } = require('./audioProvider');
+const {
+  searchAudioTracks, matchPlayableTrack, resolveAudioStream,
+  ensureClientReady, isYouTubeUrl, matchSpotifyToYouTube,
+} = require('./audioProvider');
 const { renderPlayerCard } = require('./musicPlayerCard');
 const { logIncident } = require('./musicUpdateMonitor');
 const voiceAssistant = require('./voiceAssistant');
@@ -231,11 +234,28 @@ async function playNext(guildId) {
   if (session.connection) {
     if (session.connection.state.status !== VoiceConnectionStatus.Ready && session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
       try {
-        await entersState(session.connection, VoiceConnectionStatus.Ready, 10_000);
+        const waitMs = (process.env.NODE_ENV === 'test' || !session.voiceChannel?.guild?.voiceAdapterCreator) ? 100 : 10_000;
+        await entersState(session.connection, VoiceConnectionStatus.Ready, waitMs);
       } catch (_) {}
     }
     if (session.player) {
       try { session.connection.subscribe(session.player); } catch (_) {}
+    }
+
+    // Playback must start ONLY after the voice connection is ready
+    if (session.connection.state.status !== VoiceConnectionStatus.Ready) {
+      if (process.env.NODE_ENV !== 'test') {
+        const curStatus = session.connection.state.status;
+        console.error(`[THOR-AUDIO] Cannot start playback in guild ${guildId}: Voice connection is not READY (status: ${curStatus}).`);
+        session.isPlaying = false;
+        session.currentTrack = null;
+        if (session.textChannel && typeof session.textChannel.send === 'function') {
+          try {
+            session.textChannel.send(`⚠️ Voice connection could not be established (status: \`${curStatus}\`). Playback paused until voice channel is ready.`).catch(() => {});
+          } catch (_) {}
+        }
+        return;
+      }
     }
   }
 
@@ -248,8 +268,24 @@ async function playNext(guildId) {
   session.pauseTime = 0;
 
   try {
+    // For Spotify tracks, ensure YouTube candidate matching is resolved before stream extraction
+    if ((track.source === 'spotify' || track.source === 'spotify_meta' || track.spotifyUrl) && !track.youtubeUrl) {
+      try {
+        const ytMatch = await matchSpotifyToYouTube(track);
+        if (ytMatch.success) {
+          track.youtubeUrl = ytMatch.youtubeUrl;
+          track.matchedYouTubeTitle = ytMatch.matchedTitle;
+          track.matchedYouTubeChannel = ytMatch.matchedArtist;
+          track.matchedTitle = ytMatch.matchedTitle;
+          track.durationSec = ytMatch.durationSec || track.durationSec;
+          track.thumbnail = ytMatch.thumbnail || track.thumbnail;
+        }
+      } catch (_) {}
+    }
+
     console.log(`[THOR-AUDIO] Resolving audio stream for "${track.title}" (source: ${track.source || 'unknown'})...`);
-    const audioData = await resolveAudioStream(track);
+    const audioData = track._preResolved || (await resolveAudioStream(track));
+    track._preResolved = null;
     console.log(`[THOR-AUDIO] Stream resolved: type=${audioData.type}, source=${audioData.source}, isStream=${!!audioData.stream?.on}`);
 
     let streamBytes = 0;
@@ -259,9 +295,20 @@ async function playNext(guildId) {
       });
       audioData.stream.on('error', (streamErr) => {
         console.error(`[THOR-AUDIO Stream Error] "${track.title}":`, streamErr.message);
+        if (session.isPlaying && session.currentTrack === track) {
+          session.isPlaying = false;
+          session.currentTrack = null;
+          handleTrackEnded(guildId);
+        }
       });
       audioData.stream.on('end', () => {
         console.log(`[THOR-AUDIO Stream End] "${track.title}": Received total ${streamBytes} bytes`);
+        if (streamBytes === 0 && session.isPlaying && session.currentTrack === track) {
+          console.warn(`[THOR-AUDIO Stream End] Stream ended with 0 bytes for "${track.title}". Auto-advancing.`);
+          session.isPlaying = false;
+          session.currentTrack = null;
+          handleTrackEnded(guildId);
+        }
       });
     }
 
@@ -275,6 +322,11 @@ async function playNext(guildId) {
     if (resource.playStream) {
       resource.playStream.on('error', (err) => {
         console.error(`[THOR-AUDIO Resource Error]:`, err.message);
+        if (session.isPlaying && session.currentTrack === track) {
+          session.isPlaying = false;
+          session.currentTrack = null;
+          handleTrackEnded(guildId);
+        }
       });
     }
 
@@ -284,6 +336,7 @@ async function playNext(guildId) {
 
     session.currentResource = resource;
     session.recoveryAttempts = 0;
+    session.consecutiveFailures = 0;
     session.player.play(resource);
 
     // Synchronize speaking status if connection is in ready state
@@ -291,8 +344,8 @@ async function playNext(guildId) {
       try { session.connection.setSpeaking(true); } catch (_) {}
     }
 
-    // Diagnostic check after 5 seconds of playback
-    setTimeout(() => {
+    // Diagnostic check after 5 seconds of playback (unref'd to avoid holding event loop)
+    const diagTimer = setTimeout(() => {
       if (session.isPlaying && session.currentTrack === track) {
         const connStatus = session.connection ? session.connection.state.status : 'none';
         const speakingState = session.connection?.state?.networking?.state?.connectionData?.speaking;
@@ -301,15 +354,33 @@ async function playNext(guildId) {
         console.log(`[THOR-AUDIO DIAG] 5s check: conn=${connStatus}, speaking=${speakingState}, player=${playerStatus}, duration=${pbDuration}ms, streamBytes=${streamBytes}`);
       }
     }, 5000);
+    if (typeof diagTimer.unref === 'function') diagTimer.unref();
 
     // Update or post player card
     await updatePlayerCardMessage(session);
     logIncident('INFO', 'PLAY_START', `Started playback of "${track.title}" in guild ${guildId}`);
   } catch (err) {
+    session.isPlaying = false;
+    session.currentTrack = null;
     logIncident('ERROR', 'PLAY_FAIL', `Playback error on "${track.title}": ${err.message}`);
     // Auto-skip unplayable track to keep queue alive
     if (session.textChannel && typeof session.textChannel.send === 'function') {
-      session.textChannel.send(`⚠️ Could not stream **${track.title}**: ${err.message}. Skipping to next track...`).catch(() => {});
+      try {
+        const p = session.textChannel.send(`⚠️ Could not stream **${track.title}**: ${err.message}. Skipping to next track in queue...`);
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (_) {}
+    }
+    session.consecutiveFailures = (session.consecutiveFailures || 0) + 1;
+    if (session.consecutiveFailures >= 3) {
+      if (session.textChannel && typeof session.textChannel.send === 'function') {
+        try {
+          const p = session.textChannel.send('⏹️ Playback stopped: 3 consecutive tracks failed to stream. Please verify your queue.');
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch (_) {}
+      }
+      session.queue = [];
+      session.consecutiveFailures = 0;
+      return;
     }
     handleTrackEnded(guildId);
   }
@@ -650,6 +721,7 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       source: exactTrack.source || 'selection',
       spotifyUrl: exactTrack.spotifyUrl || null,
       youtubeUrl: exactTrack.youtubeUrl || null,
+      fallbackUrls: exactTrack.fallbackUrls || [],
     }];
   } else if (isSpotifyUrl(query)) {
     const spotifyRes = await resolveSpotify(query, 50);
@@ -660,17 +732,45 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
     isPlaylist = spotifyRes.type === 'album' || spotifyRes.type === 'playlist';
     playlistName = spotifyRes.name;
 
-    tracksToAdd = spotifyRes.tracks.map(t => ({
-      title: t.title,
-      artist: t.artist,
-      album: t.album,
-      durationSec: t.durationSec,
-      thumbnail: t.thumbnail,
-      streamUrl: null, // Matched on-demand before streaming
-      requestedBy: user.id,
-      source: 'spotify',
-      spotifyUrl: t.spotifyUrl,
-    }));
+    if (!isPlaylist && spotifyRes.tracks.length === 1) {
+      const sp = spotifyRes.tracks[0];
+      const ytMatch = await matchSpotifyToYouTube(sp);
+      if (!ytMatch.success) {
+        return {
+          success: false,
+          message: `No confident YouTube match found for "${sp.title}" by ${sp.artist || 'Unknown'}. Please provide a direct YouTube link or song title.`,
+        };
+      }
+      tracksToAdd = [{
+        title: sp.title,
+        artist: sp.artist,
+        album: sp.album,
+        durationSec: ytMatch.durationSec,
+        thumbnail: ytMatch.thumbnail || sp.thumbnail,
+        streamUrl: null,
+        youtubeUrl: ytMatch.youtubeUrl,
+        matchedYouTubeTitle: ytMatch.matchedTitle,
+        matchedYouTubeChannel: ytMatch.matchedArtist,
+        matchedTitle: ytMatch.matchedTitle,
+        requestedBy: user.id,
+        source: 'spotify',
+        spotifyUrl: sp.spotifyUrl,
+        confidence: ytMatch.confidence,
+      }];
+      sourceNote = `Spotify track matched to YouTube: "${ytMatch.matchedTitle}"`;
+    } else {
+      tracksToAdd = spotifyRes.tracks.map(t => ({
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        durationSec: t.durationSec,
+        thumbnail: t.thumbnail,
+        streamUrl: null,
+        requestedBy: user.id,
+        source: 'spotify',
+        spotifyUrl: t.spotifyUrl,
+      }));
+    }
   } else if (isYouTubeUrl(query)) {
     const searchRes = await searchAudioTracks(query, 1);
     if (!searchRes || searchRes.length === 0) {
@@ -688,16 +788,27 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       requestedBy: user.id,
       source: 'youtube_meta',
       youtubeBlocked: true,
+      fallbackUrls: ytMeta.fallbackUrls || [],
     }];
-    sourceNote = 'YouTube link recognized. Direct YouTube extraction is blocked by Google CDN; streaming authorized equivalent.';
+    sourceNote = 'YouTube link recognized. Direct YouTube audio extraction in Discord is blocked by YouTube restrictions; streaming authorized SoundCloud equivalent.';
   } else {
     // Ordinary Search or direct link
-    const searchRes = await searchAudioTracks(query, 1);
+    const searchRes = await searchAudioTracks(query, 5);
     if (!searchRes || searchRes.length === 0) {
       return { success: false, message: `No playable recordings found for "${query}".` };
     }
 
     const best = searchRes[0];
+    if (best?.requiresChoice && !exactTrack) {
+      return {
+        success: false,
+        requiresChoice: true,
+        candidates: best.candidates || searchRes,
+        canonicalYouTube: best.canonicalYouTube || null,
+        message: `No confident original match found automatically for "${query}". Please choose a version from the menu below.`,
+      };
+    }
+
     tracksToAdd = [{
       title: best.title,
       artist: best.artist,
@@ -708,10 +819,27 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       requestedBy: user.id,
       source: best.source,
       youtubeUrl: best.youtubeUrl || null,
+      fallbackUrls: best.fallbackUrls || [],
     }];
   }
 
-  // 5. Enqueue Tracks
+  // 5. Pre-validate playback stream when starting fresh playback on an idle player
+  // Per Requirement B: Validate provider can start playback before announcing success!
+  if (!session.isPlaying && tracksToAdd.length > 0) {
+    try {
+      const preResolved = await resolveAudioStream(tracksToAdd[0]);
+      tracksToAdd[0]._preResolved = preResolved;
+    } catch (err) {
+      session.isPlaying = false;
+      session.currentTrack = null;
+      return {
+        success: false,
+        message: `Playback stream verification failed for "${tracksToAdd[0].title}": ${err.message}`,
+      };
+    }
+  }
+
+  // 6. Enqueue Tracks
   const targetPosition = playNow ? 1 : (session.isPlaying ? session.queue.length + 1 : 1);
 
   if (playNow) {

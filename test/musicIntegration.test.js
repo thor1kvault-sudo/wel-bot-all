@@ -534,6 +534,173 @@ test('IX-2: enqueueTrack position calculation never returns 0', () => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// SECTION X: Version matching, ranking, SoundCloud 404 & Truthful Playback [UNIT & MOCK]
+// ─────────────────────────────────────────────────────────────
+
+test('X-1: Version matching strongly penalizes unrequested slowed, reverb, remix, and mashup modifiers', () => {
+  const audioProvider = require('../src/music/audioProvider');
+  const canonical = { title: 'Enna Sona - Official Music Video', artist: 'Arijit Singh', durationSec: 221 };
+
+  const originalCandidate = { title: 'Enna Sona', artist: 'Arijit Singh', durationSec: 221 };
+  const slowedReverbCandidate = { title: 'enna sona - arjit singh - slowed and reverb - SAP ALBUM', artist: 'Aaron', durationSec: 243 };
+  const remixCandidate = { title: 'Arjit Singh - Enna Sona ( KAJAXX Remix )', artist: 'KAJAXX', durationSec: 200 };
+  const mashupCandidate = { title: 'Pop Mashup | Shape Of You X Enna Sona', artist: 'Dj Harshal', durationSec: 185 };
+
+  const sOrig = audioProvider.scoreCandidate(originalCandidate, 'enna sona', canonical);
+  const sSlowed = audioProvider.scoreCandidate(slowedReverbCandidate, 'enna sona', canonical);
+  const sRemix = audioProvider.scoreCandidate(remixCandidate, 'enna sona', canonical);
+  const sMashup = audioProvider.scoreCandidate(mashupCandidate, 'enna sona', canonical);
+
+  assert.strictEqual(sOrig.penalty, 0, 'Original track should have 0 penalty');
+  assert.ok(sSlowed.penalty >= 0.90, 'Slowed and reverb candidate must receive heavy penalty (>= 0.90)');
+  assert.ok(sRemix.penalty >= 0.45, 'Remix candidate must receive modifier penalty (>= 0.45)');
+  assert.ok(sMashup.penalty >= 0.45, 'Mashup candidate must receive modifier penalty (>= 0.45)');
+  assert.ok(sOrig.finalScore > sSlowed.finalScore, 'Original must rank significantly higher than slowed/reverb');
+  assert.ok(sOrig.finalScore > sRemix.finalScore, 'Original must rank significantly higher than remix');
+});
+
+test('X-2: Explicit modifier requests preserve user intent without penalization', () => {
+  const audioProvider = require('../src/music/audioProvider');
+  const slowedTrack = { title: 'enna sona slowed reverb', artist: 'Aaron', durationSec: 243 };
+
+  const mods = audioProvider.getRequestedModifiers('enna sona slowed reverb');
+  assert.ok(mods.includes('slowed'));
+  assert.ok(mods.includes('reverb'));
+
+  const sExplicit = audioProvider.scoreCandidate(slowedTrack, 'enna sona slowed reverb');
+  assert.strictEqual(sExplicit.penalty, 0, 'Explicitly requested modifiers must not be penalized');
+  assert.ok(sExplicit.finalScore > 0.6, 'Explicitly requested track score should remain high');
+});
+
+test('X-3: Artist and title mismatches or large duration discrepancy are scored down', () => {
+  const audioProvider = require('../src/music/audioProvider');
+  const canonical = { title: 'Enna Sona - Official Music Video', artist: 'Arijit Singh', durationSec: 221 };
+
+  const mismatchTrack = { title: 'Completely Unrelated Bollywood Song', artist: 'Someone Else', durationSec: 300 };
+  const extendedLoopTrack = { title: 'Enna Sona 1 Hour Loop', artist: 'Arijit Singh', durationSec: 3600 };
+
+  const sMismatch = audioProvider.scoreCandidate(mismatchTrack, 'enna sona', canonical);
+  const sExtended = audioProvider.scoreCandidate(extendedLoopTrack, 'enna sona', canonical);
+
+  assert.ok(sMismatch.finalScore < 0.35, 'Unrelated title/artist mismatch must score below threshold');
+  assert.ok(sExtended.finalScore < 0.60, '1-hour loop duration mismatch must score below confident threshold');
+});
+
+test('X-4: SoundCloud 404 stream error falls back to alternative candidate URLs', async () => {
+  const audioProvider = require('../src/music/audioProvider');
+  const attempted = [];
+
+  audioProvider._setStreamFunction(async (url) => {
+    attempted.push(url);
+    if (url.includes('dead-404')) {
+      throw new Error('Got 404 from the request');
+    }
+    return { stream: { on: () => {} }, type: 'arbitrary' };
+  });
+
+  try {
+    const track = {
+      title: 'Enna Sona',
+      streamUrl: 'https://soundcloud.com/user/dead-404',
+      fallbackUrls: ['https://soundcloud.com/user/working-track'],
+      source: 'soundcloud',
+    };
+
+    const res = await audioProvider.resolveAudioStream(track);
+    assert.strictEqual(res.source, 'soundcloud');
+    assert.ok(attempted.includes('https://soundcloud.com/user/dead-404'));
+    assert.ok(attempted.includes('https://soundcloud.com/user/working-track'));
+  } finally {
+    audioProvider._setStreamFunction(null);
+  }
+});
+
+test('X-5: Exhausted retries report truthful failure without falsely announcing playback', async () => {
+  const audioProvider = require('../src/music/audioProvider');
+
+  audioProvider._setStreamFunction(async () => {
+    throw new Error('Got 404 from the request');
+  });
+
+  try {
+    const track = {
+      title: 'Dead Track Entirely',
+      streamUrl: 'https://soundcloud.com/user/dead-1',
+      fallbackUrls: ['https://soundcloud.com/user/dead-2'],
+      source: 'soundcloud',
+    };
+
+    await assert.rejects(
+      async () => audioProvider.resolveAudioStream(track, 0, 0),
+      /SoundCloud stream failed \(HTTP 404/
+    );
+  } finally {
+    audioProvider._setStreamFunction(null);
+  }
+});
+
+test('X-6: Truthful queue and player messaging when stream fails vs succeeds', async () => {
+  const audioProvider = require('../src/music/audioProvider');
+  const guild = { id: 'guild_truth_test_x6', name: 'Truth Guild' };
+  const vc = { id: 'vc_x6', joinable: true, permissionsFor: () => ({ has: () => true }) };
+  const user = { id: 'u_x6' };
+  const channel = { send: () => ({ catch: () => {} }) };
+
+  const session = musicService.getSession(guild.id);
+  session.voiceChannel = vc;
+  session.connection = {
+    state: { status: 'ready' },
+    joinConfig: { channelId: vc.id },
+    subscribe: () => {},
+    setSpeaking: () => {},
+  };
+  session.player = { play: () => {}, stop: () => {}, state: { status: 'idle' } };
+
+  // When stream fails with 404:
+  audioProvider._setStreamFunction(async () => {
+    throw new Error('Got 404 from the request');
+  });
+
+  try {
+    const deadTrack = {
+      title: 'Dead Track',
+      artist: 'Nobody',
+      streamUrl: 'https://soundcloud.com/dead',
+      fallbackUrls: [],
+      source: 'soundcloud',
+    };
+
+    const resFail = await musicService.enqueueTrack(guild, vc, user, channel, deadTrack.title, { exactTrack: deadTrack });
+    assert.strictEqual(resFail.success, false, 'enqueueTrack must return false on failed playback stream');
+    assert.ok(resFail.message.includes('Playback stream verification failed'), 'Error message must reflect stream failure');
+    assert.strictEqual(session.isPlaying, false, 'Player must not be marked playing when stream failed');
+    assert.strictEqual(session.queue.length, 0, 'Dead track must not remain queued');
+
+    // When stream succeeds:
+    audioProvider._setStreamFunction(async () => {
+      const { Readable } = require('stream');
+      const s = new Readable({ read() { this.push(null); } });
+      return { stream: s, type: 'arbitrary' };
+    });
+
+    const goodTrack = {
+      title: 'Valid Original Track',
+      artist: 'Artist',
+      streamUrl: 'https://soundcloud.com/good',
+      fallbackUrls: [],
+      source: 'soundcloud',
+    };
+
+    const resOk = await musicService.enqueueTrack(guild, vc, user, channel, goodTrack.title, { exactTrack: goodTrack });
+    assert.strictEqual(resOk.success, true, 'enqueueTrack should succeed when stream starts');
+    assert.strictEqual(resOk.firstTrack.title, 'Valid Original Track');
+  } finally {
+    audioProvider._setStreamFunction(null);
+    musicService.destroySession(guild.id, true);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // Cleanup all test sessions
 // ─────────────────────────────────────────────────────────────
 const cleanupIds = [
@@ -543,6 +710,7 @@ const cleanupIds = [
   'guild_history_cap', 'guild_move_bounds', 'guild_remove_bounds',
   'guild_shuffle_single', 'guild_shuffle_empty', 'guild_clear_nosession_xyz',
   'guild_loop_nosession_xyz', 'guild_vol_nosession_xyz', 'guild_seek_notplaying',
-  'guild_seek_bounds', 'guild_pos_test',
+  'guild_seek_bounds', 'guild_pos_test', 'guild_truth_test_x6',
 ];
 for (const id of cleanupIds) musicService.sessions.delete(id);
+

@@ -153,6 +153,9 @@ function getDefaultGuildConfig(guildId, guildName = 'Server') {
       channelId: '',
     },
     musicFavorites: {},
+    mentionDMs: {
+      enabled: true,
+    },
   };
 }
 

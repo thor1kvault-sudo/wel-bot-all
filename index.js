@@ -33,6 +33,7 @@ const { redactSecrets, safeReply, isHex, formatDuration } = require('./src/utils
 const {
   processRaidJoin, releaseAllQuarantine, releaseMember, getQuarantinedCount,
 } = require('./src/security/antiRaid');
+const { handleMentionNotification } = require('./src/notifications/mentionNotifier');
 
 // Setup FFMPEG static if present & verify Linux permissions
 try {
@@ -694,6 +695,11 @@ async function startBot() {
 
     // Evaluate AutoMod filters
     await processMessage(message);
+
+    // ── Member Mention Notification DM ──
+    try {
+      await handleMentionNotification(message, client);
+    } catch (_) {}
 
     // ── AFK System Interceptor ──
     const guildConfig = getGuildConfig(message.guild.id, message.guild.name);
