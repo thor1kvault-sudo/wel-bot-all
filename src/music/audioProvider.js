@@ -215,6 +215,66 @@ function durationScore(expectedSec, actualSec) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   ARTIST EXTRACTION & MULTI-ARTIST MATCHING
+   Supports multi-artist strings (comma, &, feat, ft, /, with, x),
+   record label channels (T-Series, Sony, VEVO, etc.), and strict
+   penalization of unrelated/different artists.
+   ═══════════════════════════════════════════════════════════════ */
+
+function extractArtists(artistStr) {
+  if (!artistStr || typeof artistStr !== 'string') return [];
+  return artistStr
+    .split(/(?:,|\s+&\s+|\s+feat\.?\s+|\s+ft\.?\s+|\s*\/\s*|\s+with\s+|\s+x\s+)/i)
+    .map(a => a.trim().toLowerCase())
+    .filter(a => a.length > 1);
+}
+
+function calculateArtistMatch(expectedArtistStr, candArtist, candTitle) {
+  if (!expectedArtistStr) return { matchScore: 0.5, isDifferentArtist: false };
+
+  const expectedArtists = extractArtists(expectedArtistStr);
+  if (expectedArtists.length === 0) return { matchScore: 0.5, isDifferentArtist: false };
+
+  const cArtist = (candArtist || '').toLowerCase().trim();
+  const cTitle = (candTitle || '').toLowerCase().trim();
+  const cFull = `${cTitle} ${cArtist}`;
+
+  // 1. Direct inclusion: does candidate title or channel include any expected artist?
+  for (const exp of expectedArtists) {
+    if (cFull.includes(exp)) {
+      return { matchScore: 1.0, isDifferentArtist: false, matchedArtist: exp };
+    }
+  }
+
+  // 2. High string similarity with any expected artist
+  for (const exp of expectedArtists) {
+    const sim = stringSimilarity(exp, cArtist);
+    if (sim >= 0.70) {
+      return { matchScore: sim, isDifferentArtist: false, matchedArtist: exp };
+    }
+  }
+
+  // 3. Official record label channel check
+  const isLabel = /t-series|sony music|zee music|yrf|tips official|universal music|warner music|vevo|topic|records/i.test(cArtist);
+  if (isLabel) {
+    for (const exp of expectedArtists) {
+      const tokens = exp.split(/\s+/).filter(t => t.length > 2);
+      const tokenMatch = tokens.some(t => cTitle.includes(t));
+      if (tokenMatch) {
+        return { matchScore: 0.90, isDifferentArtist: false, matchedArtist: exp };
+      }
+    }
+  }
+
+  // 4. Candidate has an identifiable artist that does NOT match expected artist at all
+  if (cArtist && !isLabel) {
+    return { matchScore: 0.0, isDifferentArtist: true, actualArtist: cArtist };
+  }
+
+  return { matchScore: 0.1, isDifferentArtist: true };
+}
+
+/* ═══════════════════════════════════════════════════════════════
    MODIFIER PENALTIES & VERSION SCORING
    Strongly penalizes slowed, reverb, remix, sped up, nightcore,
    cover, live, mashup, and lofi unless explicitly requested.
@@ -237,7 +297,7 @@ function getRequestedModifiers(query) {
 
 function scoreCandidate(candidate, userQuery, canonical = null) {
   if (!candidate || !candidate.title) {
-    return { finalScore: 0, penalty: 0, penaltyWords: [], baseScore: 0 };
+    return { finalScore: 0, penalty: 0, penaltyWords: [], baseScore: 0, artistMatch: 0, durScore: 0 };
   }
 
   const reqMods = getRequestedModifiers(userQuery);
@@ -250,8 +310,24 @@ function scoreCandidate(candidate, userQuery, canonical = null) {
     if (reqMods.includes(mod)) continue;
     const escaped = mod.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
     if (new RegExp('(?:^|[^a-z0-9])' + escaped + '(?:[^a-z0-9]|$)', 'i').test(candText)) {
-      penalty += 0.45;
+      penalty += 0.50;
       penaltyWords.push(mod);
+    }
+  }
+
+  // Artist check against canonical or user query
+  const expectedArtist = canonical?.artist || (canonical?.canonicalYouTube?.artist) || null;
+  let artistMatch = 0.5;
+  if (expectedArtist) {
+    const artistResult = calculateArtistMatch(expectedArtist, candidate.artist, candidate.title);
+    artistMatch = artistResult.matchScore;
+    if (artistResult.isDifferentArtist) {
+      // Check if user explicitly asked for this different artist in userQuery
+      const queryHasActual = artistResult.actualArtist && userQuery.toLowerCase().includes(artistResult.actualArtist);
+      if (!queryHasActual) {
+        penalty += 0.75;
+        penaltyWords.push('different_artist');
+      }
     }
   }
 
@@ -267,12 +343,18 @@ function scoreCandidate(candidate, userQuery, canonical = null) {
       else if (diff <= 15) durScore = 0.85;
       else if (diff <= 30) durScore = 0.65;
       else if (diff <= 60) durScore = 0.35;
-      else durScore = 0.1;
+      else {
+        durScore = 0.05;
+        penalty += 0.40;
+        penaltyWords.push('duration_mismatch');
+      }
     }
   }
 
   const baseScore = canonical
-    ? (querySim * 0.35 + canonicalSim * 0.35 + durScore * 0.3)
+    ? (expectedArtist
+        ? (querySim * 0.30 + canonicalSim * 0.30 + artistMatch * 0.25 + durScore * 0.15)
+        : (querySim * 0.35 + canonicalSim * 0.35 + durScore * 0.30))
     : querySim;
 
   const finalScore = Math.max(0, baseScore - penalty);
@@ -282,6 +364,8 @@ function scoreCandidate(candidate, userQuery, canonical = null) {
     penalty: Number(penalty.toFixed(2)),
     penaltyWords,
     baseScore: Number(baseScore.toFixed(3)),
+    artistMatch: Number(artistMatch.toFixed(3)),
+    durScore: Number(durScore.toFixed(3)),
   };
 }
 
@@ -538,28 +622,14 @@ function rankYouTubeCandidates(candidates, spotifyTrack) {
   }
 
   const queryMod = getRequestedModifiers(`${spotifyTrack.title} ${spotifyTrack.artist || ''}`);
-  const sTitle = normalize(spotifyTrack.title);
-  const sArtist = normalize(spotifyTrack.artist);
 
   const scored = candidates.map(c => {
-    const candTitle = normalize(c.title);
-    const candArtist = normalize(c.artist);
-    const candFullText = `${candTitle} ${candArtist}`;
-
     // 1. Title Similarity
     const titleSim = stringSimilarity(spotifyTrack.title, c.title);
 
-    // 2. Artist Match
-    let artistMatch = 0;
-    if (sArtist) {
-      if (candArtist.includes(sArtist) || candTitle.includes(sArtist) || sArtist.includes(candArtist)) {
-        artistMatch = 1.0;
-      } else {
-        artistMatch = stringSimilarity(spotifyTrack.artist, c.artist);
-      }
-    } else {
-      artistMatch = 0.5;
-    }
+    // 2. Artist Match using calculateArtistMatch
+    const artistRes = calculateArtistMatch(spotifyTrack.artist, c.artist, c.title);
+    const artistMatch = artistRes.matchScore;
 
     // 3. Duration Score
     const durScore = durationScore(spotifyTrack.durationSec, c.durationSec);
@@ -567,6 +637,7 @@ function rankYouTubeCandidates(candidates, spotifyTrack) {
     // 4. Modifier Penalty (slowed, reverb, remix, cover, live, mashup, etc.)
     let penalty = 0;
     const penaltyWords = [];
+    const candFullText = `${c.title || ''} ${c.artist || ''}`.toLowerCase();
     for (const mod of PENALTY_MODIFIERS) {
       if (queryMod.includes(mod)) continue;
       const escaped = mod.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
@@ -576,7 +647,22 @@ function rankYouTubeCandidates(candidates, spotifyTrack) {
       }
     }
 
-    // 5. Official Preference Bonus
+    // 5. Different Artist Penalty (Requirements 3 & 5)
+    if (artistRes.isDifferentArtist) {
+      penalty += 0.75;
+      penaltyWords.push('different_artist');
+    }
+
+    // 6. Large duration discrepancy penalty (> 60s)
+    if (spotifyTrack.durationSec > 0 && c.durationSec > 0) {
+      const diff = Math.abs(spotifyTrack.durationSec - c.durationSec);
+      if (diff > 60) {
+        penalty += 0.40;
+        penaltyWords.push('duration_mismatch');
+      }
+    }
+
+    // 7. Official Preference Bonus
     let officialBonus = 0;
     if (/official (?:music )?(?:video|audio)/i.test(c.title)) {
       officialBonus += 0.20;
@@ -586,7 +672,7 @@ function rankYouTubeCandidates(candidates, spotifyTrack) {
     }
 
     const baseScore = spotifyTrack.durationSec > 0
-      ? (titleSim * 0.40 + artistMatch * 0.30 + durScore * 0.30 + officialBonus)
+      ? (titleSim * 0.40 + artistMatch * 0.35 + durScore * 0.25 + officialBonus)
       : (titleSim * 0.55 + artistMatch * 0.45 + officialBonus);
 
     const finalScore = Math.max(0, baseScore - penalty);
@@ -600,6 +686,7 @@ function rankYouTubeCandidates(candidates, spotifyTrack) {
       titleSim: Number(titleSim.toFixed(3)),
       artistMatch: Number(artistMatch.toFixed(3)),
       durScore: Number(durScore.toFixed(3)),
+      isDifferentArtist: artistRes.isDifferentArtist,
     };
   });
 
@@ -612,11 +699,15 @@ async function matchSpotifyToYouTube(spotifyTrack) {
     return { success: false, reason: 'Invalid Spotify track metadata', bestCandidate: null };
   }
 
+  // Build high-intent search queries that ALWAYS include both title and original artist
   const queries = [
     `${spotifyTrack.title} ${spotifyTrack.artist || ''} official audio`.trim(),
     `${spotifyTrack.title} ${spotifyTrack.artist || ''}`.trim(),
-    spotifyTrack.title.trim(),
-  ].filter(Boolean);
+    `${spotifyTrack.artist || ''} - ${spotifyTrack.title}`.trim(),
+  ];
+  if (!spotifyTrack.artist) {
+    queries.push(spotifyTrack.title.trim());
+  }
 
   let allCandidates = [];
   const seenUrls = new Set();
@@ -637,7 +728,7 @@ async function matchSpotifyToYouTube(spotifyTrack) {
   if (allCandidates.length === 0) {
     return {
       success: false,
-      reason: `No YouTube videos found matching "${spotifyTrack.title}"`,
+      reason: `No YouTube videos found matching "${spotifyTrack.title}" by ${spotifyTrack.artist || 'Unknown'}`,
       bestCandidate: null,
       candidates: [],
     };
@@ -646,12 +737,18 @@ async function matchSpotifyToYouTube(spotifyTrack) {
   const ranked = rankYouTubeCandidates(allCandidates, spotifyTrack);
   const best = ranked[0];
 
-  const isReliable = best && best.finalScore >= 0.35 && best.penalty === 0;
+  // Requirements 3, 4, 5: Must have high score, matching artist, and zero penalties
+  const hasArtistMatch = !spotifyTrack.artist || (best.artistMatch >= 0.50);
+  const isReliable = best && best.finalScore >= 0.55 && hasArtistMatch && best.penalty === 0;
 
   if (!isReliable) {
+    const reason = best?.penaltyWords?.includes('different_artist')
+      ? `No reliable YouTube version found for "${spotifyTrack.title}" by ${spotifyTrack.artist || 'Unknown'}. Found upload by "${best.artist}" which was rejected as a different artist.`
+      : `No confident official YouTube version found for "${spotifyTrack.title}" by ${spotifyTrack.artist || 'Unknown'}. Top candidate scored ${best?.finalScore || 0}.`;
+
     return {
       success: false,
-      reason: `No confident official YouTube version found for "${spotifyTrack.title}". Top candidate scored ${best?.finalScore || 0}.`,
+      reason,
       bestCandidate: best || null,
       candidates: ranked,
     };
@@ -697,7 +794,7 @@ async function matchPlayableTrack(track) {
   const queries = [
     `${searchTarget} ${track.artist || ''} official audio`,
     `${searchTarget} ${track.artist || ''}`,
-    searchTarget,
+    `${track.title} ${track.artist || ''}`,
   ].filter(Boolean).map(q => q.trim());
 
   let bestMatch = null;
@@ -717,6 +814,7 @@ async function matchPlayableTrack(track) {
       const scoring = scoreCandidate(c, `${track.title} ${track.artist || ''}`, track);
       c._score = scoring.finalScore;
       c._penalty = scoring.penalty;
+      c._artistMatch = scoring.artistMatch;
       allCandidates.push(c);
       if (scoring.finalScore > bestScore) {
         bestScore = scoring.finalScore;
@@ -724,12 +822,18 @@ async function matchPlayableTrack(track) {
       }
     }
 
-    if (bestScore >= 0.65) break; // Good enough on first pass
+    if (bestScore >= 0.70) break; // Confident match found
   }
 
-  if (bestMatch && bestScore > 0.3) {
+  // Strict verification: Do not silently fall back to an unrelated SoundCloud result (Requirement 6)
+  const isSoundCloudReliable = bestMatch
+    && bestScore >= 0.55
+    && (bestMatch._penalty || 0) === 0
+    && (!track.artist || (bestMatch._artistMatch || 0) >= 0.50);
+
+  if (isSoundCloudReliable) {
     const fallbackUrls = allCandidates
-      .filter(c => c.streamUrl && c.streamUrl !== bestMatch.streamUrl && (c._penalty || 0) === 0)
+      .filter(c => c.streamUrl && c.streamUrl !== bestMatch.streamUrl && (c._penalty || 0) === 0 && (!track.artist || (c._artistMatch || 0) >= 0.50))
       .sort((a, b) => (b._score || 0) - (a._score || 0))
       .slice(0, 4)
       .map(c => c.streamUrl);
@@ -738,7 +842,8 @@ async function matchPlayableTrack(track) {
       ...track,
       durationSec:  (track.durationSec && track.durationSec > 0) ? track.durationSec : (bestMatch.durationSec || 0),
       streamUrl:    bestMatch.streamUrl,
-      source:       'soundcloud',
+      matchedSoundCloudTitle: bestMatch.title,
+      matchedSoundCloudArtist: bestMatch.artist,
       matchedTitle: bestMatch.title,
       matchedArtist: bestMatch.artist,
       confidence:   bestScore,
@@ -799,22 +904,31 @@ function createDirectSeekStream(url, seekSec) {
 async function resolveAudioStream(track, seekSeconds = 0, retryCount = 1) {
   // ── Step 1: Resolve streamUrl if not already present ──────────
   if (!track.streamUrl) {
-    if (track.youtubeBlocked || track.source === 'youtube_meta') {
-      // YouTube streaming blocked; try SoundCloud equivalent
+    if (track.source === 'spotify' || track.youtubeBlocked || track.source === 'youtube_meta') {
       const matched = await matchPlayableTrack(track);
       if (!matched.streamUrl) {
         throw new Error(
-          `Direct YouTube audio streaming is blocked by YouTube restrictions. ` +
-          `No matching SoundCloud track was found for "${track.title}".`
+          `No reliable audio match found for "${track.title}" by ${track.artist || 'Unknown'}. ` +
+          `The available versions did not match the original song.`
         );
       }
-      Object.assign(track, matched);
+      track.streamUrl = matched.streamUrl;
+      track.fallbackUrls = matched.fallbackUrls || [];
+      track.matchedTitle = matched.matchedSoundCloudTitle || matched.matchedYouTubeTitle || matched.title;
+      track.matchedArtist = matched.matchedSoundCloudArtist || matched.matchedYouTubeChannel || matched.artist;
+      track.confidence = matched.confidence;
+      if (!track.durationSec && matched.durationSec) track.durationSec = matched.durationSec;
     } else if (track.title) {
       const matched = await matchPlayableTrack(track);
       if (!matched.streamUrl) {
         throw new Error(`No playable audio found for "${track.title}" by ${track.artist || 'Unknown'}.`);
       }
-      Object.assign(track, matched);
+      track.streamUrl = matched.streamUrl;
+      track.fallbackUrls = matched.fallbackUrls || [];
+      track.matchedTitle = matched.matchedSoundCloudTitle || matched.title;
+      track.matchedArtist = matched.matchedSoundCloudArtist || matched.artist;
+      track.confidence = matched.confidence;
+      if (!track.durationSec && matched.durationSec) track.durationSec = matched.durationSec;
     } else {
       throw new Error('Track has no stream URL and no title to search for.');
     }
@@ -944,6 +1058,8 @@ module.exports = {
   stringSimilarity,
   rankYouTubeCandidates,
   matchSpotifyToYouTube,
+  calculateArtistMatch,
+  extractArtists,
 
   // Streaming
   resolveAudioStream,

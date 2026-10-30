@@ -738,7 +738,7 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       if (!ytMatch.success) {
         return {
           success: false,
-          message: `No confident YouTube match found for "${sp.title}" by ${sp.artist || 'Unknown'}. Please provide a direct YouTube link or song title.`,
+          message: `No reliable match found for "${sp.title}" by ${sp.artist || 'Unknown'}. ${ytMatch.reason || 'The available versions did not match the original song.'}`,
         };
       }
       tracksToAdd = [{
@@ -752,12 +752,13 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
         matchedYouTubeTitle: ytMatch.matchedTitle,
         matchedYouTubeChannel: ytMatch.matchedArtist,
         matchedTitle: ytMatch.matchedTitle,
+        matchedArtist: ytMatch.matchedArtist,
         requestedBy: user.id,
         source: 'spotify',
         spotifyUrl: sp.spotifyUrl,
         confidence: ytMatch.confidence,
       }];
-      sourceNote = `Spotify track matched to YouTube: "${ytMatch.matchedTitle}"`;
+      sourceNote = `Spotify track matched to YouTube: "${ytMatch.matchedTitle}" by ${ytMatch.matchedArtist || 'Artist'}`;
     } else {
       tracksToAdd = spotifyRes.tracks.map(t => ({
         title: t.title,

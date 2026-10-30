@@ -60,8 +60,8 @@ function renderPlayerCard(session, { compact = false } = {}) {
 
   const sourceLabels = {
     soundcloud: '🟠 SoundCloud (Direct Audio)',
-    spotify: '🟢 Spotify (Metadata Match) → SoundCloud Alternative',
-    youtube_meta: '🔴 YouTube (Metadata Match) → SoundCloud Alternative',
+    spotify: '🟢 Spotify (Original Match)',
+    youtube_meta: '🔴 YouTube (Original Match)',
     direct: '🌐 Direct Stream',
     idle: '⚪ None',
   };
@@ -77,6 +77,13 @@ function renderPlayerCard(session, { compact = false } = {}) {
   const titleLink = track.spotifyUrl || track.streamUrl || track.youtubeUrl || null;
   const titleDisplay = titleLink ? `[${track.title.slice(0, 180)}](${titleLink})` : track.title.slice(0, 200);
 
+  let matchedDisplay = '';
+  if (track.matchedTitle && (track.matchedTitle !== track.title || (track.matchedArtist && track.matchedArtist !== track.artist))) {
+    const artistPart = track.matchedArtist ? ` by **${track.matchedArtist}**` : '';
+    const matchPct = track.confidence ? ` (${Math.round(track.confidence * 100)}% match)` : '';
+    matchedDisplay = `• **Matched Stream:** "${track.matchedTitle}"${artistPart}${matchPct}\n`;
+  }
+
   const embed = new EmbedBuilder()
     .setColor(embedColor)
     .setAuthor({
@@ -89,13 +96,13 @@ function renderPlayerCard(session, { compact = false } = {}) {
     })
     .setTitle(titleDisplay)
     .setDescription(
-      `👤 **Artist / Uploader:** ${track.artist || 'Unknown'}\n` +
+      `👤 **Artist / Uploader:** **${track.artist || 'Unknown'}**\n` +
       `⏱️ \`${formatTime(elapsedSec)}\` ${progressBar} \`${formatTime(durationSec)}\`\n\n` +
       `**📊 Current Session**\n` +
       `• **Status:** \`${isPaused ? 'Paused' : isPlaying ? 'Playing' : 'Idle'}\` | **Volume:** \`${session?.volume || 100}%\` | **Loop:** \`${loopStr}\`\n` +
       `• **Queue:** \`${session?.queue?.length || 0} track(s)\` | **Voice Assistant:** \`${voiceState}\`\n` +
       `• **Source:** ${sourceStr}\n` +
-      (track.matchedTitle ? `• **Stream Alternative:** "${track.matchedTitle}" (${Math.round((track.confidence || 0) * 100)}% match)\n` : '') +
+      matchedDisplay +
       `• **Requested by:** ${track.requestedBy ? `<@${track.requestedBy}>` : 'System'}`
     )
     .setFooter({

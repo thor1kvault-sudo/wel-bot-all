@@ -208,3 +208,126 @@ test('SY-7: Playback state transitions accurately and tracks loop modes', () => 
 
   musicService.destroySession('guild_sy7_loop_test', true);
 });
+
+// ─────────────────────────────────────────────────────────────
+// 4. Exact Artist Matching & Enna Sona Mismatch Regression Tests
+// ─────────────────────────────────────────────────────────────
+
+test('SY-8: Enna Sona by Arijit Singh rejects Enna Sona by Mitraz (never match on title alone)', () => {
+  const spotifyTrack = {
+    title: 'Enna Sona',
+    artist: 'Arijit Singh, A.R. Rahman',
+    durationSec: 213,
+  };
+
+  const candidates = [
+    {
+      title: 'Enna Sona',
+      artist: 'Mitraz',
+      durationSec: 195,
+      youtubeUrl: 'https://youtube.com/watch?v=mitraz_enna_sona',
+    },
+    {
+      title: 'Enna Sona | OK Jaanu | Arijit Singh | Shraddha Kapoor | Aditya Roy Kapur',
+      artist: 'T-Series',
+      durationSec: 213,
+      youtubeUrl: 'https://youtube.com/watch?v=official_enna_sona',
+    },
+    {
+      title: 'Enna Sona (Official Audio) - Arijit Singh',
+      artist: 'Sony Music India',
+      durationSec: 215,
+      youtubeUrl: 'https://youtube.com/watch?v=sony_enna_sona',
+    },
+  ];
+
+  const ranked = audioProvider.rankYouTubeCandidates(candidates, spotifyTrack);
+  assert.strictEqual(ranked.length, 3);
+
+  // Top candidate MUST be an authentic upload with Arijit Singh
+  const top = ranked[0];
+  assert.notStrictEqual(top.artist, 'Mitraz', 'Mitraz MUST NOT be selected when Arijit Singh was requested');
+  assert.ok(top.youtubeUrl.includes('official_enna_sona') || top.youtubeUrl.includes('sony_enna_sona'));
+  assert.strictEqual(top.penalty, 0, 'Official upload should have 0 penalty');
+  assert.ok(top.finalScore > 0.70, `Expected authentic upload score > 0.70, got ${top.finalScore}`);
+
+  // Mitraz candidate MUST be penalized as a different artist
+  const mitraz = ranked.find(c => c.artist === 'Mitraz');
+  assert.ok(mitraz.penalty >= 0.75, 'Different artist (Mitraz) must receive different_artist penalty (>= 0.75)');
+  assert.ok(mitraz.penaltyWords.includes('different_artist'), 'Penalty words must include different_artist');
+  assert.strictEqual(mitraz.finalScore, 0, 'Different artist finalScore must be reduced to 0');
+});
+
+test('SY-9: calculateArtistMatch accurately handles multi-artist strings, labels, and different artists', () => {
+  const { calculateArtistMatch } = audioProvider;
+
+  // 1. Multi-artist comma-separated with label channel
+  const resLabel = calculateArtistMatch(
+    'Arijit Singh, A.R. Rahman',
+    'T-Series',
+    'Enna Sona | OK Jaanu | Arijit Singh | Shraddha Kapoor'
+  );
+  assert.strictEqual(resLabel.isDifferentArtist, false);
+  assert.ok(resLabel.matchScore >= 0.90);
+
+  // 2. Completely different artist
+  const resDifferent = calculateArtistMatch(
+    'Arijit Singh, A.R. Rahman',
+    'Mitraz',
+    'Enna Sona'
+  );
+  assert.strictEqual(resDifferent.isDifferentArtist, true);
+  assert.strictEqual(resDifferent.matchScore, 0.0);
+
+  // 3. Exact artist match
+  const resExact = calculateArtistMatch('The Weeknd', 'The Weeknd', 'Blinding Lights (Official Video)');
+  assert.strictEqual(resExact.isDifferentArtist, false);
+  assert.strictEqual(resExact.matchScore, 1.0);
+});
+
+test('SY-10: scoreCandidate rejects SoundCloud candidate when artist does not match canonical', () => {
+  const canonical = {
+    title: 'Enna Sona',
+    artist: 'Arijit Singh, A.R. Rahman',
+    durationSec: 213,
+  };
+
+  const mitrazCandidate = {
+    title: 'Enna Sona',
+    artist: 'Mitraz',
+    durationSec: 195,
+  };
+
+  const authenticCandidate = {
+    title: 'Enna Sona (From "OK Jaanu")',
+    artist: 'Arijit Singh',
+    durationSec: 213,
+  };
+
+  const sMitraz = audioProvider.scoreCandidate(mitrazCandidate, 'Enna Sona', canonical);
+  const sAuthentic = audioProvider.scoreCandidate(authenticCandidate, 'Enna Sona', canonical);
+
+  assert.ok(sMitraz.penalty >= 0.75, 'Mitraz must receive different_artist penalty');
+  assert.ok(sMitraz.penaltyWords.includes('different_artist'));
+  assert.strictEqual(sMitraz.finalScore, 0, 'Mitraz score must be 0');
+
+  assert.strictEqual(sAuthentic.penalty, 0, 'Authentic candidate must have 0 penalty');
+  assert.ok(sAuthentic.finalScore > 0.70, 'Authentic candidate score should be high');
+});
+
+test('SY-11: resolveSpotify extracts exact title, artist, and duration for tracks without credentials', async () => {
+  const { resolveSpotify } = require('../src/music/spotifyResolver');
+  const trackUrl = 'https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC';
+
+  const res = await resolveSpotify(trackUrl);
+  assert.ok(res, 'resolveSpotify should return non-null result');
+  assert.strictEqual(res.type, 'track');
+  assert.strictEqual(res.tracks.length, 1);
+
+  const t = res.tracks[0];
+  assert.strictEqual(t.title, 'Never Gonna Give You Up');
+  assert.strictEqual(t.artist, 'Rick Astley');
+  assert.ok(t.durationSec >= 210 && t.durationSec <= 216, `Expected ~213s duration, got ${t.durationSec}`);
+  assert.ok(t.thumbnail && t.thumbnail.startsWith('https://'), 'Must extract thumbnail URL');
+});
+

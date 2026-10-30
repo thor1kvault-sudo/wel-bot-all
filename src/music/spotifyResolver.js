@@ -197,26 +197,64 @@ async function resolveSpotify(spotifyUrl, maxTracks = 50) {
     } catch (_) {}
   }
 
-  // ── 2. ZERO-CONFIG PUBLIC FALLBACK (oEmbed + Open Embed Scrape) ──
+  // ── 2. ZERO-CONFIG PUBLIC FALLBACK (Open Embed Scrape + oEmbed) ──
   if (type === 'track') {
     try {
+      // 2A. Primary: Scrape Spotify Embed HTML for exact title, artist list, duration, and cover
+      const embedHtml = await fetchHttpsHtml(`https://open.spotify.com/embed/track/${id}`);
+      const match = embedHtml.match(/<script id="__NEXT_DATA__"[^>]*>([^<]+)<\/script>/);
+      if (match) {
+        const parsedData = JSON.parse(match[1]);
+        const entity = parsedData?.props?.pageProps?.state?.data?.entity;
+        if (entity && (entity.title || entity.name)) {
+          const trackTitle = entity.title || entity.name;
+          let trackArtist = '';
+          if (Array.isArray(entity.artists) && entity.artists.length > 0) {
+            trackArtist = entity.artists.map(a => a.name).filter(Boolean).join(', ');
+          } else if (entity.subtitle) {
+            trackArtist = entity.subtitle;
+          }
+
+          const durSec = Math.round((entity.duration || 0) / 1000);
+          const thumb = entity.visualIdentity?.image?.[0]?.url || entity.coverArt?.sources?.[0]?.url || null;
+
+          return {
+            type: 'track',
+            name: trackTitle,
+            totalTracks: 1,
+            tracks: [{
+              title: trackTitle,
+              artist: trackArtist || 'Unknown Artist',
+              album: entity.album?.name || '',
+              durationSec: durSec,
+              thumbnail: thumb,
+              query: `${trackTitle} ${trackArtist}`.trim(),
+              spotifyUrl: cleanUrl,
+            }],
+          };
+        }
+      }
+
+      // 2B. Secondary: Public oEmbed API
       const oembed = await fetchHttpsJson(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
       if (oembed && oembed.title) {
-        // oEmbed title format is usually "Title" or "Artist - Title"
         let title = oembed.title;
-        let artist = oembed.author_name || 'Spotify Artist';
-        if (title.includes(' - ')) {
+        let artist = oembed.author_name || '';
+
+        // Only split on ' - ' if author_name was not provided
+        if (!artist && title.includes(' - ')) {
           const parts = title.split(' - ');
           artist = parts[0].trim();
           title = parts.slice(1).join(' - ').trim();
         }
+
         return {
           type: 'track',
           name: title,
           totalTracks: 1,
           tracks: [{
             title,
-            artist,
+            artist: artist || 'Unknown Artist',
             album: '',
             durationSec: 0,
             thumbnail: oembed.thumbnail_url || null,
