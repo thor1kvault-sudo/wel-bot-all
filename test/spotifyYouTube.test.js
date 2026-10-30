@@ -1,4 +1,5 @@
 'use strict';
+process.env.NODE_ENV = 'test';
 
 /**
  * THOR APEX — Spotify to YouTube Matching & Audio Engine Test Suite
@@ -330,4 +331,174 @@ test('SY-11: resolveSpotify extracts exact title, artist, and duration for track
   assert.ok(t.durationSec >= 210 && t.durationSec <= 216, `Expected ~213s duration, got ${t.durationSec}`);
   assert.ok(t.thumbnail && t.thumbnail.startsWith('https://'), 'Must extract thumbnail URL');
 });
+
+// ─────────────────────────────────────────────────────────────
+// 5. Regional, Unicode, and Query Variation Regression Tests
+// ─────────────────────────────────────────────────────────────
+
+test('SY-12: Aakhya Mai Aakh Ghali Jo Bairan by Sheesha matches official video without crashing', async () => {
+  const spotifyTrack = {
+    title: 'Aakhya Mai Aakh Ghali Jo Bairan',
+    artist: 'Sheesha',
+    album: 'Sheesha',
+    durationSec: 199,
+  };
+
+  const candidates = [
+    {
+      title: 'SHEESHA | Aakhya Mai Aakh Ghali Jo Bairan | Mitta Ror Ft. Swara Verma | Viral Song 2026',
+      artist: 'Mitta Ror',
+      durationSec: 199,
+      youtubeUrl: 'https://www.youtube.com/watch?v=official_sheesha_song',
+    },
+    {
+      title: 'Sheesha (Official Music Video) | Mitta Ror ft. Swara Verma | Sorab Bedi | Niharika Tiwari',
+      artist: 'Sony Music India and Mitta Ror',
+      durationSec: 195,
+      youtubeUrl: 'https://www.youtube.com/watch?v=sony_sheesha_video',
+    },
+    {
+      title: 'Random Haryanvi Dance Mix 2026',
+      artist: 'DJ Mix Master',
+      durationSec: 300,
+      youtubeUrl: 'https://www.youtube.com/watch?v=random_remix_mix',
+    },
+  ];
+
+  const ranked = audioProvider.rankYouTubeCandidates(candidates, spotifyTrack);
+  assert.strictEqual(ranked.length, 3);
+
+  // Top candidate must be the authentic release with Sheesha and Aakhya Mai Aakh Ghali Jo Bairan
+  const top = ranked[0];
+  assert.strictEqual(top.youtubeUrl, 'https://www.youtube.com/watch?v=official_sheesha_song');
+  assert.strictEqual(top.penalty, 0, 'Authentic upload must have 0 penalty');
+  assert.ok(top.finalScore > 0.85, `Expected score > 0.85, got ${top.finalScore}`);
+  assert.strictEqual(top.artistMatch, 1.0, 'Sheesha in title must yield 1.0 artist match');
+});
+
+test('SY-13: Tamil and Hindi regional track matching preserves Unicode and scores authentic videos', () => {
+  // Tamil test case: கண்ணழகா (Kannazhaga) by Anirudh
+  const tamilTrack = {
+    title: 'கண்ணழகா',
+    artist: 'Anirudh Ravichander, Dhanush',
+    durationSec: 205,
+  };
+
+  const tamilCandidates = [
+    {
+      title: '3 - Kannazhaga | கண்ணழகா Video | Dhanush, Shruti | Anirudh',
+      artist: 'SonyMusicSouthVEVO',
+      durationSec: 205,
+      youtubeUrl: 'https://www.youtube.com/watch?v=kannazhaga_vevo',
+    },
+    {
+      title: 'Random Tamil Song 2026',
+      artist: 'Unknown Artist',
+      durationSec: 260,
+      youtubeUrl: 'https://www.youtube.com/watch?v=random_tamil',
+    },
+  ];
+
+  const rankedTamil = audioProvider.rankYouTubeCandidates(tamilCandidates, tamilTrack);
+  assert.strictEqual(rankedTamil[0].youtubeUrl, 'https://www.youtube.com/watch?v=kannazhaga_vevo');
+  assert.strictEqual(rankedTamil[0].penalty, 0);
+  assert.ok(rankedTamil[0].finalScore > 0.70);
+
+  // Hindi Unicode test case: तुझे देखा तो ये जाना सनम
+  const hindiTrack = {
+    title: 'तुझे देखा तो ये जाना सनम',
+    artist: 'Kumar Sanu, Lata Mangeshkar',
+    durationSec: 314,
+  };
+
+  const hindiCandidates = [
+    {
+      title: 'Tujhe Dekha Toh Song | तुझे देखा तो ये जाना सनम | Dilwale Dulhania Le Jayenge | Lata, Kumar Sanu',
+      artist: 'YRF',
+      durationSec: 314,
+      youtubeUrl: 'https://www.youtube.com/watch?v=ddlj_yrf_song',
+    },
+    {
+      title: 'Slowed Reverb Hits 2026',
+      artist: 'DJ Chill',
+      durationSec: 350,
+      youtubeUrl: 'https://www.youtube.com/watch?v=slowed_hindi',
+    },
+  ];
+
+  const rankedHindi = audioProvider.rankYouTubeCandidates(hindiCandidates, hindiTrack);
+  assert.strictEqual(rankedHindi[0].youtubeUrl, 'https://www.youtube.com/watch?v=ddlj_yrf_song');
+  assert.strictEqual(rankedHindi[0].penalty, 0);
+  assert.ok(rankedHindi[0].finalScore > 0.75);
+});
+
+test('SY-14: searchYouTubeHtml performs fast, reliable search without playdl browseId crashes', async () => {
+  const { searchYouTubeHtml } = audioProvider;
+  assert.strictEqual(typeof searchYouTubeHtml, 'function');
+
+  const results = await searchYouTubeHtml('Aakhya Mai Aakh Ghali Jo Bairan Sheesha', 5);
+  assert.ok(Array.isArray(results), 'Must return array of candidates');
+  assert.ok(results.length >= 1, `Expected at least 1 candidate, got ${results.length}`);
+
+  const first = results[0];
+  assert.ok(first.title && first.title.length > 0);
+  assert.ok(first.youtubeUrl && first.youtubeUrl.startsWith('https://www.youtube.com/watch?v='));
+  assert.ok(typeof first.durationSec === 'number');
+});
+
+test('SY-15: Medium confidence triggers candidate selection menu while low confidence rejects cleanly', async () => {
+  // Test medium confidence candidate ranking
+  const spTrack = {
+    title: 'Obscure Regional Track',
+    artist: 'Emerging Singer',
+    durationSec: 180,
+  };
+
+  // Candidates with moderate title/artist agreement (between 0.40 and 0.58)
+  const medCandidates = [
+    {
+      title: 'Obscure Regional Melody',
+      artist: 'Emerging Singer Official',
+      durationSec: 185,
+      youtubeUrl: 'https://www.youtube.com/watch?v=candidate_1',
+    },
+    {
+      title: 'Obscure Regional Live Session',
+      artist: 'Emerging Singer',
+      durationSec: 182,
+      youtubeUrl: 'https://www.youtube.com/watch?v=candidate_2',
+    },
+  ];
+
+  const ranked = audioProvider.rankYouTubeCandidates(medCandidates, spTrack);
+  assert.ok(ranked.length >= 2);
+  assert.strictEqual(ranked[0].isDifferentArtist, false);
+
+  // Low confidence candidate (< 0.40)
+  const lowCandidate = [
+    {
+      title: 'Totally Unrelated Song',
+      artist: 'Different Artist',
+      durationSec: 300,
+      youtubeUrl: 'https://www.youtube.com/watch?v=low_1',
+    },
+  ];
+  const rankedLow = audioProvider.rankYouTubeCandidates(lowCandidate, spTrack);
+  assert.ok(rankedLow[0].finalScore < 0.40);
+  assert.strictEqual(rankedLow[0].isDifferentArtist, true);
+
+  // Different artist candidate penalty check
+  const diffArtistCand = [
+    {
+      title: 'Obscure Regional Track',
+      artist: 'Completely Unrelated Band',
+      durationSec: 180,
+      youtubeUrl: 'https://www.youtube.com/watch?v=diff_1',
+    },
+  ];
+  const rankedDiff = audioProvider.rankYouTubeCandidates(diffArtistCand, spTrack);
+  assert.strictEqual(rankedDiff[0].isDifferentArtist, true);
+  assert.ok(rankedDiff[0].penalty >= 0.75);
+});
+
 

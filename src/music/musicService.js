@@ -152,6 +152,7 @@ function destroySession(guildId, force = false) {
 
   if (session.connection) {
     try {
+      session.connection.removeAllListeners();
       session.connection.destroy();
     } catch (_) {}
     session.connection = null;
@@ -736,6 +737,14 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       const sp = spotifyRes.tracks[0];
       const ytMatch = await matchSpotifyToYouTube(sp);
       if (!ytMatch.success) {
+        if (ytMatch.requiresChoice && ytMatch.candidates?.length > 0) {
+          return {
+            success: false,
+            requiresChoice: true,
+            candidates: ytMatch.candidates.slice(0, 3),
+            message: ytMatch.reason || `Found multiple possible versions for "${sp.title}". Please select your preferred version below:`,
+          };
+        }
         return {
           success: false,
           message: `No reliable match found for "${sp.title}" by ${sp.artist || 'Unknown'}. ${ytMatch.reason || 'The available versions did not match the original song.'}`,

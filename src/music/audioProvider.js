@@ -22,6 +22,7 @@
  */
 
 const { spawn }    = require('child_process');
+const https        = require('https');
 const { StreamType } = require('@discordjs/voice');
 const playdl       = require('play-dl');
 
@@ -162,7 +163,7 @@ async function refreshSoundCloudClient() {
 
 function normalize(str) {
   if (!str) return '';
-  return str.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+  return str.toLowerCase().replace(/[^\p{L}\p{N}\p{M}\s]/gu, '').trim();
 }
 
 function stringSimilarity(a, b) {
@@ -428,9 +429,82 @@ async function searchSoundCloud(query, limit = 5) {
    YOUTUBE METADATA (search only — streaming is BLOCKED)
    Note: We use YouTube metadata to find the right track, then
    match it against SoundCloud for actual audio playback.
+   Includes direct HTML scraping to protect against play-dl browseId
+   crashes and HTTP header overflows on regional/short content.
    ═══════════════════════════════════════════════════════════════ */
 
+function searchYouTubeHtml(query, limit = 5) {
+  return new Promise((resolve) => {
+    const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    const req = https.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      timeout: 4500,
+    }, (res) => {
+      let html = '';
+      res.on('data', c => html += c);
+      res.on('end', () => {
+        const match = html.match(/var ytInitialData\s*=\s*({.+?});<\/script>/);
+        if (!match) return resolve([]);
+        try {
+          const data = JSON.parse(match[1]);
+          const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents;
+          if (!contents || !Array.isArray(contents)) return resolve([]);
+
+          const videos = [];
+          for (const sec of contents) {
+            const itemSection = sec.itemSectionRenderer?.contents;
+            if (!itemSection || !Array.isArray(itemSection)) continue;
+            for (const item of itemSection) {
+              const vr = item.videoRenderer;
+              if (vr && vr.videoId && vr.title?.runs?.[0]?.text) {
+                const title = vr.title.runs.map(r => r.text).join('');
+                const channel = vr.ownerText?.runs?.[0]?.text || vr.shortBylineText?.runs?.[0]?.text || '';
+                const durationText = vr.lengthText?.simpleText || '';
+                let durationSec = 0;
+                if (durationText) {
+                  const parts = durationText.split(':').map(Number);
+                  if (parts.length === 2) durationSec = parts[0] * 60 + parts[1];
+                  else if (parts.length === 3) durationSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+                }
+                const thumbs = vr.thumbnail?.thumbnails || [];
+                const thumbnail = thumbs[thumbs.length - 1]?.url || thumbs[0]?.url || null;
+                videos.push({
+                  title,
+                  artist: channel,
+                  durationSec,
+                  thumbnail,
+                  youtubeUrl: `https://www.youtube.com/watch?v=${vr.videoId}`,
+                  source: 'youtube_meta',
+                });
+                if (videos.length >= limit) break;
+              }
+            }
+            if (videos.length >= limit) break;
+          }
+          resolve(videos);
+        } catch (_) {
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.on('timeout', function() { this.destroy(); resolve([]); });
+  });
+}
+
 async function getYouTubeMetadata(query, limit = 5) {
+  // 1. Primary: Fast, direct HTML scrape (handles regional songs, Unicode, and avoids playdl browseId bug)
+  try {
+    const htmlResults = await searchYouTubeHtml(query, limit);
+    if (htmlResults && htmlResults.length > 0) {
+      return htmlResults;
+    }
+  } catch (_) {}
+
+  // 2. Secondary fallback via playdl
   try {
     let t;
     const searchPromise = playdl.search(query, { source: { youtube: 'video' }, limit });
@@ -441,18 +515,19 @@ async function getYouTubeMetadata(query, limit = 5) {
     const results = await Promise.race([searchPromise, timeoutPromise]);
     if (t) clearTimeout(t);
 
-    if (!results || results.length === 0) return [];
-    return results.map(r => ({
-      title:       r.title             || query,
-      artist:      r.channel?.name     || 'YouTube',
-      durationSec: r.durationInSec     || 0,
-      thumbnail:   r.thumbnails?.[0]?.url || null,
-      youtubeUrl:  r.url,
-      source:      'youtube_meta',      // metadata only — NOT streamable directly
-    }));
-  } catch (_) {
-    return [];
-  }
+    if (results && results.length > 0) {
+      return results.map(r => ({
+        title:       r.title             || query,
+        artist:      r.channel?.name     || 'YouTube',
+        durationSec: r.durationInSec     || 0,
+        thumbnail:   r.thumbnails?.[0]?.url || null,
+        youtubeUrl:  r.url,
+        source:      'youtube_meta',      // metadata only — NOT streamable directly
+      }));
+    }
+  } catch (_) {}
+
+  return [];
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -699,15 +774,26 @@ async function matchSpotifyToYouTube(spotifyTrack) {
     return { success: false, reason: 'Invalid Spotify track metadata', bestCandidate: null };
   }
 
-  // Build high-intent search queries that ALWAYS include both title and original artist
+  // Build high-intent search queries that cover exact title, artist, album, and clean variations
   const queries = [
     `${spotifyTrack.title} ${spotifyTrack.artist || ''} official audio`.trim(),
     `${spotifyTrack.title} ${spotifyTrack.artist || ''}`.trim(),
     `${spotifyTrack.artist || ''} - ${spotifyTrack.title}`.trim(),
   ];
-  if (!spotifyTrack.artist) {
-    queries.push(spotifyTrack.title.trim());
+
+  if (spotifyTrack.album && spotifyTrack.album !== spotifyTrack.title && spotifyTrack.album !== spotifyTrack.artist) {
+    queries.push(`${spotifyTrack.title} ${spotifyTrack.album}`.trim());
+    queries.push(`${spotifyTrack.album} ${spotifyTrack.title}`.trim());
   }
+
+  // Clean title without parentheses/brackets (e.g. "Enna Sona (From \"OK Jaanu\")" -> "Enna Sona")
+  const cleanTitle = spotifyTrack.title.replace(/\s*[\(\[\{][^\)\]\}]+[\)\]\}]\s*/g, ' ').trim();
+  if (cleanTitle && cleanTitle.toLowerCase() !== spotifyTrack.title.toLowerCase()) {
+    queries.push(`${cleanTitle} ${spotifyTrack.artist || ''}`.trim());
+    queries.push(`${cleanTitle} official audio`.trim());
+  }
+
+  queries.push(spotifyTrack.title.trim());
 
   let allCandidates = [];
   const seenUrls = new Set();
@@ -721,7 +807,7 @@ async function matchSpotifyToYouTube(spotifyTrack) {
           allCandidates.push(r);
         }
       }
-      if (allCandidates.length >= 8) break;
+      if (allCandidates.length >= 10) break; // Collect at least 10 candidates across search variations
     } catch (_) {}
   }
 
@@ -737,32 +823,48 @@ async function matchSpotifyToYouTube(spotifyTrack) {
   const ranked = rankYouTubeCandidates(allCandidates, spotifyTrack);
   const best = ranked[0];
 
-  // Requirements 3, 4, 5: Must have high score, matching artist, and zero penalties
-  const hasArtistMatch = !spotifyTrack.artist || (best.artistMatch >= 0.50);
-  const isReliable = best && best.finalScore >= 0.55 && hasArtistMatch && best.penalty === 0;
+  // Requirements 3 & 4:
+  // Strong agreement: high score, matching artist or containment, zero penalties
+  const hasArtistMatch = !spotifyTrack.artist || (best.artistMatch >= 0.40);
+  const isHighConfidence = best && best.finalScore >= 0.58 && hasArtistMatch && best.penalty === 0;
 
-  if (!isReliable) {
-    const reason = best?.penaltyWords?.includes('different_artist')
-      ? `No reliable YouTube version found for "${spotifyTrack.title}" by ${spotifyTrack.artist || 'Unknown'}. Found upload by "${best.artist}" which was rejected as a different artist.`
-      : `No confident official YouTube version found for "${spotifyTrack.title}" by ${spotifyTrack.artist || 'Unknown'}. Top candidate scored ${best?.finalScore || 0}.`;
-
+  if (isHighConfidence) {
     return {
-      success: false,
-      reason,
-      bestCandidate: best || null,
+      success: true,
+      requiresChoice: false,
+      bestCandidate: best,
+      youtubeUrl: best.youtubeUrl,
+      matchedTitle: best.title,
+      matchedArtist: best.artist,
+      durationSec: (spotifyTrack.durationSec && spotifyTrack.durationSec > 0) ? spotifyTrack.durationSec : best.durationSec,
+      thumbnail: best.thumbnail || spotifyTrack.thumbnail,
+      confidence: best.finalScore,
       candidates: ranked,
     };
   }
 
+  // Medium confidence: candidate has reasonable match without different-artist penalty (show best 3 for user choice)
+  const cleanCandidates = ranked.filter(c => (c.penalty || 0) === 0 && !c.isDifferentArtist);
+  const isMediumConfidence = best && best.finalScore >= 0.40 && (best.penalty || 0) === 0 && cleanCandidates.length > 0;
+
+  if (isMediumConfidence) {
+    return {
+      success: false,
+      requiresChoice: true,
+      bestCandidate: best,
+      candidates: cleanCandidates.slice(0, 3),
+      reason: `Found multiple possible versions for "${spotifyTrack.title}" by ${spotifyTrack.artist || 'Unknown'}. Please select your preferred version below:`,
+    };
+  }
+
+  // Low confidence: do not play a random song or use unrelated fallback
   return {
-    success: true,
-    bestCandidate: best,
-    youtubeUrl: best.youtubeUrl,
-    matchedTitle: best.title,
-    matchedArtist: best.artist,
-    durationSec: (spotifyTrack.durationSec && spotifyTrack.durationSec > 0) ? spotifyTrack.durationSec : best.durationSec,
-    thumbnail: best.thumbnail || spotifyTrack.thumbnail,
-    confidence: best.finalScore,
+    success: false,
+    requiresChoice: false,
+    reason: best?.penaltyWords?.includes('different_artist')
+      ? `No reliable YouTube version found for "${spotifyTrack.title}" by ${spotifyTrack.artist || 'Unknown'}. Found upload by "${best.artist}" which was rejected as a different artist.`
+      : `No confident official YouTube version found for "${spotifyTrack.title}" by ${spotifyTrack.artist || 'Unknown'}. Top candidate scored ${best?.finalScore || 0}.`,
+    bestCandidate: best || null,
     candidates: ranked,
   };
 }
@@ -1048,6 +1150,7 @@ module.exports = {
   searchAudioTracks,
   searchSoundCloud,
   getYouTubeMetadata,
+  searchYouTubeHtml,
 
   // Matching & Scoring
   PENALTY_MODIFIERS,
