@@ -1,0 +1,12 @@
+services:
+  - type: pserv
+    name: thor-apex-lavalink
+    runtime: docker
+    dockerfilePath: lavalink/Dockerfile
+    dockerContext: lavalink
+    plan: starter
+    envVars:
+      - key: PORT
+        value: 2333
+      - key: LAVALINK_SERVER_PASSWORD
+        generateValue: true

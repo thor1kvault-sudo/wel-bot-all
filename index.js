@@ -83,6 +83,8 @@ let isPlayDlReady = false;
 // ── New musicService (multi-guild isolated, Rythm-style) ──
 let musicService = null;
 try { musicService = require('./src/music/musicService'); } catch (e) { console.log('musicService:', e.message); }
+let lavalinkManager = null;
+try { lavalinkManager = require('./src/music/lavalinkManager'); } catch (e) { console.log('lavalinkManager:', e.message); }
 
 async function ensurePlayDlReady() {
   if (!playdl || isPlayDlReady) return;
@@ -432,6 +434,13 @@ async function startBot() {
 
   client.on('error', err => console.error(redactSecrets(`[Discord Client Error]: ${err?.message || err}`)));
   client.on('warn',  info => console.warn(redactSecrets(`[Discord Client Warn]: ${info}`)));
+
+  // ── Lavalink 4.2.2 Engine Initialization ──
+  try {
+    if (lavalinkManager) lavalinkManager.initLavalink(client);
+  } catch (err) {
+    console.error('[THOR-LAVALINK] Initialization error:', err.message);
+  }
 
   // ── Voice Gateway Packet Forwarder & Safe Diagnostics ──
   // Ensures VOICE_SERVER_UPDATE and VOICE_STATE_UPDATE packets are always dispatched

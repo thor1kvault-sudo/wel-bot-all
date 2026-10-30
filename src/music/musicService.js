@@ -46,10 +46,12 @@ const { isSpotifyUrl, resolveSpotify } = require('./spotifyResolver');
 const {
   searchAudioTracks, matchPlayableTrack, resolveAudioStream,
   ensureClientReady, isYouTubeUrl, matchSpotifyToYouTube,
+  extractVideoId,
 } = require('./audioProvider');
 const { renderPlayerCard } = require('./musicPlayerCard');
 const { logIncident } = require('./musicUpdateMonitor');
 const voiceAssistant = require('./voiceAssistant');
+const lavalinkManager = require('./lavalinkManager');
 
 // Multi-guild isolated playback sessions
 const sessions = new Map();
@@ -85,6 +87,7 @@ function getSession(guildId, guildName = 'Server') {
       textChannel: null,
       connection: null,
       player: null,
+      lavalinkPlayer: null,
       currentTrack: null,
       currentResource: null,
       queue: [],
@@ -104,6 +107,9 @@ function getSession(guildId, guildName = 'Server') {
       reconnectTimeout: null,
       voiceAssistant: voiceAssistant.getVoiceState(guildId),
       getPlaybackSeconds() {
+        if (this.lavalinkPlayer && typeof this.lavalinkPlayer.position === 'number' && this.lavalinkPlayer.position > 0) {
+          return Math.floor(this.lavalinkPlayer.position / 1000);
+        }
         if (!this.isPlaying || !this.startTime) return 0;
         const now = this.isPaused ? this.pauseTime : Date.now();
         const elapsedMs = Math.max(0, now - this.startTime - this.totalPausedMs);
@@ -148,6 +154,12 @@ function destroySession(guildId, force = false) {
   if (session.player) {
     try { session.player.stop(true); } catch (_) {}
     session.player = null;
+  }
+
+  if (session.lavalinkPlayer) {
+    try { session.lavalinkPlayer.stopTrack(); } catch (_) {}
+    session.lavalinkPlayer = null;
+    try { lavalinkManager.leaveVoice(guildId); } catch (_) {}
   }
 
   if (session.connection) {
@@ -204,6 +216,89 @@ function handleTrackEnded(guildId) {
   }
 
   playNext(guildId);
+}
+
+/**
+ * Attempts playback of the next verified full-length candidate if the current YouTube stream fails.
+ * Protects against premature termination, infinite loops, and 30s preview fallbacks.
+ */
+async function tryFallbackCandidate(guildId, track) {
+  const session = sessions.get(guildId);
+  if (!session || !session.lavalinkPlayer || !track) return false;
+
+  track._attemptedUrls = track._attemptedUrls || new Set();
+  if (track.youtubeUrl) track._attemptedUrls.add(track.youtubeUrl);
+  if (track.lavalinkTrack?.info?.uri) track._attemptedUrls.add(track.lavalinkTrack.info.uri);
+
+  track._fallbackRetries = (track._fallbackRetries || 0) + 1;
+  if (track._fallbackRetries > 4) {
+    console.warn(`[THOR-LAVALINK] Reached max candidate retries (4) for "${track.title}".`);
+    return false;
+  }
+
+  let nextCand = null;
+  if (Array.isArray(track.fallbackCandidates) && track.fallbackCandidates.length > 0) {
+    while (track.fallbackCandidates.length > 0) {
+      const cand = track.fallbackCandidates.shift();
+      const url = cand.youtubeUrl || cand.uri || cand.url;
+      if (url && !track._attemptedUrls.has(url)) {
+        nextCand = cand;
+        break;
+      }
+    }
+  }
+
+  if (!nextCand && Array.isArray(track.fallbackUrls) && track.fallbackUrls.length > 0) {
+    while (track.fallbackUrls.length > 0) {
+      const url = track.fallbackUrls.shift();
+      if (url && !track._attemptedUrls.has(url)) {
+        nextCand = { youtubeUrl: url };
+        break;
+      }
+    }
+  }
+
+  if (!nextCand) {
+    console.warn(`[THOR-LAVALINK] No remaining verified full-length candidates for "${track.title}".`);
+    return false;
+  }
+
+  const nextUrl = nextCand.youtubeUrl || nextCand.url;
+  track._attemptedUrls.add(nextUrl);
+
+  console.log(`[THOR-LAVALINK Fallback] Attempting next verified candidate for "${track.title}": "${nextCand.title || nextUrl}" (${nextUrl})`);
+
+  try {
+    let chosen = nextCand.lavalinkTrack || null;
+    let encoded = nextCand.encoded || null;
+
+    if (!encoded) {
+      const res = await lavalinkManager.resolveTrack(nextUrl);
+      if (res && res.tracks && res.tracks.length > 0) {
+        chosen = res.tracks[0];
+        encoded = chosen.encoded;
+      }
+    }
+
+    if (encoded) {
+      track.encoded = encoded;
+      track.lavalinkTrack = chosen;
+      track.youtubeUrl = nextUrl;
+      if (chosen?.info?.title) track.matchedTitle = chosen.info.title;
+      if (chosen?.info?.author) track.matchedArtist = chosen.info.author;
+      if (chosen?.info?.length) track.durationSec = Math.round(chosen.info.length / 1000);
+
+      await session.lavalinkPlayer.playTrack({ track: { encoded } });
+      console.log(`[THOR-LAVALINK Fallback] Successfully switched to candidate "${track.matchedTitle || track.title}"`);
+      updatePlayerCardMessage(session);
+      return true;
+    }
+  } catch (err) {
+    console.error(`[THOR-LAVALINK Fallback] Candidate "${nextUrl}" failed: ${err.message}`);
+    return tryFallbackCandidate(guildId, track);
+  }
+
+  return false;
 }
 
 /**
@@ -274,14 +369,108 @@ async function playNext(guildId) {
       try {
         const ytMatch = await matchSpotifyToYouTube(track);
         if (ytMatch.success) {
+          track.provider = 'youtube';
           track.youtubeUrl = ytMatch.youtubeUrl;
+          track.youtubeVideoId = extractVideoId(ytMatch.youtubeUrl);
           track.matchedYouTubeTitle = ytMatch.matchedTitle;
           track.matchedYouTubeChannel = ytMatch.matchedArtist;
           track.matchedTitle = ytMatch.matchedTitle;
-          track.durationSec = ytMatch.durationSec || track.durationSec;
-          track.thumbnail = ytMatch.thumbnail || track.thumbnail;
+          track.matchedArtist = ytMatch.matchedArtist;
+          track.matchedCandidate = {
+            title: ytMatch.matchedTitle,
+            channel: ytMatch.matchedArtist,
+            youtubeUrl: ytMatch.youtubeUrl,
+            durationSec: ytMatch.durationSec,
+            videoId: track.youtubeVideoId,
+          };
+          if (!track.durationSec && ytMatch.durationSec) {
+            track.durationSec = ytMatch.durationSec;
+          }
+          if (!track.thumbnail && ytMatch.thumbnail) {
+            track.thumbnail = ytMatch.thumbnail;
+          }
         }
       } catch (_) {}
+    }
+
+    // ── Lavalink 4.2.2 Playback Pipeline ──
+    if (session.lavalinkPlayer) {
+      try {
+        if (!track.encoded) {
+          const lIdentifier = track.youtubeUrl || `${track.title} ${track.artist || ''}`.trim();
+          const lRes = await lavalinkManager.resolveTrack(track.youtubeUrl ? track.youtubeUrl : `ytsearch:${lIdentifier}`);
+          if (lRes && lRes.tracks && lRes.tracks.length > 0) {
+            // Filter out short previews, snippets, and YouTube Shorts
+            const validTracks = lRes.tracks.filter(t => {
+              const durSec = Math.round((t.info?.length || 0) / 1000);
+              const isShort = durSec > 0 && durSec <= 45;
+              const hasShortsTag = /(?:#shorts|\bshorts\b|\bteaser\b|\bsnippet\b|\bpreview\b)/i.test(t.info?.title || '');
+              return !isShort && !hasShortsTag;
+            });
+            const chosen = validTracks[0] || lRes.tracks[0];
+            track.encoded = chosen.encoded;
+            track.lavalinkTrack = chosen;
+            if (chosen.info?.length) {
+              track.durationSec = Math.round(chosen.info.length / 1000);
+            }
+            if (chosen.info?.uri && !track.youtubeUrl) {
+              track.youtubeUrl = chosen.info.uri;
+            }
+            if (!track.fallbackCandidates || track.fallbackCandidates.length === 0) {
+              track.fallbackCandidates = validTracks.slice(1, 5).map(vt => ({
+                title: vt.info?.title,
+                artist: vt.info?.author,
+                durationSec: Math.round((vt.info?.length || 0) / 1000),
+                youtubeUrl: vt.info?.uri,
+                encoded: vt.encoded,
+                lavalinkTrack: vt,
+              }));
+              track.fallbackUrls = track.fallbackCandidates.map(c => c.youtubeUrl).filter(Boolean);
+            }
+          }
+        }
+
+        if (track.encoded) {
+          const lInfo = track.lavalinkTrack?.info || {};
+          console.log(`[THOR-LAVALINK] Streaming "${track.title}" via Lavalink 4.2.2...`);
+          console.log(`[THOR-LAVALINK DIAG] Diagnostics:
+  - Requested Song: "${track.title}" (Original Artist: "${track.artist || 'Unknown'}")
+  - Spotify Expected Duration: ${track.spotifyExpectedDurationSec ? track.spotifyExpectedDurationSec + 's' : 'N/A'}
+  - Selected YouTube Video: "${lInfo.title || track.matchedTitle || track.title}"
+  - Channel / Author: "${lInfo.author || track.matchedArtist || 'Unknown'}"
+  - YouTube URL: "${lInfo.uri || track.youtubeUrl || 'N/A'}"
+  - Selected Duration: ${lInfo.length || ((track.durationSec || 0) * 1000)}ms (${track.durationSec}s)
+  - Lavalink Source: "${lInfo.sourceName || 'youtube'}" | isStream: ${Boolean(lInfo.isStream)} | isSeekable: ${Boolean(lInfo.isSeekable)}
+  - Actual Playback Position: ${session.lavalinkPlayer?.position || 0}ms`);
+
+          // Safe: playTrack with clean payload - NO accidental endTime or startTime restriction
+          await session.lavalinkPlayer.playTrack({ track: { encoded: track.encoded } });
+          if (session.volume && session.lavalinkPlayer && typeof session.lavalinkPlayer.setGlobalVolume === 'function') {
+            try { session.lavalinkPlayer.setGlobalVolume(session.volume); } catch (_) {}
+          }
+          session.recoveryAttempts = 0;
+          session.consecutiveFailures = 0;
+
+          if (session.textChannel) {
+            try {
+              const card = await renderPlayerCard(session);
+              if (session.playerMessage) {
+                await session.playerMessage.edit(card).catch(() => {});
+              } else {
+                session.playerMessage = await session.textChannel.send(card).catch(() => null);
+              }
+            } catch (_) {}
+          }
+          return;
+        }
+      } catch (lavalinkErr) {
+        if (!sessions.has(guildId) || !session.isPlaying) return;
+        console.warn(`[THOR-LAVALINK] Stream failed for "${track.title}": ${lavalinkErr.message}. Attempting fallback candidate.`);
+        const fallbackOk = await tryFallbackCandidate(guildId, track);
+        if (fallbackOk) return;
+        if (!sessions.has(guildId) || !session.isPlaying) return;
+        console.warn(`[THOR-LAVALINK] All Lavalink candidates failed for "${track.title}". Falling back to direct audio.`);
+      }
     }
 
     console.log(`[THOR-AUDIO] Resolving audio stream for "${track.title}" (source: ${track.source || 'unknown'})...`);
@@ -537,6 +726,85 @@ async function ensureVoiceConnection(guild, vc) {
     }
   }
 
+  // 2b. Lavalink 4.2.2 Engine Integration
+  if (lavalinkManager.isLavalinkReady()) {
+    try {
+      if (!session.lavalinkPlayer || session.lavalinkPlayer.channelId !== vc.id) {
+        const player = await lavalinkManager.joinVoice({
+          guildId: guild.id,
+          channelId: vc.id,
+          shardId: guild.shardId || 0,
+          deaf: true,
+        });
+
+        session.lavalinkPlayer = player;
+        session.detailedStatus = 'connected_ready';
+        session.reconnectAttempts = 0;
+        session.lastError = null;
+
+        if (typeof player.removeAllListeners === 'function') {
+          player.removeAllListeners('start');
+          player.removeAllListeners('end');
+          player.removeAllListeners('exception');
+          player.removeAllListeners('stuck');
+          player.removeAllListeners('closed');
+        }
+
+        player.on('start', () => {
+          session.isPlaying = true;
+          session.isPaused = false;
+          session.startTime = Date.now();
+          session.totalPausedMs = 0;
+          session.pauseTime = 0;
+          console.log(`[THOR-LAVALINK Event: TrackStartEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Position: ${player.position || 0}ms`);
+          updatePlayerCardMessage(session);
+        });
+
+        player.on('end', async (data) => {
+          const reason = data?.reason || 'finished';
+          console.log(`[THOR-LAVALINK Event: TrackEndEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Reason: "${reason}" | Final Position: ${player.position || 0}ms`);
+
+          if (reason === 'replaced') return;
+          if (reason === 'stopped') {
+            session.isPlaying = false;
+            return;
+          }
+
+          if (reason === 'loadFailed') {
+            console.warn(`[THOR-LAVALINK] TrackEndEvent with loadFailed for "${session.currentTrack?.title}". Attempting fallback candidate.`);
+            const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
+            if (fallbackOk) return;
+          }
+
+          handleTrackEnded(guild.id);
+        });
+
+        player.on('exception', async (data) => {
+          const exc = data?.exception || {};
+          console.error(`[THOR-LAVALINK Event: TrackExceptionEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Severity: ${exc.severity || 'UNKNOWN'} | Message: ${exc.message || data} | Cause: ${exc.cause || 'none'}`);
+          const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
+          if (fallbackOk) return;
+          handleTrackEnded(guild.id);
+        });
+
+        player.on('stuck', async (data) => {
+          console.warn(`[THOR-LAVALINK Event: TrackStuckEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Threshold: ${data?.thresholdMs}ms | Current Position: ${player.position || 0}ms`);
+          const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
+          if (fallbackOk) return;
+          handleTrackEnded(guild.id);
+        });
+
+        player.on('closed', (data) => {
+          console.warn(`[THOR-LAVALINK Event: WebSocketClosedEvent] Guild ${guild.id} | Code: ${data?.code} | Reason: "${data?.reason}" | ByRemote: ${Boolean(data?.byRemote)}`);
+        });
+      }
+
+      return { success: true, connection: session.connection || { state: { status: 'ready' } }, lavalink: true };
+    } catch (lavalinkErr) {
+      console.warn(`[THOR-LAVALINK] Join voice failed: ${lavalinkErr.message}. Falling back to direct audio.`);
+    }
+  }
+
   // 3. Establish Voice Connection with high-resolution state diagnostics
   try {
     session.detailedStatus = 'connecting';
@@ -720,8 +988,11 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       streamUrl: exactTrack.streamUrl || null,
       requestedBy: user.id,
       source: exactTrack.source || 'selection',
+      provider: exactTrack.provider || (exactTrack.youtubeUrl || isYouTubeUrl(exactTrack.streamUrl) ? 'youtube' : (exactTrack.source === 'spotify' ? 'youtube' : 'soundcloud')),
       spotifyUrl: exactTrack.spotifyUrl || null,
       youtubeUrl: exactTrack.youtubeUrl || null,
+      youtubeVideoId: exactTrack.youtubeVideoId || (exactTrack.youtubeUrl ? extractVideoId(exactTrack.youtubeUrl) : null),
+      matchedCandidate: exactTrack.matchedCandidate || null,
       fallbackUrls: exactTrack.fallbackUrls || [],
     }];
   } else if (isSpotifyUrl(query)) {
@@ -754,14 +1025,26 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
         title: sp.title,
         artist: sp.artist,
         album: sp.album,
-        durationSec: ytMatch.durationSec,
-        thumbnail: ytMatch.thumbnail || sp.thumbnail,
+        durationSec: ytMatch.durationSec || sp.durationSec,
+        spotifyExpectedDurationSec: sp.durationSec || null,
+        thumbnail: sp.thumbnail || ytMatch.thumbnail,
         streamUrl: null,
+        provider: 'youtube',
         youtubeUrl: ytMatch.youtubeUrl,
+        youtubeVideoId: extractVideoId(ytMatch.youtubeUrl),
         matchedYouTubeTitle: ytMatch.matchedTitle,
         matchedYouTubeChannel: ytMatch.matchedArtist,
         matchedTitle: ytMatch.matchedTitle,
         matchedArtist: ytMatch.matchedArtist,
+        matchedCandidate: {
+          title: ytMatch.matchedTitle,
+          channel: ytMatch.matchedArtist,
+          youtubeUrl: ytMatch.youtubeUrl,
+          durationSec: ytMatch.durationSec,
+          videoId: extractVideoId(ytMatch.youtubeUrl),
+        },
+        fallbackUrls: ytMatch.fallbackUrls || [],
+        fallbackCandidates: ytMatch.fallbackCandidates || [],
         requestedBy: user.id,
         source: 'spotify',
         spotifyUrl: sp.spotifyUrl,
@@ -776,6 +1059,7 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
         durationSec: t.durationSec,
         thumbnail: t.thumbnail,
         streamUrl: null,
+        provider: 'youtube',
         requestedBy: user.id,
         source: 'spotify',
         spotifyUrl: t.spotifyUrl,
@@ -787,6 +1071,7 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       return { success: false, message: `Could not resolve YouTube link "${query}".` };
     }
     const ytMeta = searchRes[0];
+    const ytUrl = ytMeta.youtubeUrl || query;
     tracksToAdd = [{
       title: ytMeta.title,
       artist: ytMeta.artist,
@@ -794,13 +1079,22 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       durationSec: ytMeta.durationSec,
       thumbnail: ytMeta.thumbnail,
       streamUrl: null,
-      youtubeUrl: ytMeta.youtubeUrl || query,
+      provider: 'youtube',
+      youtubeUrl: ytUrl,
+      youtubeVideoId: extractVideoId(ytUrl),
+      matchedCandidate: {
+        title: ytMeta.title,
+        channel: ytMeta.artist,
+        youtubeUrl: ytUrl,
+        durationSec: ytMeta.durationSec,
+        videoId: extractVideoId(ytUrl),
+      },
       requestedBy: user.id,
-      source: 'youtube_meta',
-      youtubeBlocked: true,
+      source: 'youtube',
       fallbackUrls: ytMeta.fallbackUrls || [],
+      fallbackCandidates: ytMeta.fallbackCandidates || [],
     }];
-    sourceNote = 'YouTube link recognized. Direct YouTube audio extraction in Discord is blocked by YouTube restrictions; streaming authorized SoundCloud equivalent.';
+    sourceNote = `YouTube track: "${ytMeta.title}" (${ytUrl})`;
   } else {
     // Ordinary Search or direct link
     const searchRes = await searchAudioTracks(query, 5);
@@ -825,27 +1119,68 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       album: '',
       durationSec: best.durationSec,
       thumbnail: best.thumbnail,
-      streamUrl: best.streamUrl,
+      streamUrl: best.streamUrl || null,
       requestedBy: user.id,
-      source: best.source,
+      source: best.source || 'youtube',
+      provider: best.provider || (best.source === 'soundcloud' ? 'soundcloud' : 'youtube'),
       youtubeUrl: best.youtubeUrl || null,
+      youtubeVideoId: best.youtubeVideoId || (best.youtubeUrl ? extractVideoId(best.youtubeUrl) : null),
+      matchedCandidate: best.matchedCandidate || null,
       fallbackUrls: best.fallbackUrls || [],
+      fallbackCandidates: best.fallbackCandidates || [],
     }];
   }
 
   // 5. Pre-validate playback stream when starting fresh playback on an idle player
   // Per Requirement B: Validate provider can start playback before announcing success!
   if (!session.isPlaying && tracksToAdd.length > 0) {
-    try {
-      const preResolved = await resolveAudioStream(tracksToAdd[0]);
-      tracksToAdd[0]._preResolved = preResolved;
-    } catch (err) {
-      session.isPlaying = false;
-      session.currentTrack = null;
-      return {
-        success: false,
-        message: `Playback stream verification failed for "${tracksToAdd[0].title}": ${err.message}`,
-      };
+    if (session.lavalinkPlayer || lavalinkManager.isLavalinkReady()) {
+      if (!tracksToAdd[0].encoded) {
+        try {
+          const lId = tracksToAdd[0].youtubeUrl || `${tracksToAdd[0].title} ${tracksToAdd[0].artist || ''}`.trim();
+          const lRes = await lavalinkManager.resolveTrack(tracksToAdd[0].youtubeUrl ? tracksToAdd[0].youtubeUrl : `ytsearch:${lId}`);
+          if (lRes && lRes.tracks && lRes.tracks.length > 0) {
+            const validTracks = lRes.tracks.filter(t => {
+              const durSec = Math.round((t.info?.length || 0) / 1000);
+              const isShort = durSec > 0 && durSec <= 45;
+              const hasShortsTag = /(?:#shorts|\bshorts\b|\bteaser\b|\bsnippet\b|\bpreview\b)/i.test(t.info?.title || '');
+              return !isShort && !hasShortsTag;
+            });
+            const chosen = validTracks[0] || lRes.tracks[0];
+            tracksToAdd[0].encoded = chosen.encoded;
+            tracksToAdd[0].lavalinkTrack = chosen;
+            if (chosen.info?.length) {
+              tracksToAdd[0].durationSec = Math.round(chosen.info.length / 1000);
+            }
+            if (chosen.info?.uri && !tracksToAdd[0].youtubeUrl) {
+              tracksToAdd[0].youtubeUrl = chosen.info.uri;
+            }
+            if (!tracksToAdd[0].fallbackCandidates || tracksToAdd[0].fallbackCandidates.length === 0) {
+              tracksToAdd[0].fallbackCandidates = validTracks.slice(1, 5).map(vt => ({
+                title: vt.info?.title,
+                artist: vt.info?.author,
+                durationSec: Math.round((vt.info?.length || 0) / 1000),
+                youtubeUrl: vt.info?.uri,
+                encoded: vt.encoded,
+                lavalinkTrack: vt,
+              }));
+              tracksToAdd[0].fallbackUrls = tracksToAdd[0].fallbackCandidates.map(c => c.youtubeUrl).filter(Boolean);
+            }
+          }
+        } catch (_) {}
+      }
+    } else {
+      try {
+        const preResolved = await resolveAudioStream(tracksToAdd[0]);
+        tracksToAdd[0]._preResolved = preResolved;
+      } catch (err) {
+        session.isPlaying = false;
+        session.currentTrack = null;
+        return {
+          success: false,
+          message: `Playback stream verification failed for "${tracksToAdd[0].title}": ${err.message}`,
+        };
+      }
     }
   }
 
@@ -883,8 +1218,13 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
  */
 function pause(guildId) {
   const session = sessions.get(guildId);
-  if (!session || !session.player || !session.isPlaying || session.isPaused) return false;
-  session.player.pause();
+  if (!session || (!session.player && !session.lavalinkPlayer) || !session.isPlaying || session.isPaused) return false;
+  if (session.lavalinkPlayer && typeof session.lavalinkPlayer.setPaused === 'function') {
+    try { session.lavalinkPlayer.setPaused(true); } catch (_) {}
+  }
+  if (session.player) {
+    session.player.pause();
+  }
   session.isPaused = true;
   session.pauseTime = Date.now();
   updatePlayerCardMessage(session);
@@ -896,8 +1236,13 @@ function pause(guildId) {
  */
 function resume(guildId) {
   const session = sessions.get(guildId);
-  if (!session || !session.player || !session.isPaused) return false;
-  session.player.unpause();
+  if (!session || (!session.player && !session.lavalinkPlayer) || !session.isPaused) return false;
+  if (session.lavalinkPlayer && typeof session.lavalinkPlayer.setPaused === 'function') {
+    try { session.lavalinkPlayer.setPaused(false); } catch (_) {}
+  }
+  if (session.player) {
+    session.player.unpause();
+  }
   session.isPaused = false;
   if (session.pauseTime) {
     session.totalPausedMs += Date.now() - session.pauseTime;
@@ -914,6 +1259,9 @@ function skip(guildId) {
   const session = sessions.get(guildId);
   if (!session || !session.isPlaying) return null;
   const skipped = session.currentTrack;
+  if (session.lavalinkPlayer && typeof session.lavalinkPlayer.stopTrack === 'function') {
+    try { session.lavalinkPlayer.stopTrack(); } catch (_) {}
+  }
   handleTrackEnded(guildId);
   return skipped;
 }
@@ -927,6 +1275,9 @@ function playPrevious(guildId) {
   const prev = session.history.shift();
   if (prev) {
     session.queue.unshift(prev);
+    if (session.lavalinkPlayer && typeof session.lavalinkPlayer.stopTrack === 'function') {
+      try { session.lavalinkPlayer.stopTrack(); } catch (_) {}
+    }
     handleTrackEnded(guildId);
     return prev;
   }
@@ -964,6 +1315,9 @@ function setVolume(guildId, level) {
   const session = sessions.get(guildId);
   if (!session) return 100;
   session.volume = Math.max(1, Math.min(100, level));
+  if (session.lavalinkPlayer && typeof session.lavalinkPlayer.setGlobalVolume === 'function') {
+    try { session.lavalinkPlayer.setGlobalVolume(session.volume); } catch (_) {}
+  }
   if (session.currentResource?.volume) {
     session.currentResource.volume.setVolume(session.volume / 100);
   }
@@ -1020,7 +1374,7 @@ function clearQueue(guildId) {
  */
 async function seek(guildId, targetSeconds) {
   const session = sessions.get(guildId);
-  if (!session || !session.currentTrack || !session.isPlaying || !session.player) {
+  if (!session || !session.currentTrack || !session.isPlaying || (!session.player && !session.lavalinkPlayer)) {
     return { success: false, message: 'Nothing is currently playing to seek in.' };
   }
 
@@ -1031,6 +1385,22 @@ async function seek(guildId, targetSeconds) {
       success: false,
       message: `Seek timestamp exceeds track duration (${Math.floor(dur / 60)}:${String(dur % 60).padStart(2, '0')}).`,
     };
+  }
+
+  if (session.lavalinkPlayer && typeof session.lavalinkPlayer.seekTo === 'function') {
+    try {
+      await session.lavalinkPlayer.seekTo(targetSeconds * 1000);
+      session.startTime = Date.now() - (targetSeconds * 1000);
+      session.totalPausedMs = 0;
+      session.pauseTime = 0;
+      session.isPaused = false;
+      await updatePlayerCardMessage(session);
+      logIncident('INFO', 'SEEK_LAVALINK', `Seeked to ${targetSeconds}s via Lavalink in "${track.title}" (guild ${guildId})`);
+      return { success: true, targetSeconds, track };
+    } catch (err) {
+      logIncident('ERROR', 'SEEK_LAVALINK_ERROR', `Failed to seek in "${track.title}" via Lavalink: ${err.message}`);
+      return { success: false, message: `Could not seek: ${err.message}` };
+    }
   }
 
   try {
@@ -1309,6 +1679,7 @@ module.exports = {
   clearQueue,
   seek,
   handleTrackEnded,
+  tryFallbackCandidate,
   updatePlayerCardMessage,
   enable247,
   disable247,

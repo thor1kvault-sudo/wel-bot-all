@@ -52,15 +52,19 @@ function renderPlayerCard(session, { compact = false } = {}) {
   const isPlaying = Boolean(session?.isPlaying && !session?.isPaused);
   const isPaused = Boolean(session?.isPaused);
   const elapsedSec = session?.getPlaybackSeconds ? session.getPlaybackSeconds() : 0;
-  const durationSec = track.durationSec || 0;
+  const durationSec = (track.durationSec && track.durationSec > 0)
+    ? track.durationSec
+    : (track.lavalinkTrack?.info?.length ? Math.round(track.lavalinkTrack.info.length / 1000) : 0);
   const progressBar = renderProgressBar(elapsedSec, durationSec);
 
   const loopLabels = { off: 'Off', track: '🔂 Track', queue: '🔁 Queue' };
   const loopStr = loopLabels[session?.loopMode] || 'Off';
 
   const sourceLabels = {
+    lavalink: '🟣 Lavalink 4.2.2 (High-Fidelity)',
     soundcloud: '🟠 SoundCloud (Direct Audio)',
     spotify: '🟢 Spotify (Original Match)',
+    youtube: '🔴 YouTube (Direct Audio)',
     youtube_meta: '🔴 YouTube (Original Match)',
     direct: '🌐 Direct Stream',
     idle: '⚪ None',
@@ -74,15 +78,23 @@ function renderPlayerCard(session, { compact = false } = {}) {
 
   const voiceState = session?.voiceAssistant?.enabled ? '🟢 Active ("Hey Apex")' : '⚪ Disabled';
 
-  const titleLink = track.spotifyUrl || track.streamUrl || track.youtubeUrl || null;
+  // Actual YouTube source link
+  const ytSourceUrl = track.youtubeUrl || track.lavalinkTrack?.info?.uri || null;
+  const titleLink = ytSourceUrl || track.spotifyUrl || track.streamUrl || null;
   const titleDisplay = titleLink ? `[${track.title.slice(0, 180)}](${titleLink})` : track.title.slice(0, 200);
+
+  const engineStatus = session?.lavalinkPlayer
+    ? '🟣 Lavalink 4.2.2 (Connected / Ready)'
+    : (session?.connection?.state?.status === 'ready' ? '🟢 Direct Audio (Active)' : '⚪ Initializing');
 
   let matchedDisplay = '';
   if (track.matchedTitle && (track.matchedTitle !== track.title || (track.matchedArtist && track.matchedArtist !== track.artist))) {
     const artistPart = track.matchedArtist ? ` by **${track.matchedArtist}**` : '';
     const matchPct = track.confidence ? ` (${Math.round(track.confidence * 100)}% match)` : '';
-    matchedDisplay = `• **Matched Stream:** "${track.matchedTitle}"${artistPart}${matchPct}\n`;
+    matchedDisplay = `• **Matched Track:** "${track.matchedTitle}"${artistPart}${matchPct}\n`;
   }
+
+  const ytDisplay = ytSourceUrl ? `• **YouTube Source:** [Watch Original Full Song](${ytSourceUrl})\n` : '';
 
   const embed = new EmbedBuilder()
     .setColor(embedColor)
@@ -100,8 +112,10 @@ function renderPlayerCard(session, { compact = false } = {}) {
       `⏱️ \`${formatTime(elapsedSec)}\` ${progressBar} \`${formatTime(durationSec)}\`\n\n` +
       `**📊 Current Session**\n` +
       `• **Status:** \`${isPaused ? 'Paused' : isPlaying ? 'Playing' : 'Idle'}\` | **Volume:** \`${session?.volume || 100}%\` | **Loop:** \`${loopStr}\`\n` +
+      `• **Engine:** \`${engineStatus}\`\n` +
       `• **Queue:** \`${session?.queue?.length || 0} track(s)\` | **Voice Assistant:** \`${voiceState}\`\n` +
       `• **Source:** ${sourceStr}\n` +
+      ytDisplay +
       matchedDisplay +
       `• **Requested by:** ${track.requestedBy ? `<@${track.requestedBy}>` : 'System'}`
     )

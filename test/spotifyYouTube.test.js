@@ -436,7 +436,10 @@ test('SY-14: searchYouTubeHtml performs fast, reliable search without playdl bro
   const { searchYouTubeHtml } = audioProvider;
   assert.strictEqual(typeof searchYouTubeHtml, 'function');
 
-  const results = await searchYouTubeHtml('Aakhya Mai Aakh Ghali Jo Bairan Sheesha', 5);
+  let results = await searchYouTubeHtml('Aakhya Mai Aakh Ghali Jo Bairan Sheesha', 5);
+  if (!results || results.length === 0) {
+    results = await searchYouTubeHtml('Aakhya Mai Aakh Ghali Jo Bairan Sheesha', 5);
+  }
   assert.ok(Array.isArray(results), 'Must return array of candidates');
   assert.ok(results.length >= 1, `Expected at least 1 candidate, got ${results.length}`);
 
@@ -500,5 +503,189 @@ test('SY-15: Medium confidence triggers candidate selection menu while low confi
   assert.strictEqual(rankedDiff[0].isDifferentArtist, true);
   assert.ok(rankedDiff[0].penalty >= 0.75);
 });
+
+// ─────────────────────────────────────────────────────────────
+// 5. Playback Pipeline & Candidate Version Regressions
+// ─────────────────────────────────────────────────────────────
+
+test('SY-16: Sheesha YouTube match does not invoke SoundCloud extraction', async () => {
+  const sheeshaTrack = {
+    title: 'Aakhya Mai Aakh Ghali Jo Bairan',
+    artist: 'Sheesha',
+    durationSec: 180,
+    source: 'spotify',
+    spotifyUrl: 'https://open.spotify.com/track/sheesha_test_123',
+    youtubeUrl: 'https://www.youtube.com/watch?v=i52TYO13Nyg',
+  };
+
+  let soundCloudCalled = false;
+  audioProvider._setStreamFunction(async () => {
+    soundCloudCalled = true;
+    throw new Error('SoundCloud should NEVER be called for YouTube candidate!');
+  });
+
+  let youtubeStreamUrl = null;
+  audioProvider._setYouTubeStreamFunction(async (url) => {
+    youtubeStreamUrl = url;
+    const { Readable } = require('stream');
+    const s = new Readable({ read() { this.push(null); } });
+    return { stream: s, type: 'arbitrary' };
+  });
+
+  try {
+    const res = await audioProvider.resolveAudioStream(sheeshaTrack);
+    assert.strictEqual(soundCloudCalled, false, 'SoundCloud stream must NOT be invoked for YouTube match');
+    assert.strictEqual(youtubeStreamUrl, 'https://www.youtube.com/watch?v=i52TYO13Nyg');
+    assert.strictEqual(sheeshaTrack.provider, 'youtube');
+    assert.strictEqual(sheeshaTrack.youtubeVideoId, 'i52TYO13Nyg');
+    assert.strictEqual(sheeshaTrack.title, 'Aakhya Mai Aakh Ghali Jo Bairan', 'Spotify title must remain canonical');
+    assert.strictEqual(sheeshaTrack.artist, 'Sheesha', 'Spotify artist must remain canonical');
+    assert.strictEqual(res.source, 'youtube');
+    assert.strictEqual(res.provider, 'youtube');
+  } finally {
+    audioProvider._setStreamFunction(null);
+    audioProvider._setYouTubeStreamFunction(null);
+  }
+});
+
+test('SY-17: YouTube stream extraction failure returns a clear error without routing to SoundCloud', async () => {
+  const sheeshaTrack = {
+    title: 'Aakhya Mai Aakh Ghali Jo Bairan',
+    artist: 'Sheesha',
+    durationSec: 180,
+    source: 'spotify',
+    spotifyUrl: 'https://open.spotify.com/track/sheesha_fail_test',
+    youtubeUrl: 'https://www.youtube.com/watch?v=i52TYO13Nyg',
+  };
+
+  let soundCloudCalled = false;
+  audioProvider._setStreamFunction(async () => {
+    soundCloudCalled = true;
+    return { stream: null };
+  });
+
+  audioProvider._setYouTubeStreamFunction(async () => {
+    throw new Error('All YouTube audio extraction providers failed (play-dl: Invalid URL; ytdl-core: Failed to find any playable formats; yt-stream: 400)');
+  });
+
+  try {
+    await assert.rejects(
+      async () => audioProvider.resolveAudioStream(sheeshaTrack, 0, 0),
+      (err) => {
+        assert.ok(err.message.includes('YouTube audio stream extraction failed'), `Expected YouTube failure message, got: ${err.message}`);
+        assert.ok(!err.message.includes('SoundCloud stream failed'), 'Must NOT report SoundCloud stream failed');
+        assert.ok(!err.message.includes('HTTP 404'), 'Must NOT report SoundCloud 404 error');
+        return true;
+      }
+    );
+    assert.strictEqual(soundCloudCalled, false, 'SoundCloud stream must not be invoked as fallback for YouTube extraction failure');
+  } finally {
+    audioProvider._setStreamFunction(null);
+    audioProvider._setYouTubeStreamFunction(null);
+  }
+});
+
+test('SY-18: Enna Sona rejects Mitraz version due to incorrect artist', () => {
+  const ennaSonaTrack = {
+    title: 'Enna Sona',
+    artist: 'A.R. Rahman, Arijit Singh',
+    durationSec: 213,
+  };
+
+  const candidates = [
+    { title: 'Enna Sona', artist: 'Mitraz', durationSec: 213, youtubeUrl: 'https://youtube.com/watch?v=mitraz_enna_sona' },
+    { title: 'Enna Sona - Official Music Video | OK Jaanu | Arijit Singh', artist: 'Sony Music India', durationSec: 221, youtubeUrl: 'https://youtube.com/watch?v=official_enna_sona' },
+  ];
+
+  const ranked = audioProvider.rankYouTubeCandidates(candidates, ennaSonaTrack);
+  assert.strictEqual(ranked[0].youtubeUrl, 'https://youtube.com/watch?v=official_enna_sona');
+
+  const mitrazCand = ranked.find(c => c.artist === 'Mitraz');
+  assert.ok(mitrazCand, 'Mitraz candidate must be found in ranked results');
+  assert.strictEqual(mitrazCand.isDifferentArtist, true);
+  assert.ok(mitrazCand.penalty >= 0.75);
+  assert.ok(mitrazCand.penaltyWords.includes('different_artist'));
+
+  // Clean candidates must strictly exclude Mitraz
+  const cleanCandidates = ranked.filter(c => (c.penalty || 0) === 0 && !c.isDifferentArtist);
+  assert.strictEqual(cleanCandidates.length, 1);
+  assert.strictEqual(cleanCandidates[0].youtubeUrl, 'https://youtube.com/watch?v=official_enna_sona');
+});
+
+test('SY-19: Enna Sona rejects 30-second previews as full songs', () => {
+  const ennaSonaTrack = {
+    title: 'Enna Sona',
+    artist: 'A.R. Rahman, Arijit Singh',
+    durationSec: 213,
+  };
+
+  const candidates = [
+    { title: 'Enna Sona - AR Rahman 30 Second Teaser Preview', artist: 'A.R. Rahman', durationSec: 30, youtubeUrl: 'https://youtube.com/watch?v=teaser_30s' },
+    { title: 'Enna Sona (Official Audio) - OK Jaanu', artist: 'A.R. Rahman, Arijit Singh', durationSec: 214, youtubeUrl: 'https://youtube.com/watch?v=full_song' },
+  ];
+
+  const ranked = audioProvider.rankYouTubeCandidates(candidates, ennaSonaTrack);
+  assert.strictEqual(ranked[0].youtubeUrl, 'https://youtube.com/watch?v=full_song');
+
+  const previewCand = ranked.find(c => c.durationSec === 30);
+  assert.ok(previewCand, '30-second candidate must be evaluated');
+  assert.strictEqual(previewCand.durScore, 0.0);
+  assert.ok(previewCand.penalty >= 1.0);
+  assert.ok(previewCand.penaltyWords.includes('short_preview'));
+
+  // Clean candidates must exclude short preview
+  const cleanCandidates = ranked.filter(c => (c.penalty || 0) === 0 && !c.isDifferentArtist && c.durationSec > 45);
+  assert.strictEqual(cleanCandidates.length, 1);
+  assert.strictEqual(cleanCandidates[0].youtubeUrl, 'https://youtube.com/watch?v=full_song');
+});
+
+test('SY-20: Original full-length candidate ranks above slowed/reverb, mashups, and remixes', () => {
+  const ennaSonaTrack = {
+    title: 'Enna Sona',
+    artist: 'A.R. Rahman, Arijit Singh',
+    durationSec: 213,
+  };
+
+  const mixedCandidates = [
+    { title: 'Enna Sona (Slowed & Reverb)', artist: 'VibeStation', durationSec: 260, youtubeUrl: 'https://youtube.com/watch?v=slowed' },
+    { title: 'Enna Sona Mashup Cover', artist: 'Singh Unplugged', durationSec: 258, youtubeUrl: 'https://youtube.com/watch?v=mashup' },
+    { title: 'Enna Sona Club Remix 2026', artist: 'DJ Mix', durationSec: 180, youtubeUrl: 'https://youtube.com/watch?v=remix' },
+    { title: 'Enna Sona - AR Rahman 30-Second Preview', artist: 'A.R. Rahman', durationSec: 30, youtubeUrl: 'https://youtube.com/watch?v=preview' },
+    { title: 'Enna Sona', artist: 'Mitraz', durationSec: 213, youtubeUrl: 'https://youtube.com/watch?v=mitraz' },
+    { title: 'Enna Sona - Official Music Video | OK Jaanu | Arijit Singh', artist: 'Sony Music India', durationSec: 221, youtubeUrl: 'https://youtube.com/watch?v=official' },
+  ];
+
+  const ranked = audioProvider.rankYouTubeCandidates(mixedCandidates, ennaSonaTrack);
+
+  // Original must rank #1
+  assert.strictEqual(ranked[0].youtubeUrl, 'https://youtube.com/watch?v=official');
+  assert.strictEqual(ranked[0].penalty, 0);
+  assert.ok(ranked[0].finalScore > 0.85);
+
+  // All other candidates must receive penalties
+  for (const c of ranked.slice(1)) {
+    assert.ok(c.penalty > 0 || c.isDifferentArtist === true, `Candidate ${c.title} must have penalty`);
+  }
+
+  // Only the original full recording appears in cleanCandidates
+  const cleanCandidates = ranked.filter(c => (c.penalty || 0) === 0 && !c.isDifferentArtist && c.durationSec > 45);
+  assert.strictEqual(cleanCandidates.length, 1);
+  assert.strictEqual(cleanCandidates[0].youtubeUrl, 'https://youtube.com/watch?v=official');
+});
+
+test('SY-21: No unrelated fallback plays when no confident clean candidate exists', async () => {
+  const unmatchable = {
+    title: 'Obscure Nonexistent Regional Track 12345',
+    artist: 'Fake Singer 99999',
+    durationSec: 180,
+  };
+
+  const match = await audioProvider.matchSpotifyToYouTube(unmatchable);
+  assert.strictEqual(match.success, false);
+  assert.strictEqual(match.bestCandidate, null, 'Unverified candidate must NOT be labeled as original track');
+  assert.ok(match.candidates.length === 0, 'No unrelated or remix candidates should be presented as clean options');
+  assert.ok(match.reason && match.reason.length > 0);
+});
+
 
 
