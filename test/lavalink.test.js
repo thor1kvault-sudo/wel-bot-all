@@ -46,7 +46,7 @@ test('LL-3: Readiness checks accurately report node connectivity', () => {
   // When mock connected node is present, readiness is true
   const mockNode = {
     name: 'test-node',
-    state: 2,
+    state: 1, // Shoukaku v4: Constants.State.CONNECTED
     rest: {
       resolve: async (id) => ({ loadType: 'empty', data: [] }),
     },
@@ -54,6 +54,13 @@ test('LL-3: Readiness checks accurately report node connectivity', () => {
   lavalinkManager._setMockNode(mockNode);
   assert.strictEqual(lavalinkManager.isLavalinkReady(), true);
   assert.strictEqual(lavalinkManager.getIdealNode(), mockNode);
+
+  // Shoukaku v4 states: only 1 (CONNECTED) is playable.
+  for (const state of [0, 2, 3]) {
+    lavalinkManager._setMockNode({ ...mockNode, state });
+    assert.strictEqual(lavalinkManager.isLavalinkReady(), false, `state ${state} must not be ready`);
+    assert.strictEqual(lavalinkManager.getIdealNode(), null, `state ${state} must not be selected`);
+  }
 
   lavalinkManager._setMockNode(null);
 });
