@@ -1,4 +1,4 @@
-const { Shoukaku, Connectors } = require('shoukaku');
+const { Shoukaku, Connectors, Constants } = require('shoukaku');
 const { redactSecrets } = require('../utils/helpers');
 
 let shoukakuInstance = null;
@@ -107,12 +107,20 @@ function isLavalinkConfigured() {
 /**
  * Returns whether a Lavalink node is ready to accept connections
  */
+const CONNECTED_STATE = Constants?.State?.CONNECTED ?? 1;
+
+function isNodeConnected(node) {
+  return Boolean(node && node.state === CONNECTED_STATE);
+}
+
 function isLavalinkReady() {
-  if (mockNode) return true;
+  if (mockNode) {
+    // Keep simple test doubles that do not expose Shoukaku state compatible.
+    return typeof mockNode.state === 'undefined' || isNodeConnected(mockNode);
+  }
   if (!shoukakuInstance) return false;
   try {
-    const node = shoukakuInstance.getIdealNode();
-    return Boolean(node && node.state === 2 /* CONNECTED / READY */);
+    return Boolean(getIdealNode());
   } catch (_) {
     return false;
   }
@@ -122,10 +130,24 @@ function isLavalinkReady() {
  * Returns the ideal Lavalink node
  */
 function getIdealNode() {
-  if (mockNode) return mockNode;
+  if (mockNode) {
+    return typeof mockNode.state === 'undefined' || isNodeConnected(mockNode)
+      ? mockNode
+      : null;
+  }
   if (!shoukakuInstance) return null;
   try {
-    return shoukakuInstance.getIdealNode() || null;
+    const ideal = shoukakuInstance.getIdealNode();
+    if (isNodeConnected(ideal)) return ideal;
+
+    // Shoukaku's ideal-node selector may return a node that is not connected.
+    // Search the registered nodes for one that is explicitly CONNECTED.
+    if (shoukakuInstance.nodes && shoukakuInstance.nodes.size > 0) {
+      for (const node of shoukakuInstance.nodes.values()) {
+        if (isNodeConnected(node)) return node;
+      }
+    }
+    return null;
   } catch (_) {
     return null;
   }
