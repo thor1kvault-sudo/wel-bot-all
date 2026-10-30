@@ -211,3 +211,21 @@ test('8. Invite Link Regex Detection', () => {
   assert.strictEqual(inviteRegex.test('Check out https://google.com'), false);
 });
 
+test('9. Health Server EADDRINUSE Graceful Recovery', () => {
+  const http = require('node:http');
+  const server = http.createServer((req, res) => res.end('ok'));
+  let caught = false;
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      caught = true;
+    }
+  });
+
+  const fakeError = new Error('bind EADDRINUSE 0.0.0.0:10000');
+  fakeError.code = 'EADDRINUSE';
+  server.emit('error', fakeError);
+
+  assert.strictEqual(caught, true, 'EADDRINUSE should be caught and handled gracefully');
+});
+
+

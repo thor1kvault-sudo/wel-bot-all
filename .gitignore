@@ -3,3 +3,10 @@ node_modules/
 bot.zip
 guild_configs/
 data/
+
+# Lavalink runtime binaries, plugins, and logs
+lavalink/Lavalink.jar
+lavalink/plugins/
+lavalink/logs/
+*.jar
+*.log

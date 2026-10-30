@@ -459,20 +459,30 @@ async function searchSoundCloud(query, limit = 5) {
 
 function fetchYouTubeHtmlInternal(query, limit = 5) {
   return new Promise((resolve) => {
+    let resolved = false;
+    const safeResolve = (val) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(val);
+      }
+    };
+
     const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
     const req = https.get(url, {
+      maxHeaderSize: 65536,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
         'Cookie': 'CONSENT=YES+cb; SOCS=CAESEwgDEgk2MTQ1NzQ4OTQaAmVuIAEaBgiA_LyaBg',
       },
-      timeout: 4500,
+      timeout: 4000,
     }, (res) => {
+      res.on('error', () => safeResolve([]));
       let html = '';
       res.on('data', c => html += c);
       res.on('end', () => {
         const match = html.match(/(?:var\s+ytInitialData|window\[['"]ytInitialData['"]\]|ytInitialData)\s*=\s*({.+?});<\/script>/);
-        if (!match) return resolve([]);
+        if (!match) return safeResolve([]);
         try {
           const data = JSON.parse(match[1]);
           const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents;
@@ -509,14 +519,20 @@ function fetchYouTubeHtmlInternal(query, limit = 5) {
             }
             if (videos.length >= limit) break;
           }
-          resolve(videos);
+          safeResolve(videos);
         } catch (_) {
-          resolve([]);
+          safeResolve([]);
         }
       });
     });
-    req.on('error', () => resolve([]));
-    req.on('timeout', function() { this.destroy(); resolve([]); });
+    req.on('error', () => {
+      try { req.destroy(); } catch (_) {}
+      safeResolve([]);
+    });
+    req.on('timeout', function() {
+      try { this.destroy(); } catch (_) {}
+      safeResolve([]);
+    });
   });
 }
 
@@ -1029,7 +1045,7 @@ async function matchSpotifyToYouTube(spotifyTrack) {
       }
       if (!results || results.length === 0) {
         consecutiveZeroes++;
-        if (consecutiveZeroes >= 3 && allCandidates.length === 0) {
+        if (consecutiveZeroes >= 2 && allCandidates.length === 0) {
           break; // Avoid slow retries when provider or network has no results
         }
       } else {
@@ -1044,7 +1060,7 @@ async function matchSpotifyToYouTube(spotifyTrack) {
       if (allCandidates.length >= 10) break; // Collect at least 10 candidates across search variations
     } catch (_) {
       consecutiveZeroes++;
-      if (consecutiveZeroes >= 3 && allCandidates.length === 0) break;
+      if (consecutiveZeroes >= 2 && allCandidates.length === 0) break;
     }
   }
 

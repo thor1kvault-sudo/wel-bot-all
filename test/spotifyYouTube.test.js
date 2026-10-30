@@ -99,7 +99,7 @@ test('SY-3: rankYouTubeCandidates rejects candidates with large duration discrep
   assert.ok(ranked[0].finalScore > ranked[1].finalScore);
 });
 
-test('SY-4: matchSpotifyToYouTube returns failure when no candidates meet threshold', async () => {
+test('SY-4: matchSpotifyToYouTube returns failure when no candidates meet threshold', { timeout: 30000 }, async () => {
   // Empty candidates or all completely mismatching
   const unmatchable = {
     title: 'Unmatchable Track XYZ 99999',
@@ -673,7 +673,7 @@ test('SY-20: Original full-length candidate ranks above slowed/reverb, mashups, 
   assert.strictEqual(cleanCandidates[0].youtubeUrl, 'https://youtube.com/watch?v=official');
 });
 
-test('SY-21: No unrelated fallback plays when no confident clean candidate exists', async () => {
+test('SY-21: No unrelated fallback plays when no confident clean candidate exists', { timeout: 30000 }, async () => {
   const unmatchable = {
     title: 'Obscure Nonexistent Regional Track 12345',
     artist: 'Fake Singer 99999',

@@ -73,7 +73,19 @@ const healthServer = http.createServer((req, res) => {
     timestamp: new Date().toISOString(),
   }));
 });
-healthServer.listen(PORT, '0.0.0.0', () => console.log(`🌐 Health check server listening on port ${PORT}`));
+healthServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.warn(`⚠️ [Health Check Server] Port ${PORT} is already in use (EADDRINUSE). Another instance or process is using this port. Continuing bot execution without local health-check HTTP server.`);
+  } else {
+    console.error(`[Health Check Server Error]: ${err.message || err}`);
+  }
+});
+
+try {
+  healthServer.listen(PORT, '0.0.0.0', () => console.log(`🌐 Health check server listening on port ${PORT}`));
+} catch (err) {
+  console.warn(`⚠️ [Health Check Server] Could not bind to port ${PORT}: ${err.message}`);
+}
 
 // ── Voice / Music System (Multi-Guild Isolated Sessions, Spotify Resolver, Intelligent Search) ──
 let voiceLib = null; try { voiceLib = require('@discordjs/voice'); } catch (e) { console.log('Voice:', e.message); }
