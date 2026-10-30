@@ -137,6 +137,7 @@ async function resolveSpotify(spotifyUrl, maxTracks = 50) {
               thumbnail: data.album?.images?.[0]?.url || null,
               query: `${data.name} ${artistName}`.trim(),
               spotifyUrl: cleanUrl,
+              isrc: data.external_ids?.isrc || null,
             }],
           };
         }

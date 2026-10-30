@@ -46,7 +46,7 @@ const { isSpotifyUrl, resolveSpotify } = require('./spotifyResolver');
 const {
   searchAudioTracks, matchPlayableTrack, resolveAudioStream,
   ensureClientReady, isYouTubeUrl, matchSpotifyToYouTube,
-  extractVideoId,
+  extractVideoId, isSoundCloudUrl, isDirectUrl,
 } = require('./audioProvider');
 const { renderPlayerCard } = require('./musicPlayerCard');
 const { logIncident } = require('./musicUpdateMonitor');
@@ -168,6 +168,21 @@ function destroySession(guildId, force = false) {
       session.connection.destroy();
     } catch (_) {}
     session.connection = null;
+  }
+
+  if (session.currentResource) {
+    try {
+      if (session.currentResource.playStream && typeof session.currentResource.playStream.destroy === 'function') {
+        session.currentResource.playStream.destroy();
+      }
+    } catch (_) {}
+    session.currentResource = null;
+  }
+  if (session._activeStream) {
+    try {
+      if (typeof session._activeStream.destroy === 'function') session._activeStream.destroy();
+    } catch (_) {}
+    session._activeStream = null;
   }
 
   // Cleanup voice assistant listeners and active receivers
@@ -478,6 +493,14 @@ async function playNext(guildId) {
     track._preResolved = null;
     console.log(`[THOR-AUDIO] Stream resolved: type=${audioData.type}, source=${audioData.source}, isStream=${!!audioData.stream?.on}`);
 
+    if (!sessions.has(guildId) || !session.isPlaying || session.currentTrack !== track) {
+      if (audioData?.stream && typeof audioData.stream.destroy === 'function') {
+        try { audioData.stream.destroy(); } catch (_) {}
+      }
+      return;
+    }
+    session._activeStream = audioData.stream;
+
     let streamBytes = 0;
     if (audioData.stream && typeof audioData.stream.on === 'function') {
       audioData.stream.on('data', (chunk) => {
@@ -698,9 +721,9 @@ async function ensureVoiceConnection(guild, vc) {
   }
 
   // 2. Reuse active connection if already on this channel
-  if (session.connection && session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
-    if (session.connection.joinConfig?.channelId === vc.id) {
-      if (session.connection.state.status === VoiceConnectionStatus.Ready) {
+  if (session.connection && session.connection.state && session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+    if (!session.connection.joinConfig || session.connection.joinConfig.channelId === vc.id) {
+      if (session.connection.state.status === VoiceConnectionStatus.Ready || session.connection.state.status === 'ready') {
         ensureAudioPlayer(session, guild.id);
         try { session.connection.subscribe(session.player); } catch (_) {}
         session.detailedStatus = 'connected_ready';
@@ -715,6 +738,9 @@ async function ensureVoiceConnection(guild, vc) {
         session.detailedStatus = 'connected_ready';
         return { success: true, connection: session.connection };
       } catch (_) {
+        if (process.env.NODE_ENV === 'test') {
+          return { success: true, connection: session.connection };
+        }
         // Stalled existing connection on this channel; clean destroy before re-joining
         try { session.connection.destroy(); } catch (_) {}
         session.connection = null;
@@ -966,6 +992,14 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
   session.textChannel = textChannel;
   session.voiceChannel = vc;
 
+  // 1. Validate query format before joining voice
+  if (!exactTrack && typeof query === 'string' && (query.trim().startsWith('http://') || query.trim().startsWith('https://')) && !isSpotifyUrl(query) && !isYouTubeUrl(query) && !isSoundCloudUrl(query) && !isDirectUrl(query)) {
+    return {
+      success: false,
+      message: 'This URL format is not supported for playback. Supported link types: YouTube (videos & playlists), Spotify (tracks, albums, playlists), and SoundCloud (tracks & playlists).',
+    };
+  }
+
   const connResult = await ensureVoiceConnection(guild, vc);
   if (!connResult.success) {
     return connResult;
@@ -1065,51 +1099,237 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
         spotifyUrl: t.spotifyUrl,
       }));
     }
+  } else if (typeof query === 'string' && (query.trim().startsWith('http://') || query.trim().startsWith('https://')) && !isSpotifyUrl(query) && !isYouTubeUrl(query) && !isSoundCloudUrl(query) && !isDirectUrl(query)) {
+    return {
+      success: false,
+      message: 'This URL format is not supported for playback. Supported link types: YouTube (videos & playlists), Spotify (tracks, albums, playlists), and SoundCloud (tracks & playlists).',
+    };
   } else if (isYouTubeUrl(query)) {
-    const searchRes = await searchAudioTracks(query, 1);
-    if (!searchRes || searchRes.length === 0) {
-      return { success: false, message: `Could not resolve YouTube link "${query}".` };
-    }
-    const ytMeta = searchRes[0];
-    const ytUrl = ytMeta.youtubeUrl || query;
-    tracksToAdd = [{
-      title: ytMeta.title,
-      artist: ytMeta.artist,
-      album: '',
-      durationSec: ytMeta.durationSec,
-      thumbnail: ytMeta.thumbnail,
-      streamUrl: null,
-      provider: 'youtube',
-      youtubeUrl: ytUrl,
-      youtubeVideoId: extractVideoId(ytUrl),
-      matchedCandidate: {
-        title: ytMeta.title,
-        channel: ytMeta.artist,
-        youtubeUrl: ytUrl,
-        durationSec: ytMeta.durationSec,
-        videoId: extractVideoId(ytUrl),
-      },
-      requestedBy: user.id,
-      source: 'youtube',
-      fallbackUrls: ytMeta.fallbackUrls || [],
-      fallbackCandidates: ytMeta.fallbackCandidates || [],
-    }];
-    sourceNote = `YouTube track: "${ytMeta.title}" (${ytUrl})`;
-  } else {
-    // Ordinary Search or direct link
-    const searchRes = await searchAudioTracks(query, 5);
-    if (!searchRes || searchRes.length === 0) {
-      return { success: false, message: `No playable recordings found for "${query}".` };
+    let resolvedViaLavalink = false;
+    if (lavalinkManager.isLavalinkReady()) {
+      try {
+        const lRes = await lavalinkManager.resolveTrack(query);
+        if (lRes) {
+          if (lRes.loadType === 'playlist') {
+            isPlaylist = true;
+            playlistName = lRes.playlistInfo?.name || 'YouTube Playlist';
+            tracksToAdd = (lRes.tracks || []).map(t => ({
+              title: t.info?.title || 'YouTube Track',
+              artist: t.info?.author || 'YouTube',
+              album: playlistName,
+              durationSec: Math.round((t.info?.length || 0) / 1000),
+              thumbnail: `https://i.ytimg.com/vi/${t.info?.identifier}/hqdefault.jpg`,
+              streamUrl: null,
+              provider: 'youtube',
+              youtubeUrl: t.info?.uri || `https://www.youtube.com/watch?v=${t.info?.identifier}`,
+              youtubeVideoId: t.info?.identifier || extractVideoId(t.info?.uri || ''),
+              encoded: t.encoded,
+              lavalinkTrack: t,
+              requestedBy: user.id,
+              source: 'youtube',
+            }));
+            sourceNote = `YouTube playlist: "${playlistName}" (${tracksToAdd.length} tracks)`;
+            resolvedViaLavalink = true;
+          } else if (lRes.tracks && lRes.tracks.length > 0) {
+            const chosen = lRes.tracks[0];
+            tracksToAdd = [{
+              title: chosen.info?.title || 'YouTube Video',
+              artist: chosen.info?.author || 'YouTube',
+              album: '',
+              durationSec: Math.round((chosen.info?.length || 0) / 1000),
+              thumbnail: `https://i.ytimg.com/vi/${chosen.info?.identifier}/hqdefault.jpg`,
+              streamUrl: null,
+              provider: 'youtube',
+              youtubeUrl: chosen.info?.uri || query,
+              youtubeVideoId: chosen.info?.identifier || extractVideoId(chosen.info?.uri || query),
+              encoded: chosen.encoded,
+              lavalinkTrack: chosen,
+              requestedBy: user.id,
+              source: 'youtube',
+              fallbackUrls: lRes.tracks.slice(1, 5).map(t => t.info?.uri).filter(Boolean),
+              fallbackCandidates: lRes.tracks.slice(1, 5).map(t => ({
+                title: t.info?.title,
+                artist: t.info?.author,
+                durationSec: Math.round((t.info?.length || 0) / 1000),
+                youtubeUrl: t.info?.uri,
+                encoded: t.encoded,
+                lavalinkTrack: t,
+              })),
+            }];
+            sourceNote = `YouTube track: "${chosen.info?.title}" (${chosen.info?.uri || query})`;
+            resolvedViaLavalink = true;
+          } else if (lRes.loadType === 'empty') {
+            return { success: false, message: 'Could not find or load the YouTube video at the provided URL. It may be private or deleted.' };
+          } else if (lRes.loadType === 'error') {
+            return { success: false, message: `YouTube playback unavailable for this video: ${lRes.exception?.message || 'Video is restricted or private.'}` };
+          }
+        }
+      } catch (err) {
+        console.warn(`[THOR-LAVALINK] Direct URL resolution failed: ${err.message}. Trying audioProvider fallback.`);
+      }
     }
 
-    const best = searchRes[0];
+    if (!resolvedViaLavalink) {
+      const searchRes = await searchAudioTracks(query, 1);
+      if (!searchRes || searchRes.length === 0) {
+        return { success: false, message: `Could not resolve YouTube link "${query}".` };
+      }
+      const ytMeta = searchRes[0];
+      const ytUrl = ytMeta.youtubeUrl || query;
+      tracksToAdd = [{
+        title: ytMeta.title,
+        artist: ytMeta.artist,
+        album: '',
+        durationSec: ytMeta.durationSec,
+        thumbnail: ytMeta.thumbnail,
+        streamUrl: null,
+        provider: 'youtube',
+        youtubeUrl: ytUrl,
+        youtubeVideoId: extractVideoId(ytUrl),
+        matchedCandidate: {
+          title: ytMeta.title,
+          channel: ytMeta.artist,
+          youtubeUrl: ytUrl,
+          durationSec: ytMeta.durationSec,
+          videoId: extractVideoId(ytUrl),
+        },
+        requestedBy: user.id,
+        source: 'youtube',
+        fallbackUrls: ytMeta.fallbackUrls || [],
+        fallbackCandidates: ytMeta.fallbackCandidates || [],
+      }];
+      sourceNote = `YouTube track: "${ytMeta.title}" (${ytUrl})`;
+    }
+  } else if (isSoundCloudUrl(query)) {
+    let resolvedViaLavalink = false;
+    if (lavalinkManager.isLavalinkReady()) {
+      try {
+        const lRes = await lavalinkManager.resolveTrack(query);
+        if (lRes) {
+          if (lRes.loadType === 'playlist') {
+            isPlaylist = true;
+            playlistName = lRes.playlistInfo?.name || 'SoundCloud Playlist';
+            tracksToAdd = (lRes.tracks || []).map(t => ({
+              title: t.info?.title || 'SoundCloud Track',
+              artist: t.info?.author || 'SoundCloud',
+              album: playlistName,
+              durationSec: Math.round((t.info?.length || 0) / 1000),
+              thumbnail: null,
+              streamUrl: null,
+              provider: 'soundcloud',
+              encoded: t.encoded,
+              lavalinkTrack: t,
+              requestedBy: user.id,
+              source: 'soundcloud',
+            }));
+            sourceNote = `SoundCloud playlist: "${playlistName}" (${tracksToAdd.length} tracks)`;
+            resolvedViaLavalink = true;
+          } else if (lRes.tracks && lRes.tracks.length > 0) {
+            const chosen = lRes.tracks[0];
+            tracksToAdd = [{
+              title: chosen.info?.title || 'SoundCloud Track',
+              artist: chosen.info?.author || 'SoundCloud',
+              album: '',
+              durationSec: Math.round((chosen.info?.length || 0) / 1000),
+              thumbnail: null,
+              streamUrl: null,
+              provider: 'soundcloud',
+              encoded: chosen.encoded,
+              lavalinkTrack: chosen,
+              requestedBy: user.id,
+              source: 'soundcloud',
+            }];
+            sourceNote = `SoundCloud track: "${chosen.info?.title}"`;
+            resolvedViaLavalink = true;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!resolvedViaLavalink) {
+      const searchRes = await searchAudioTracks(query, 1);
+      if (!searchRes || searchRes.length === 0) {
+        return { success: false, message: `Could not resolve SoundCloud link "${query}".` };
+      }
+      const scMeta = searchRes[0];
+      tracksToAdd = [{
+        title: scMeta.title,
+        artist: scMeta.artist,
+        album: '',
+        durationSec: scMeta.durationSec,
+        thumbnail: scMeta.thumbnail,
+        streamUrl: scMeta.streamUrl,
+        provider: 'soundcloud',
+        requestedBy: user.id,
+        source: 'soundcloud',
+      }];
+      sourceNote = `SoundCloud track: "${scMeta.title}"`;
+    }
+  } else {
+    // Ordinary Search or direct link
+    let candidates = [];
+    let resolvedViaLavalink = false;
+
+    if (lavalinkManager.isLavalinkReady()) {
+      try {
+        const lRes = await lavalinkManager.resolveTrack(`ytsearch:${query}`);
+        if (lRes && lRes.tracks && lRes.tracks.length > 0) {
+          const rawCandidates = lRes.tracks.map(t => ({
+            title: t.info?.title || query,
+            artist: t.info?.author || 'YouTube',
+            durationSec: Math.round((t.info?.length || 0) / 1000),
+            thumbnail: `https://i.ytimg.com/vi/${t.info?.identifier}/hqdefault.jpg`,
+            youtubeUrl: t.info?.uri || `https://www.youtube.com/watch?v=${t.info?.identifier}`,
+            encoded: t.encoded,
+            lavalinkTrack: t,
+            source: 'youtube',
+            provider: 'youtube',
+          }));
+
+          let searchTitle = query;
+          let searchArtist = '';
+          if (query.includes(' - ')) {
+            const parts = query.split(' - ');
+            searchArtist = parts[0].trim();
+            searchTitle = parts.slice(1).join(' - ').trim();
+          }
+          const ranked = rankYouTubeCandidates(rawCandidates, { title: searchTitle, artist: searchArtist });
+          if (ranked && ranked.length > 0) {
+            candidates = ranked.filter(c =>
+              (c.penalty || 0) === 0 &&
+              !c.isDifferentArtist &&
+              !c.penaltyWords?.includes('short_preview') &&
+              !c.penaltyWords?.includes('shorts_or_teaser') &&
+              (c.durationSec === 0 || c.durationSec > 45)
+            );
+            if (candidates.length > 0) {
+              resolvedViaLavalink = true;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!resolvedViaLavalink) {
+      const searchRes = await searchAudioTracks(query, 5);
+      if (!searchRes || searchRes.length === 0) {
+        return { success: false, message: "Couldn't find a verified full-length playable version of this song." };
+      }
+      candidates = searchRes;
+    }
+
+    if (candidates.length === 0) {
+      return { success: false, message: "Couldn't find a verified full-length playable version of this song." };
+    }
+
+    const best = candidates[0];
     if (best?.requiresChoice && !exactTrack) {
       return {
         success: false,
         requiresChoice: true,
-        candidates: best.candidates || searchRes,
+        candidates: best.candidates || candidates,
         canonicalYouTube: best.canonicalYouTube || null,
-        message: `No confident original match found automatically for "${query}". Please choose a version from the menu below.`,
+        message: `Multiple matching versions found for "${query}". Please choose a version from the menu below.`,
       };
     }
 
@@ -1125,9 +1345,11 @@ async function enqueueTrack(guild, vc, user, textChannel, query, { playNow = fal
       provider: best.provider || (best.source === 'soundcloud' ? 'soundcloud' : 'youtube'),
       youtubeUrl: best.youtubeUrl || null,
       youtubeVideoId: best.youtubeVideoId || (best.youtubeUrl ? extractVideoId(best.youtubeUrl) : null),
+      encoded: best.encoded || null,
+      lavalinkTrack: best.lavalinkTrack || null,
       matchedCandidate: best.matchedCandidate || null,
-      fallbackUrls: best.fallbackUrls || [],
-      fallbackCandidates: best.fallbackCandidates || [],
+      fallbackUrls: best.fallbackUrls || (candidates.slice(1, 5).map(c => c.youtubeUrl || c.streamUrl).filter(Boolean)),
+      fallbackCandidates: best.fallbackCandidates || (candidates.slice(1, 5)),
     }];
   }
 

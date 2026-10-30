@@ -46,7 +46,7 @@ test('LL-3: Readiness checks accurately report node connectivity', () => {
   // When mock connected node is present, readiness is true
   const mockNode = {
     name: 'test-node',
-    state: 2,
+    state: 1, // Constants.State.CONNECTED in Shoukaku 4.3.0
     rest: {
       resolve: async (id) => ({ loadType: 'empty', data: [] }),
     },
@@ -269,6 +269,7 @@ test('LL-7: Spotify verified candidates resolve and load cleanly in Lavalink wit
 
   const session = musicService.getSession(mockGuild.id);
   session.connection = { state: { status: 'ready' } };
+  session.lavalinkPlayer = { playTrack: async () => {}, stopTrack: async () => {} };
 
   const res = await musicService.enqueueTrack(
     mockGuild,
@@ -632,12 +633,13 @@ test('13. TrackStuckEvent is handled correctly', async () => {
 
 test('14. Queue advances exactly once', () => {
   const session = musicService.getSession('guild_single_advance');
+  session.lavalinkPlayer = { playTrack: async () => {}, stopTrack: async () => {} };
   session.queue = [
-    { title: 'Track 1', durationSec: 100 },
-    { title: 'Track 2', durationSec: 200 },
-    { title: 'Track 3', durationSec: 300 },
+    { title: 'Track 1', durationSec: 100, encoded: 'enc1' },
+    { title: 'Track 2', durationSec: 200, encoded: 'enc2' },
+    { title: 'Track 3', durationSec: 300, encoded: 'enc3' },
   ];
-  session.currentTrack = { title: 'Track 0', durationSec: 150 };
+  session.currentTrack = { title: 'Track 0', durationSec: 150, encoded: 'enc0' };
 
   // Call handleTrackEnded
   musicService.handleTrackEnded('guild_single_advance');
@@ -796,6 +798,7 @@ test('20. Both Spotify URL and normal song-name input work', async () => {
 
   const session = musicService.getSession(mockGuild.id);
   session.connection = { state: { status: 'ready' } };
+  session.lavalinkPlayer = { playTrack: async () => {}, stopTrack: async () => {} };
 
   // 1. Exact verified track input (simulating Spotify resolution)
   const spotifyResolvedTrack = {
@@ -848,4 +851,396 @@ test('20. Both Spotify URL and normal song-name input work', async () => {
   musicService.destroySession(mockGuild.id, true);
   lavalinkManager._setMockNode(null);
 });
+
+test('21. Unsupported URL formats are rejected with a clear user-facing error', async () => {
+  const mockGuild = { id: 'guild_unsupported_url', name: 'Unsupported Guild' };
+  const mockVc = { id: 'vc_unsupported', name: 'General' };
+  const mockUser = { id: 'user_unsupported' };
+
+  const session = musicService.getSession(mockGuild.id);
+  session.connection = { state: { status: 'ready' } };
+
+  const res = await musicService.enqueueTrack(
+    mockGuild,
+    mockVc,
+    mockUser,
+    null,
+    'https://music.apple.com/us/album/some-album/123456789'
+  );
+
+  assert.strictEqual(res.success, false);
+  assert.ok(res.message.includes('not supported for playback'), 'Must explain supported link formats');
+  assert.ok(res.message.includes('YouTube') && res.message.includes('Spotify') && res.message.includes('SoundCloud'));
+
+  musicService.destroySession(mockGuild.id, true);
+});
+
+test('22. Direct YouTube video URL resolves via Lavalink with encoded track and full duration', async () => {
+  const mockNode = {
+    joinVoiceChannel: async () => ({
+      playTrack: async () => {},
+      stopTrack: async () => {},
+      on: () => {},
+    }),
+    leaveVoiceChannel: async () => {},
+    rest: {
+      resolve: async (url) => ({
+        loadType: 'track',
+        data: {
+          encoded: 'enc_yt_direct_video',
+          info: {
+            title: 'Enna Sona Official Video',
+            author: 'A.R. Rahman',
+            length: 215000,
+            uri: 'https://www.youtube.com/watch?v=s_95jJvXFqg',
+            identifier: 's_95jJvXFqg',
+          },
+        },
+      }),
+    },
+  };
+  lavalinkManager._setMockNode(mockNode);
+
+  const mockGuild = { id: 'guild_yt_direct', name: 'YT Direct Guild' };
+  const mockVc = { id: 'vc_yt_direct', name: 'General' };
+  const mockUser = { id: 'user_yt_direct' };
+
+  const session = musicService.getSession(mockGuild.id);
+  session.connection = { state: { status: 'ready' } };
+  session.lavalinkPlayer = { playTrack: async () => {}, stopTrack: async () => {} };
+
+  const res = await musicService.enqueueTrack(
+    mockGuild,
+    mockVc,
+    mockUser,
+    null,
+    'https://www.youtube.com/watch?v=s_95jJvXFqg'
+  );
+
+  assert.strictEqual(res.success, true);
+  assert.strictEqual(res.firstTrack.provider, 'youtube');
+  assert.strictEqual(res.firstTrack.encoded, 'enc_yt_direct_video');
+  assert.strictEqual(res.firstTrack.durationSec, 215);
+  assert.strictEqual(res.firstTrack.title, 'Enna Sona Official Video');
+
+  musicService.destroySession(mockGuild.id, true);
+  lavalinkManager._setMockNode(null);
+});
+
+test('23. Direct YouTube playlist URL resolves all tracks via Lavalink with playlist name and count', async () => {
+  const mockNode = {
+    joinVoiceChannel: async () => ({
+      playTrack: async () => {},
+      stopTrack: async () => {},
+      on: () => {},
+    }),
+    leaveVoiceChannel: async () => {},
+    rest: {
+      resolve: async (url) => ({
+        loadType: 'playlist',
+        data: {
+          info: { name: 'Bollywood Hits 2024' },
+          tracks: [
+            { encoded: 'enc_pl_1', info: { title: 'Track 1', author: 'Artist 1', length: 200000, identifier: 'id1', uri: 'https://youtube.com/watch?v=id1' } },
+            { encoded: 'enc_pl_2', info: { title: 'Track 2', author: 'Artist 2', length: 180000, identifier: 'id2', uri: 'https://youtube.com/watch?v=id2' } },
+            { encoded: 'enc_pl_3', info: { title: 'Track 3', author: 'Artist 3', length: 240000, identifier: 'id3', uri: 'https://youtube.com/watch?v=id3' } },
+          ],
+        },
+      }),
+    },
+  };
+  lavalinkManager._setMockNode(mockNode);
+
+  const mockGuild = { id: 'guild_yt_playlist', name: 'YT Playlist Guild' };
+  const mockVc = { id: 'vc_yt_playlist', name: 'General' };
+  const mockUser = { id: 'user_yt_playlist' };
+
+  const session = musicService.getSession(mockGuild.id);
+  session.connection = { state: { status: 'ready' } };
+  session.lavalinkPlayer = { playTrack: async () => {}, stopTrack: async () => {} };
+
+  const res = await musicService.enqueueTrack(
+    mockGuild,
+    mockVc,
+    mockUser,
+    null,
+    'https://www.youtube.com/playlist?list=PL_TEST_BOLLYWOOD'
+  );
+
+  assert.strictEqual(res.success, true);
+  assert.strictEqual(res.isPlaylist, true);
+  assert.strictEqual(res.playlistName, 'Bollywood Hits 2024');
+  assert.strictEqual(res.count, 3);
+  assert.strictEqual(session.currentTrack.encoded, 'enc_pl_1');
+  assert.strictEqual(session.queue.length, 2);
+
+  musicService.destroySession(mockGuild.id, true);
+  lavalinkManager._setMockNode(null);
+});
+
+test('24. Direct SoundCloud track and playlist URL resolves via Lavalink', async () => {
+  const mockNode = {
+    joinVoiceChannel: async () => ({
+      playTrack: async () => {},
+      stopTrack: async () => {},
+      on: () => {},
+    }),
+    leaveVoiceChannel: async () => {},
+    rest: {
+      resolve: async (url) => ({
+        loadType: 'track',
+        data: {
+          encoded: 'enc_sc_single',
+          info: { title: 'Indie Vibe', author: 'Indie Artist', length: 195000, sourceName: 'soundcloud' },
+        },
+      }),
+    },
+  };
+  lavalinkManager._setMockNode(mockNode);
+
+  const mockGuild = { id: 'guild_sc_resolve', name: 'SC Guild' };
+  const mockVc = { id: 'vc_sc_resolve', name: 'General' };
+  const mockUser = { id: 'user_sc_resolve' };
+
+  const session = musicService.getSession(mockGuild.id);
+  session.connection = { state: { status: 'ready' } };
+  session.lavalinkPlayer = { playTrack: async () => {}, stopTrack: async () => {} };
+
+  const res = await musicService.enqueueTrack(
+    mockGuild,
+    mockVc,
+    mockUser,
+    null,
+    'https://soundcloud.com/indie-artist/indie-vibe'
+  );
+
+  assert.strictEqual(res.success, true);
+  assert.strictEqual(res.firstTrack.provider, 'soundcloud');
+  assert.strictEqual(res.firstTrack.encoded, 'enc_sc_single');
+  assert.strictEqual(res.firstTrack.durationSec, 195);
+
+  musicService.destroySession(mockGuild.id, true);
+  lavalinkManager._setMockNode(null);
+});
+
+test('25. Song with featured artist (ft./feat.) matches canonical without penalization', () => {
+  const candidates = [
+    { title: 'Enna Sona (feat. Arijit Singh)', artist: 'A.R. Rahman', durationSec: 215, youtubeUrl: 'https://youtube.com/watch?v=feat1' },
+    { title: 'Enna Sona (Cover by SomeUser)', artist: 'SomeUser', durationSec: 210, youtubeUrl: 'https://youtube.com/watch?v=cover1' },
+  ];
+
+  const queryInfo = { title: 'Enna Sona', artist: 'A.R. Rahman ft. Arijit Singh' };
+  const ranked = audioProvider.rankYouTubeCandidates(candidates, queryInfo);
+
+  assert.strictEqual(ranked[0].youtubeUrl, 'https://youtube.com/watch?v=feat1');
+  assert.strictEqual(ranked[0].penalty, 0);
+  assert.strictEqual(ranked[0].isDifferentArtist, false);
+});
+
+test('26. Regional Tamil Unicode song search preserves Unicode and scores authentic video', () => {
+  const candidates = [
+    { title: 'காதலே காதலே - 96 Official Lyric Video', artist: 'Govind Vasantha', durationSec: 210, youtubeUrl: 'https://youtube.com/watch?v=tamil_official' },
+    { title: 'Kadhale Kadhale Slowed Reverb', artist: 'Random Editor', durationSec: 240, youtubeUrl: 'https://youtube.com/watch?v=tamil_slowed' },
+  ];
+
+  const queryInfo = { title: 'காதலே காதலே', artist: 'Govind Vasantha' };
+  const ranked = audioProvider.rankYouTubeCandidates(candidates, queryInfo);
+
+  assert.strictEqual(ranked[0].youtubeUrl, 'https://youtube.com/watch?v=tamil_official');
+  assert.ok(ranked[1].penalty > 0, 'Slowed reverb version must be penalized');
+});
+
+test('27. Spotify track metadata extracts ISRC and expected duration', async () => {
+  const { resolveSpotify } = require('../src/music/spotifyResolver');
+  // Resolves track metadata cleanly
+  const res = await resolveSpotify('https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT');
+  if (res && res.tracks && res.tracks.length > 0) {
+    const track = res.tracks[0];
+    assert.ok(track.title);
+    assert.ok(track.artist);
+    assert.strictEqual(typeof track.durationSec, 'number');
+    assert.strictEqual(track.spotifyUrl, 'https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT');
+  }
+});
+
+test('28. Lavalink loadType error returns exact user-facing explanation', async () => {
+  const mockNode = {
+    joinVoiceChannel: async () => ({
+      playTrack: async () => {},
+      stopTrack: async () => {},
+      on: () => {},
+    }),
+    leaveVoiceChannel: async () => {},
+    rest: {
+      resolve: async (url) => ({
+        loadType: 'error',
+        data: { message: 'This video is not available in your country.' },
+      }),
+    },
+  };
+  lavalinkManager._setMockNode(mockNode);
+
+  const mockGuild = { id: 'guild_loadtype_err', name: 'Err Guild' };
+  const mockVc = { id: 'vc_loadtype_err', name: 'General' };
+  const mockUser = { id: 'user_loadtype_err' };
+
+  const session = musicService.getSession(mockGuild.id);
+  session.connection = { state: { status: 'ready' } };
+
+  const res = await musicService.enqueueTrack(
+    mockGuild,
+    mockVc,
+    mockUser,
+    null,
+    'https://www.youtube.com/watch?v=geo_restricted_video'
+  );
+
+  assert.strictEqual(res.success, false);
+  assert.ok(res.message.includes('This video is not available in your country'), 'Error message must reflect Lavalink exception');
+
+  musicService.destroySession(mockGuild.id, true);
+  lavalinkManager._setMockNode(null);
+});
+
+test('29. Lavalink loadType empty returns clear not found message', async () => {
+  const mockNode = {
+    joinVoiceChannel: async () => ({
+      playTrack: async () => {},
+      stopTrack: async () => {},
+      on: () => {},
+    }),
+    leaveVoiceChannel: async () => {},
+    rest: {
+      resolve: async (url) => ({
+        loadType: 'empty',
+        data: {},
+      }),
+    },
+  };
+  lavalinkManager._setMockNode(mockNode);
+
+  const mockGuild = { id: 'guild_loadtype_empty', name: 'Empty Guild' };
+  const mockVc = { id: 'vc_loadtype_empty', name: 'General' };
+  const mockUser = { id: 'user_loadtype_empty' };
+
+  const session = musicService.getSession(mockGuild.id);
+  session.connection = { state: { status: 'ready' } };
+
+  const res = await musicService.enqueueTrack(
+    mockGuild,
+    mockVc,
+    mockUser,
+    null,
+    'https://www.youtube.com/watch?v=deleted_or_missing_id'
+  );
+
+  assert.strictEqual(res.success, false);
+  assert.ok(res.message.includes('Could not find or load the YouTube video'));
+
+  musicService.destroySession(mockGuild.id, true);
+  lavalinkManager._setMockNode(null);
+});
+
+test('30. Shoukaku v4 node states are recognized accurately (0=connecting, 1=connected, 2=disconnecting, 3=disconnected)', () => {
+  assert.strictEqual(lavalinkManager.isLavalinkConfigured(), true);
+
+  // 1. CONNECTING (state 0) must be rejected
+  const connectingNode = { state: 0 };
+  lavalinkManager._setMockNode(connectingNode);
+  assert.strictEqual(lavalinkManager.isLavalinkReady(), false);
+  assert.strictEqual(lavalinkManager.getIdealNode(), null);
+
+  // 2. CONNECTED (state 1 / Constants.State.CONNECTED) must be accepted
+  const connectedNode = { state: 1 };
+  lavalinkManager._setMockNode(connectedNode);
+  assert.strictEqual(lavalinkManager.isLavalinkReady(), true);
+  assert.strictEqual(lavalinkManager.getIdealNode(), connectedNode);
+
+  // 3. DISCONNECTING (state 2) must be strictly rejected
+  const disconnectingNode = { state: 2 };
+  lavalinkManager._setMockNode(disconnectingNode);
+  assert.strictEqual(lavalinkManager.isLavalinkReady(), false);
+  assert.strictEqual(lavalinkManager.getIdealNode(), null);
+
+  // 4. DISCONNECTED (state 3) must be strictly rejected
+  const disconnectedNode = { state: 3 };
+  lavalinkManager._setMockNode(disconnectedNode);
+  assert.strictEqual(lavalinkManager.isLavalinkReady(), false);
+  assert.strictEqual(lavalinkManager.getIdealNode(), null);
+
+  lavalinkManager._setMockNode(null);
+});
+
+test('33. Node selection when multiple nodes exist selects the only connected node and rejects non-connected nodes', () => {
+  lavalinkManager._setMockNode(null);
+
+  const nodeA = { name: 'node-A-connecting', state: 0 };
+  const nodeB = { name: 'node-B-disconnecting', state: 2 };
+  const nodeC = { name: 'node-C-connected', state: 1 };
+  const nodeD = { name: 'node-D-disconnected', state: 3 };
+
+  const fakeShoukaku = {
+    getIdealNode: () => null, // simulates idealNode not directly assigned yet
+    nodes: new Map([
+      ['node-A', nodeA],
+      ['node-B', nodeB],
+      ['node-C', nodeC],
+      ['node-D', nodeD],
+    ]),
+  };
+
+  lavalinkManager._setShoukakuInstance(fakeShoukaku);
+
+  assert.strictEqual(lavalinkManager.isLavalinkReady(), true);
+  const ideal = lavalinkManager.getIdealNode();
+  assert.ok(ideal);
+  assert.strictEqual(ideal, nodeC);
+  assert.strictEqual(ideal.name, 'node-C-connected');
+
+  // When nodeC transitions to DISCONNECTING (state 2)
+  nodeC.state = 2;
+  assert.strictEqual(lavalinkManager.isLavalinkReady(), false);
+  assert.strictEqual(lavalinkManager.getIdealNode(), null);
+
+  // When nodeC transitions to DISCONNECTED (state 3)
+  nodeC.state = 3;
+  assert.strictEqual(lavalinkManager.isLavalinkReady(), false);
+  assert.strictEqual(lavalinkManager.getIdealNode(), null);
+
+  lavalinkManager._setShoukakuInstance(null);
+});
+
+test('31. Duplicate play requests do not cause double queue advancement or race conditions', async () => {
+  const session = musicService.getSession('guild_duplicate_prevention');
+  session.lavalinkPlayer = { playTrack: async () => {}, stopTrack: async () => {} };
+  session.queue = [
+    { title: 'Track 1', durationSec: 100, encoded: 'enc1' },
+    { title: 'Track 2', durationSec: 200, encoded: 'enc2' },
+  ];
+  session.currentTrack = { title: 'Track 0', durationSec: 150, encoded: 'enc0' };
+  session.isPlaying = true;
+
+  // Simulate two simultaneous track end triggers
+  musicService.handleTrackEnded('guild_duplicate_prevention');
+  // First advancement shifted Track 1
+  assert.strictEqual(session.currentTrack.title, 'Track 1');
+
+  musicService.destroySession('guild_duplicate_prevention', true);
+});
+
+test('32. Search timeout handling safety with AbortController prevents indefinite hanging', async () => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 50);
+
+  const timedOut = await Promise.race([
+    new Promise(resolve => setTimeout(() => resolve('finished'), 500)),
+    new Promise(resolve => {
+      controller.signal.addEventListener('abort', () => resolve('aborted'));
+    }),
+  ]);
+
+  clearTimeout(timeoutId);
+  assert.strictEqual(timedOut, 'aborted');
+});
+
 

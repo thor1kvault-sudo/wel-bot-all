@@ -60,12 +60,12 @@ function renderCandidateChoiceResponse(interaction, query, res, musicService, gu
     );
   const row = new ActionRowBuilder().addComponents(menu);
   const ytNote = res.canonicalYouTube
-    ? `🎥 **Original Track (YouTube):** [${res.canonicalYouTube.title}](${res.canonicalYouTube.youtubeUrl})\n*(Direct YouTube audio extraction in Discord is blocked; choose an authorized SoundCloud version below)*\n\n`
+    ? `🎥 **Reference Track:** [${res.canonicalYouTube.title}](${res.canonicalYouTube.youtubeUrl})\n\n`
     : '';
   const embed = new EmbedBuilder()
     .setColor('#5865F2')
     .setTitle(`Select Version for: "${query}"`)
-    .setDescription(`${ytNote}No confident original match was identified automatically. Please select which candidate version you want to play:\n\n${lines.join('\n')}`)
+    .setDescription(`${ytNote}Multiple possible versions were found. Please select which candidate version you want to play:\n\n${lines.join('\n')}`)
     .setFooter({ text: 'Select an option below to queue your exact choice' });
   return interaction.editReply({ embeds: [embed], components: [row] });
 }
@@ -2314,6 +2314,7 @@ async function _dispatchCommandInner(interaction, context = {}) {
         const vc = member?.voice?.channel;
         if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
         await interaction.deferReply();
+        try { await interaction.editReply('🔍 Searching for your song and checking the original version...'); } catch (_) {}
         const query = interaction.options.getString('song', true);
         if (musicService) {
           const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
@@ -2360,6 +2361,7 @@ async function _dispatchCommandInner(interaction, context = {}) {
         const vc = member?.voice?.channel;
         if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
         await interaction.deferReply();
+        try { await interaction.editReply('⚡ Searching and preparing immediate playback...'); } catch (_) {}
         const query = interaction.options.getString('song', true);
         if (musicService) {
           const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: true });
@@ -2661,6 +2663,7 @@ async function _dispatchCommandInner(interaction, context = {}) {
     const vc = member?.voice?.channel;
     if (!vc) return safeReply(interaction, 'Join a Voice Channel first!');
     await interaction.deferReply();
+    try { await interaction.editReply('🔍 Searching for your song and checking the original version...'); } catch (_) {}
     const query = interaction.options.getString('song', true);
     // Prefer new musicService; fall back to legacy addMusicToQueue
     if (musicService) {

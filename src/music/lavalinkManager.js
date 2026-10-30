@@ -1,4 +1,4 @@
-const { Shoukaku, Connectors } = require('shoukaku');
+const { Shoukaku, Connectors, Constants } = require('shoukaku');
 const { redactSecrets } = require('../utils/helpers');
 
 let shoukakuInstance = null;
@@ -7,21 +7,58 @@ let isInitialized = false;
 let mockNode = null;
 
 /**
- * Reads Lavalink connection configuration from environment variables
+ * Reads Lavalink connection configuration from environment variables.
+ * Robustly parses URLs, protocols, ports, and credentials for Render and local deployments.
  */
 function getLavalinkConfig() {
-  const host = process.env.LAVALINK_HOST || null;
-  const port = parseInt(process.env.LAVALINK_PORT || '2333', 10);
+  let rawHost = process.env.LAVALINK_HOST || null;
+  let secure = process.env.LAVALINK_SECURE === 'true' || process.env.LAVALINK_SECURE === '1';
+  let port = process.env.LAVALINK_PORT ? parseInt(process.env.LAVALINK_PORT, 10) : null;
   const password = process.env.LAVALINK_PASSWORD || process.env.LAVALINK_SERVER_PASSWORD || 'youshallnotpass';
-  const secure = process.env.LAVALINK_SECURE === 'true' || process.env.LAVALINK_SECURE === '1';
+
+  let cleanHost = null;
+  if (rawHost) {
+    let h = rawHost.trim();
+    if (h.startsWith('https://')) {
+      secure = true;
+      h = h.slice(8);
+    } else if (h.startsWith('http://')) {
+      h = h.slice(7);
+    } else if (h.startsWith('wss://')) {
+      secure = true;
+      h = h.slice(6);
+    } else if (h.startsWith('ws://')) {
+      h = h.slice(5);
+    }
+
+    if (h.endsWith('/')) {
+      h = h.slice(0, -1);
+    }
+
+    // Check if host contains an explicit port (e.g. "thor-apex-lavalink:2333" or "domain.com:443")
+    if (h.includes(':')) {
+      const parts = h.split(':');
+      cleanHost = parts[0];
+      if (!port && parts[1]) {
+        port = parseInt(parts[1], 10);
+      }
+    } else {
+      cleanHost = h;
+    }
+  }
+
+  // Default port based on SSL/protocol if still unset
+  if (!port || isNaN(port)) {
+    port = secure ? 443 : 2333;
+  }
 
   return {
-    host,
+    host: cleanHost,
     port,
     password,
     secure,
     name: 'thor-apex-main',
-    url: host ? `${host}:${port}` : null,
+    url: cleanHost ? `${cleanHost}:${port}` : null,
     auth: password,
   };
 }
@@ -104,28 +141,66 @@ function isLavalinkConfigured() {
   return Boolean(cfg.host);
 }
 
+const CONNECTED_STATE = Constants?.State?.CONNECTED ?? 1;
+
 /**
- * Returns whether a Lavalink node is ready to accept connections
+ * Validates whether a Lavalink node is strictly in the CONNECTED state.
+ * In Shoukaku 4.3.0:
+ *   0 = CONNECTING
+ *   1 = CONNECTED
+ *   2 = DISCONNECTING
+ *   3 = DISCONNECTED
+ * @param {object} node
+ * @returns {boolean}
+ */
+function isNodeConnected(node) {
+  if (!node) return false;
+  return node.state === CONNECTED_STATE;
+}
+
+/**
+ * Returns whether a Lavalink node is ready to accept connections.
+ * Accepts ONLY the actual CONNECTED state (Constants.State.CONNECTED).
+ * Rejects CONNECTING (0), DISCONNECTING (2), and DISCONNECTED (3).
  */
 function isLavalinkReady() {
-  if (mockNode) return true;
+  if (mockNode) {
+    if (typeof mockNode.state !== 'undefined') {
+      return isNodeConnected(mockNode);
+    }
+    return true;
+  }
   if (!shoukakuInstance) return false;
   try {
-    const node = shoukakuInstance.getIdealNode();
-    return Boolean(node && node.state === 2 /* CONNECTED / READY */);
+    const node = getIdealNode();
+    return isNodeConnected(node);
   } catch (_) {
     return false;
   }
 }
 
 /**
- * Returns the ideal Lavalink node
+ * Returns the ideal Lavalink node strictly in the CONNECTED state.
  */
 function getIdealNode() {
-  if (mockNode) return mockNode;
+  if (mockNode) {
+    if (typeof mockNode.state !== 'undefined') {
+      return isNodeConnected(mockNode) ? mockNode : null;
+    }
+    return mockNode;
+  }
   if (!shoukakuInstance) return null;
   try {
-    return shoukakuInstance.getIdealNode() || null;
+    const ideal = shoukakuInstance.getIdealNode();
+    if (ideal && isNodeConnected(ideal)) return ideal;
+    if (shoukakuInstance.nodes && shoukakuInstance.nodes.size > 0) {
+      for (const node of shoukakuInstance.nodes.values()) {
+        if (isNodeConnected(node)) {
+          return node;
+        }
+      }
+    }
+    return null;
   } catch (_) {
     return null;
   }
@@ -273,6 +348,13 @@ function _setMockNode(mock) {
   mockNode = mock;
 }
 
+/**
+ * Testing hook to supply a mock shoukaku instance
+ */
+function _setShoukakuInstance(mock) {
+  shoukakuInstance = mock;
+}
+
 module.exports = {
   initLavalink,
   isLavalinkConfigured,
@@ -285,4 +367,7 @@ module.exports = {
   getDiagnostics,
   getLavalinkConfig,
   _setMockNode,
+  _setShoukakuInstance,
+  isNodeConnected,
+  CONNECTED_STATE,
 };

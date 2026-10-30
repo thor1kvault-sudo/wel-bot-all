@@ -73,7 +73,7 @@ const UNSAFE_URL_RE = /^https?:\/\/(?:localhost|127\.\d+\.\d+\.\d+|(?:10|192\.16
 const SAFE_SCHEMES  = /^https?:\/\//i;
 
 /* ── Source patterns ───────────────────────────────────────────── */
-const YOUTUBE_RE    = /^https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\?.*v=|shorts\/|live\/)|youtu\.be\/)[\w-]+/i;
+const YOUTUBE_RE    = /^https?:\/\/(?:(?:www|music|m)\.)?(?:youtube\.com\/(?:watch\?.*v=|playlist\?.*list=|shorts\/|live\/)|youtu\.be\/)[\w-]+/i;
 const SOUNDCLOUD_RE = /^https?:\/\/(?:www\.)?soundcloud\.com\/.+/i;
 const DIRECT_RE     = /^https?:\/\/.+\.(?:mp3|aac|ogg|wav|flac|m4a|opus|webm)(?:[?#].*)?$/i;
 const RADIO_HOSTS   = ['stream.zeno.fm', 'stream.nightride.fm', 'icecast', 'shoutcast'];
@@ -608,10 +608,31 @@ async function searchAudioTracks(query, limit = 5, guildId = null) {
     }];
   }
 
-  // ── 3. YouTube URL — resolve metadata, note streaming status ──
+  // ── 3. YouTube URL — resolve playable track via Lavalink or metadata fallback ──
   if (isYouTubeUrl(q)) {
     if (isUnsafeUrl(q)) throw new Error('Unsafe URL rejected.');
-    // Extract video ID and get metadata via play-dl yt_info
+    try {
+      const lavalinkManager = require('./lavalinkManager');
+      if (lavalinkManager.isLavalinkReady()) {
+        const lRes = await lavalinkManager.resolveTrack(q);
+        if (lRes && lRes.tracks && lRes.tracks.length > 0) {
+          const t = lRes.tracks[0];
+          return [{
+            title: t.info?.title || 'YouTube Video',
+            artist: t.info?.author || 'YouTube',
+            durationSec: Math.round((t.info?.length || 0) / 1000),
+            thumbnail: `https://i.ytimg.com/vi/${t.info?.identifier}/hqdefault.jpg`,
+            youtubeUrl: t.info?.uri || q,
+            encoded: t.encoded,
+            lavalinkTrack: t,
+            source: 'youtube',
+            provider: 'youtube',
+            confidence: 1.0,
+          }];
+        }
+      }
+    } catch (_) {}
+
     try {
       const info = await playdl.video_info(q);
       if (info?.video_details) {
@@ -621,23 +642,23 @@ async function searchAudioTracks(query, limit = 5, guildId = null) {
           artist:        det.channel?.name  || 'YouTube',
           durationSec:   det.durationInSec  || 0,
           thumbnail:     det.thumbnails?.[det.thumbnails.length - 1]?.url || null,
-          streamUrl:     null,            // Streaming BLOCKED — will match to SoundCloud
+          streamUrl:     null,
           youtubeUrl:    q,
-          source:        'youtube_meta',
-          youtubeBlocked: true,           // ← honest flag
+          source:        'youtube',
+          provider:      'youtube',
           confidence:    0.9,
         }];
       }
     } catch (_) {}
-    // Fallback: use video URL as query for SoundCloud search
+
     const ytMeta = await getYouTubeMetadata(q, 1);
     if (ytMeta.length > 0) {
-      const meta = ytMeta[0];
       return [{
-        ...meta,
+        ...ytMeta[0],
         streamUrl:      null,
         youtubeUrl:     q,
-        youtubeBlocked: true,
+        source:         'youtube',
+        provider:       'youtube',
         confidence:     0.85,
       }];
     }
@@ -647,8 +668,30 @@ async function searchAudioTracks(query, limit = 5, guildId = null) {
   // ── 4. Text search: YouTube primary for full-length songs ──
   let ytCandidates = [];
   try {
-    ytCandidates = await getYouTubeMetadata(q, Math.max(limit * 2, 10));
+    const lavalinkManager = require('./lavalinkManager');
+    if (lavalinkManager.isLavalinkReady()) {
+      const lRes = await lavalinkManager.resolveTrack(`ytsearch:${q}`);
+      if (lRes && lRes.tracks && lRes.tracks.length > 0) {
+        ytCandidates = lRes.tracks.map(t => ({
+          title: t.info?.title || q,
+          artist: t.info?.author || 'YouTube',
+          durationSec: Math.round((t.info?.length || 0) / 1000),
+          thumbnail: `https://i.ytimg.com/vi/${t.info?.identifier}/hqdefault.jpg`,
+          youtubeUrl: t.info?.uri || `https://www.youtube.com/watch?v=${t.info?.identifier}`,
+          encoded: t.encoded,
+          lavalinkTrack: t,
+          source: 'youtube',
+          provider: 'youtube',
+        }));
+      }
+    }
   } catch (_) {}
+
+  if (!ytCandidates || ytCandidates.length === 0) {
+    try {
+      ytCandidates = await getYouTubeMetadata(q, Math.max(limit * 2, 10));
+    } catch (_) {}
+  }
 
   if (ytCandidates && ytCandidates.length > 0) {
     let searchTitle = q;
@@ -961,7 +1004,29 @@ async function matchSpotifyToYouTube(spotifyTrack) {
 
   for (const q of queries) {
     try {
-      const results = await getYouTubeMetadata(q, 5);
+      let results = [];
+      try {
+        const lavalinkManager = require('./lavalinkManager');
+        if (lavalinkManager.isLavalinkReady()) {
+          const lRes = await lavalinkManager.resolveTrack(`ytsearch:${q}`);
+          if (lRes && lRes.tracks && lRes.tracks.length > 0) {
+            results = lRes.tracks.map(t => ({
+              title: t.info?.title || '',
+              artist: t.info?.author || '',
+              durationSec: Math.round((t.info?.length || 0) / 1000),
+              thumbnail: `https://i.ytimg.com/vi/${t.info?.identifier}/hqdefault.jpg`,
+              youtubeUrl: t.info?.uri || `https://www.youtube.com/watch?v=${t.info?.identifier}`,
+              encoded: t.encoded,
+              lavalinkTrack: t,
+              source: 'youtube',
+            }));
+          }
+        }
+      } catch (_) {}
+
+      if (!results || results.length === 0) {
+        results = await getYouTubeMetadata(q, 5);
+      }
       if (!results || results.length === 0) {
         consecutiveZeroes++;
         if (consecutiveZeroes >= 3 && allCandidates.length === 0) {
