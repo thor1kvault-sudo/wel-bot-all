@@ -1243,4 +1243,152 @@ test('32. Search timeout handling safety with AbortController prevents indefinit
   assert.strictEqual(timedOut, 'aborted');
 });
 
+test('33. joinVoice reuses active player on the same channel without duplicate connection creation', async () => {
+  const fakePlayer = { channelId: 'vc_100', guildId: 'guild_reuse_test' };
+  const fakeConn = { channelId: 'vc_100', guildId: 'guild_reuse_test' };
+  let joinCalled = false;
+
+  const fakeShoukaku = {
+    players: new Map([['guild_reuse_test', fakePlayer]]),
+    connections: new Map([['guild_reuse_test', fakeConn]]),
+    joinVoiceChannel: async () => { joinCalled = true; return fakePlayer; },
+  };
+
+  lavalinkManager._setShoukakuInstance(fakeShoukaku);
+  const player = await lavalinkManager.joinVoice({ guildId: 'guild_reuse_test', channelId: 'vc_100' });
+  assert.strictEqual(player, fakePlayer);
+  assert.strictEqual(joinCalled, false, 'joinVoiceChannel must not be called when player already exists on channel');
+  lavalinkManager._setShoukakuInstance(null);
+});
+
+test('34. joinVoice cleans up existing connection when channel changes before joining new channel', async () => {
+  const fakePlayer = { channelId: 'vc_old', guildId: 'guild_move_test' };
+  const fakeConn = { channelId: 'vc_old', guildId: 'guild_move_test' };
+  let leaveCalled = false;
+  let joinCalled = false;
+
+  const fakeShoukaku = {
+    players: new Map([['guild_move_test', fakePlayer]]),
+    connections: new Map([['guild_move_test', fakeConn]]),
+    leaveVoiceChannel: async (gId) => {
+      leaveCalled = true;
+      fakeShoukaku.connections.delete(gId);
+      fakeShoukaku.players.delete(gId);
+    },
+    joinVoiceChannel: async (opts) => {
+      joinCalled = true;
+      return { channelId: opts.channelId, guildId: opts.guildId };
+    },
+  };
+
+  lavalinkManager._setShoukakuInstance(fakeShoukaku);
+  const player = await lavalinkManager.joinVoice({ guildId: 'guild_move_test', channelId: 'vc_new' });
+  assert.strictEqual(leaveCalled, true, 'leaveVoiceChannel must be called to purge stale connection');
+  assert.strictEqual(joinCalled, true, 'joinVoiceChannel must be called for new channel');
+  assert.strictEqual(player.channelId, 'vc_new');
+  lavalinkManager._setShoukakuInstance(null);
+});
+
+test('35. commandDispatcher /play timeout prevents indefinite searching message', async () => {
+  const { dispatchCommand } = require('../src/commands/commandDispatcher');
+  let editReplyMessage = null;
+  const mockInteraction = {
+    commandName: 'play',
+    isChatInputCommand: () => true,
+    deferReply: async () => {},
+    editReply: async (msg) => { editReplyMessage = typeof msg === 'string' ? msg : msg.content; },
+    member: { voice: { channel: { id: 'vc_test', name: 'Voice' } }, id: 'user_1' },
+    guild: { id: 'guild_timeout_test', name: 'Timeout Guild', voiceAdapterCreator: () => {} },
+    user: { id: 'user_1', tag: 'Tester#0001' },
+    channel: { send: async () => {} },
+    options: { getString: () => 'some song that hangs' },
+  };
+
+  // Dispatch command where enqueueTrack throws to verify immediate message finalization
+  const prevEnqueue = musicService.enqueueTrack;
+  musicService.enqueueTrack = async () => { throw new Error('Search failed to find video'); };
+
+  try {
+    await dispatchCommand(mockInteraction, { client: { isReady: () => true } });
+    assert.ok(editReplyMessage, 'editReply must have been called');
+    assert.match(editReplyMessage, /Unable to find or load this song/i);
+  } finally {
+    musicService.enqueueTrack = prevEnqueue;
+  }
+});
+
+test('36. playNext does not abort playback when Lavalink player is active even if session.connection is not ready', async () => {
+  const session = musicService.getSession('guild_lavalink_standalone');
+  let playTrackCalled = false;
+  session.lavalinkPlayer = {
+    channelId: 'vc_ll',
+    playTrack: async () => { playTrackCalled = true; },
+    setGlobalVolume: () => {},
+  };
+  // Simulate stale or signalling discordjs connection
+  session.connection = {
+    state: { status: 'signalling' },
+    destroy: () => {},
+  };
+  session.queue = [{ title: 'Lavalink Song', encoded: 'valid_encoded_string' }];
+  session.isPlaying = false;
+
+  await musicService.playNext('guild_lavalink_standalone');
+  assert.strictEqual(playTrackCalled, true, 'Lavalink playTrack must be invoked despite non-ready discordjs connection');
+  musicService.destroySession('guild_lavalink_standalone', true);
+});
+
+test('37. ensureVoiceConnection destroys legacy @discordjs/voice connection when Lavalink is ready', async () => {
+  const session = musicService.getSession('guild_dismantle_test');
+  let destroyed = false;
+  session.connection = {
+    state: { status: 'ready' },
+    destroy: () => { destroyed = true; },
+    removeAllListeners: () => {},
+  };
+
+  const mockNode = {
+    state: 1,
+    joinVoiceChannel: async (opts) => ({ channelId: opts.channelId, guildId: opts.guildId, on: () => {}, removeAllListeners: () => {} }),
+  };
+  lavalinkManager._setMockNode(mockNode);
+
+  const vc = { id: 'vc_dismantle', permissionsFor: () => ({ has: () => true }) };
+  const guild = { id: 'guild_dismantle_test', members: { me: {} }, voiceAdapterCreator: () => {} };
+
+  const res = await musicService.ensureVoiceConnection(guild, vc);
+  assert.strictEqual(res.success, true);
+  assert.strictEqual(res.lavalink, true);
+  assert.strictEqual(destroyed, true, 'Legacy discordjs voice connection must be destroyed when switching to Lavalink');
+  assert.strictEqual(session.connection, null, 'session.connection must be nullified to prevent collision');
+
+  lavalinkManager._setMockNode(null);
+  musicService.destroySession('guild_dismantle_test', true);
+});
+
+test('38. Health server EADDRINUSE error is handled safely without throwing uncaught exceptions', async () => {
+  const http = require('http');
+  const dummyServer = http.createServer((req, res) => res.end('ok'));
+  let errorCaught = false;
+
+  await new Promise((resolve) => {
+    dummyServer.listen(0, () => {
+      const port = dummyServer.address().port;
+      const collisionServer = http.createServer();
+      collisionServer.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          errorCaught = true;
+          collisionServer.close();
+          dummyServer.close();
+          resolve();
+        }
+      });
+      collisionServer.listen(port);
+    });
+  });
+
+  assert.strictEqual(errorCaught, true, 'EADDRINUSE error must be caught gracefully');
+});
+
+
 

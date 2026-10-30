@@ -341,8 +341,8 @@ async function playNext(guildId) {
     return;
   }
 
-  // Ensure voice connection is ready and player subscription is active before streaming
-  if (session.connection) {
+  // Ensure voice connection is ready and player subscription is active before streaming (direct audio mode only)
+  if (session.connection && !session.lavalinkPlayer) {
     if (session.connection.state.status !== VoiceConnectionStatus.Ready && session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
       try {
         const waitMs = (process.env.NODE_ENV === 'test' || !session.voiceChannel?.guild?.voiceAdapterCreator) ? 100 : 10_000;
@@ -720,7 +720,97 @@ async function ensureVoiceConnection(guild, vc) {
     }
   }
 
-  // 2. Reuse active connection if already on this channel
+  // 2. Lavalink 4.2.2 Engine Integration (Primary when configured and ready)
+  if (lavalinkManager.isLavalinkReady()) {
+    try {
+      // Cleanly destroy any active direct audio connection so gateway ports do not conflict
+      if (session.connection) {
+        try {
+          session.connection.removeAllListeners?.();
+          session.connection.destroy?.();
+        } catch (_) {}
+        session.connection = null;
+      }
+
+      if (!session.lavalinkPlayer || session.lavalinkPlayer.channelId !== vc.id) {
+        const player = await lavalinkManager.joinVoice({
+          guildId: guild.id,
+          channelId: vc.id,
+          shardId: guild.shardId || 0,
+          deaf: true,
+        });
+
+        session.lavalinkPlayer = player;
+        session.detailedStatus = 'connected_ready';
+        session.reconnectAttempts = 0;
+        session.lastError = null;
+
+        if (typeof player.removeAllListeners === 'function') {
+          player.removeAllListeners('start');
+          player.removeAllListeners('end');
+          player.removeAllListeners('exception');
+          player.removeAllListeners('stuck');
+          player.removeAllListeners('closed');
+        }
+
+        if (typeof player.on === 'function') {
+          player.on('start', () => {
+            session.isPlaying = true;
+            session.isPaused = false;
+            session.startTime = Date.now();
+            session.totalPausedMs = 0;
+            session.pauseTime = 0;
+            console.log(`[THOR-LAVALINK Event: TrackStartEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Position: ${player.position || 0}ms`);
+            updatePlayerCardMessage(session);
+          });
+
+          player.on('end', async (data) => {
+            const reason = data?.reason || 'finished';
+            console.log(`[THOR-LAVALINK Event: TrackEndEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Reason: "${reason}" | Final Position: ${player.position || 0}ms`);
+
+            if (reason === 'replaced') return;
+            if (reason === 'stopped') {
+              session.isPlaying = false;
+              return;
+            }
+
+            if (reason === 'loadFailed') {
+              console.warn(`[THOR-LAVALINK] TrackEndEvent with loadFailed for "${session.currentTrack?.title}". Attempting fallback candidate.`);
+              const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
+              if (fallbackOk) return;
+            }
+
+            handleTrackEnded(guild.id);
+          });
+
+          player.on('exception', async (data) => {
+            const exc = data?.exception || {};
+            console.error(`[THOR-LAVALINK Event: TrackExceptionEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Severity: ${exc.severity || 'UNKNOWN'} | Message: ${exc.message || data} | Cause: ${exc.cause || 'none'}`);
+            const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
+            if (fallbackOk) return;
+            handleTrackEnded(guild.id);
+          });
+
+          player.on('stuck', async (data) => {
+            console.warn(`[THOR-LAVALINK Event: TrackStuckEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Threshold: ${data?.thresholdMs}ms | Current Position: ${player.position || 0}ms`);
+            const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
+            if (fallbackOk) return;
+            handleTrackEnded(guild.id);
+          });
+
+          player.on('closed', (data) => {
+            console.warn(`[THOR-LAVALINK Event: WebSocketClosedEvent] Guild ${guild.id} | Code: ${data?.code} | Reason: "${data?.reason}" | ByRemote: ${Boolean(data?.byRemote)}`);
+          });
+        }
+      }
+
+      return { success: true, connection: { state: { status: 'ready' } }, lavalink: true };
+    } catch (lavalinkErr) {
+      console.warn(`[THOR-LAVALINK] Join voice failed: ${lavalinkErr.message}. Falling back to direct audio.`);
+    }
+  }
+
+  // 3. Direct Audio Fallback: Reuse active connection if already on this channel
   if (session.connection && session.connection.state && session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
     if (!session.connection.joinConfig || session.connection.joinConfig.channelId === vc.id) {
       if (session.connection.state.status === VoiceConnectionStatus.Ready || session.connection.state.status === 'ready') {
@@ -749,85 +839,6 @@ async function ensureVoiceConnection(guild, vc) {
       // Different channel: clean destroy old before joining new
       try { session.connection.destroy(); } catch (_) {}
       session.connection = null;
-    }
-  }
-
-  // 2b. Lavalink 4.2.2 Engine Integration
-  if (lavalinkManager.isLavalinkReady()) {
-    try {
-      if (!session.lavalinkPlayer || session.lavalinkPlayer.channelId !== vc.id) {
-        const player = await lavalinkManager.joinVoice({
-          guildId: guild.id,
-          channelId: vc.id,
-          shardId: guild.shardId || 0,
-          deaf: true,
-        });
-
-        session.lavalinkPlayer = player;
-        session.detailedStatus = 'connected_ready';
-        session.reconnectAttempts = 0;
-        session.lastError = null;
-
-        if (typeof player.removeAllListeners === 'function') {
-          player.removeAllListeners('start');
-          player.removeAllListeners('end');
-          player.removeAllListeners('exception');
-          player.removeAllListeners('stuck');
-          player.removeAllListeners('closed');
-        }
-
-        player.on('start', () => {
-          session.isPlaying = true;
-          session.isPaused = false;
-          session.startTime = Date.now();
-          session.totalPausedMs = 0;
-          session.pauseTime = 0;
-          console.log(`[THOR-LAVALINK Event: TrackStartEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Position: ${player.position || 0}ms`);
-          updatePlayerCardMessage(session);
-        });
-
-        player.on('end', async (data) => {
-          const reason = data?.reason || 'finished';
-          console.log(`[THOR-LAVALINK Event: TrackEndEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Reason: "${reason}" | Final Position: ${player.position || 0}ms`);
-
-          if (reason === 'replaced') return;
-          if (reason === 'stopped') {
-            session.isPlaying = false;
-            return;
-          }
-
-          if (reason === 'loadFailed') {
-            console.warn(`[THOR-LAVALINK] TrackEndEvent with loadFailed for "${session.currentTrack?.title}". Attempting fallback candidate.`);
-            const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
-            if (fallbackOk) return;
-          }
-
-          handleTrackEnded(guild.id);
-        });
-
-        player.on('exception', async (data) => {
-          const exc = data?.exception || {};
-          console.error(`[THOR-LAVALINK Event: TrackExceptionEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Severity: ${exc.severity || 'UNKNOWN'} | Message: ${exc.message || data} | Cause: ${exc.cause || 'none'}`);
-          const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
-          if (fallbackOk) return;
-          handleTrackEnded(guild.id);
-        });
-
-        player.on('stuck', async (data) => {
-          console.warn(`[THOR-LAVALINK Event: TrackStuckEvent] Guild ${guild.id} | Track: "${session.currentTrack?.title}" | Threshold: ${data?.thresholdMs}ms | Current Position: ${player.position || 0}ms`);
-          const fallbackOk = await tryFallbackCandidate(guild.id, session.currentTrack);
-          if (fallbackOk) return;
-          handleTrackEnded(guild.id);
-        });
-
-        player.on('closed', (data) => {
-          console.warn(`[THOR-LAVALINK Event: WebSocketClosedEvent] Guild ${guild.id} | Code: ${data?.code} | Reason: "${data?.reason}" | ByRemote: ${Boolean(data?.byRemote)}`);
-        });
-      }
-
-      return { success: true, connection: session.connection || { state: { status: 'ready' } }, lavalink: true };
-    } catch (lavalinkErr) {
-      console.warn(`[THOR-LAVALINK] Join voice failed: ${lavalinkErr.message}. Falling back to direct audio.`);
     }
   }
 

@@ -456,31 +456,64 @@ async function startBot() {
 
   // ── Voice Gateway Packet Forwarder & Safe Diagnostics ──
   // Ensures VOICE_SERVER_UPDATE and VOICE_STATE_UPDATE packets are always dispatched
-  // to client.voice adapters even if member caching lags, preventing Signalling stalls.
+  // to both Lavalink (Shoukaku) and client.voice adapters without race-condition drops.
   client.on('raw', (packet) => {
     if (!packet || !packet.t) return;
     if (packet.t === 'VOICE_SERVER_UPDATE' && packet.d) {
       if (client.voice && typeof client.voice.onVoiceServer === 'function') {
         try { client.voice.onVoiceServer(packet.d); } catch (_) {}
       }
+      let currentSession = null;
       if (musicService && typeof musicService.getSession === 'function') {
-        const session = musicService.getSession(packet.d.guild_id);
-        if (session) {
-          session.receivedServerUpdate = true;
-          session.voiceGatewayEndpoint = packet.d.endpoint || null;
+        currentSession = musicService.getSession(packet.d.guild_id);
+        if (currentSession) {
+          currentSession.receivedServerUpdate = true;
+          currentSession.voiceGatewayEndpoint = packet.d.endpoint || null;
+          currentSession.lastVoiceServerUpdate = packet.d;
         }
       }
+
+      // Synchronize with active Lavalink connection to resolve any out-of-order gateway packet race
+      try {
+        const shoukaku = lavalinkManager?.getShoukakuInstance?.();
+        if (shoukaku?.connections) {
+          const conn = shoukaku.connections.get(packet.d.guild_id);
+          if (conn) {
+            if (!conn.sessionId && currentSession?.voiceGatewaySessionId) {
+              conn.sessionId = currentSession.voiceGatewaySessionId;
+            }
+          }
+        }
+      } catch (_) {}
     } else if (packet.t === 'VOICE_STATE_UPDATE' && packet.d && packet.d.user_id === client.user?.id) {
       if (client.voice && typeof client.voice.onVoiceStateUpdate === 'function') {
         try { client.voice.onVoiceStateUpdate(packet.d); } catch (_) {}
       }
+      let currentSession = null;
       if (musicService && typeof musicService.getSession === 'function') {
-        const session = musicService.getSession(packet.d.guild_id);
-        if (session) {
-          session.receivedStateUpdate = true;
-          session.voiceGatewaySessionId = packet.d.session_id || null;
+        currentSession = musicService.getSession(packet.d.guild_id);
+        if (currentSession) {
+          currentSession.receivedStateUpdate = true;
+          currentSession.voiceGatewaySessionId = packet.d.session_id || null;
         }
       }
+
+      // Synchronize with active Lavalink connection: ensure sessionId is populated and re-trigger serverUpdate if buffered
+      try {
+        const shoukaku = lavalinkManager?.getShoukakuInstance?.();
+        if (shoukaku?.connections) {
+          const conn = shoukaku.connections.get(packet.d.guild_id);
+          if (conn) {
+            if (packet.d.session_id) {
+              conn.sessionId = packet.d.session_id;
+            }
+            const sUpdate = conn.serverUpdate || currentSession?.lastVoiceServerUpdate;
+            if (sUpdate && conn.state === 0 && typeof conn.setServerUpdate === 'function') {
+              conn.setServerUpdate(sUpdate);
+            }
+          }
+        }
+      } catch (_) {}
     }
   });
 

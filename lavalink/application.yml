@@ -49,7 +49,7 @@ plugins:
       - MUSIC
       - ANDROID_VR
       - WEB
-      - TVHTML5EMBEDDED
+      - WEB_REMIX
 
 metrics:
   prometheus:

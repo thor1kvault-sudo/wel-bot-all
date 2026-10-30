@@ -271,6 +271,23 @@ async function joinVoice(options) {
   if (!shoukakuInstance) {
     throw new Error('Lavalink client is not initialized');
   }
+
+  // 1. If player & connection already exist on the target channel, reuse them
+  const existingPlayer = shoukakuInstance.players?.get?.(options.guildId);
+  const existingConn = shoukakuInstance.connections?.get?.(options.guildId);
+  if (existingPlayer && existingConn && existingConn.channelId === options.channelId) {
+    console.log(`[THOR-LAVALINK] Reusing existing player in guild ${options.guildId} (channel: ${options.channelId})`);
+    return existingPlayer;
+  }
+
+  // 2. Cleanly leave existing/stale connection before creating a new one to prevent 'already have an existing connection' error
+  if (existingConn || existingPlayer) {
+    console.log(`[THOR-LAVALINK] Cleaning up prior voice connection in guild ${options.guildId} before joining ${options.channelId}`);
+    try {
+      await shoukakuInstance.leaveVoiceChannel(options.guildId);
+    } catch (_) {}
+  }
+
   return shoukakuInstance.joinVoiceChannel({
     guildId: options.guildId,
     channelId: options.channelId,
@@ -366,6 +383,7 @@ module.exports = {
   getPlayer,
   getDiagnostics,
   getLavalinkConfig,
+  getShoukakuInstance: () => shoukakuInstance,
   _setMockNode,
   _setShoukakuInstance,
   isNodeConnected,

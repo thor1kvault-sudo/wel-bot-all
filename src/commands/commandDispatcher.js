@@ -2317,15 +2317,31 @@ async function _dispatchCommandInner(interaction, context = {}) {
         try { await interaction.editReply('🔍 Searching for your song and checking the original version...'); } catch (_) {}
         const query = interaction.options.getString('song', true);
         if (musicService) {
-          const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
-          if (!res.success) {
-            if (res.requiresChoice && res.candidates?.length > 0) {
-              return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+          const SEARCH_TIMEOUT_MS = process.env.NODE_ENV === 'test' ? 8000 : 25000;
+          try {
+            const enqueuePromise = musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
+            let timer;
+            const timeoutPromise = new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('Search and track loading timed out')), SEARCH_TIMEOUT_MS);
+            });
+            const res = await Promise.race([enqueuePromise, timeoutPromise]).finally(() => {
+              if (timer) clearTimeout(timer);
+            });
+            if (!res.success) {
+              if (res.requiresChoice && res.candidates?.length > 0) {
+                return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+              }
+              return interaction.editReply(`❌ ${res.message || 'Unable to find or load this song. Please try another song or URL.'}`);
             }
-            return interaction.editReply(`❌ ${res.message}`);
+            if (res.isPlaylist) return interaction.editReply(`🎵 Added **${res.count}** tracks from **${res.playlistName || 'playlist'}** to queue!`);
+            return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position **#${res.position}**).`);
+          } catch (err) {
+            console.error(`[THOR-MUSIC] Playback search error for "${query}":`, err.message);
+            try {
+              return await interaction.editReply(`❌ Unable to find or load this song: ${err.message || 'Request timed out'}. Please try another song or URL.`);
+            } catch (_) {}
+            return;
           }
-          if (res.isPlaylist) return interaction.editReply(`🎵 Added **${res.count}** tracks from **${res.playlistName || 'playlist'}** to queue!`);
-          return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position **#${res.position}**).`);
         }
         return interaction.editReply('❌ Music engine unavailable.');
       }
@@ -2364,14 +2380,30 @@ async function _dispatchCommandInner(interaction, context = {}) {
         try { await interaction.editReply('⚡ Searching and preparing immediate playback...'); } catch (_) {}
         const query = interaction.options.getString('song', true);
         if (musicService) {
-          const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: true });
-          if (!res.success) {
-            if (res.requiresChoice && res.candidates?.length > 0) {
-              return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+          const SEARCH_TIMEOUT_MS = process.env.NODE_ENV === 'test' ? 8000 : 25000;
+          try {
+            const enqueuePromise = musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: true });
+            let timer;
+            const timeoutPromise = new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('Search and track loading timed out')), SEARCH_TIMEOUT_MS);
+            });
+            const res = await Promise.race([enqueuePromise, timeoutPromise]).finally(() => {
+              if (timer) clearTimeout(timer);
+            });
+            if (!res.success) {
+              if (res.requiresChoice && res.candidates?.length > 0) {
+                return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+              }
+              return interaction.editReply(`❌ ${res.message || 'Unable to find or load this song. Please try another song or URL.'}`);
             }
-            return interaction.editReply(`❌ ${res.message}`);
+            return interaction.editReply(`⚡ Now playing: **${res.firstTrack?.title || query}**!`);
+          } catch (err) {
+            console.error(`[THOR-MUSIC] Playnow search error for "${query}":`, err.message);
+            try {
+              return await interaction.editReply(`❌ Unable to find or load this song: ${err.message || 'Request timed out'}. Please try another song or URL.`);
+            } catch (_) {}
+            return;
           }
-          return interaction.editReply(`⚡ Now playing: **${res.firstTrack?.title || query}**!`);
         }
         return interaction.editReply('❌ Music engine unavailable.');
       }
@@ -2667,23 +2699,42 @@ async function _dispatchCommandInner(interaction, context = {}) {
     const query = interaction.options.getString('song', true);
     // Prefer new musicService; fall back to legacy addMusicToQueue
     if (musicService) {
-      // BUG FIX: pass { playNow: false } object — raw boolean was silently swallowed by JS destructuring
-      const res = await musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
-      if (!res.success) {
-        if (res.requiresChoice && res.candidates?.length > 0) {
-          return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+      const SEARCH_TIMEOUT_MS = process.env.NODE_ENV === 'test' ? 8000 : 25000;
+      try {
+        const enqueuePromise = musicService.enqueueTrack(guild, vc, user, interaction.channel, query, { playNow: false });
+        let timer;
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Search and track loading timed out')), SEARCH_TIMEOUT_MS);
+        });
+        const res = await Promise.race([enqueuePromise, timeoutPromise]).finally(() => {
+          if (timer) clearTimeout(timer);
+        });
+        if (!res.success) {
+          if (res.requiresChoice && res.candidates?.length > 0) {
+            return renderCandidateChoiceResponse(interaction, query, res, musicService, guild, user);
+          }
+          return interaction.editReply(`❌ ${res.message || 'Unable to find or load this song. Please try another song or URL.'}`);
         }
-        return interaction.editReply(`❌ ${res.message}`);
+        if (res.isPlaylist) {
+          return interaction.editReply(`🎵 Added **${res.count}** tracks from **${res.playlistName || 'playlist'}** to the queue!`);
+        }
+        return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position **#${res.position}**).`);
+      } catch (err) {
+        console.error(`[THOR-MUSIC] Play command error for "${query}":`, err.message);
+        try {
+          return await interaction.editReply(`❌ Unable to find or load this song: ${err.message || 'Request timed out'}. Please try another song or URL.`);
+        } catch (_) {}
+        return;
       }
-      if (res.isPlaylist) {
-        return interaction.editReply(`🎵 Added **${res.count}** tracks from **${res.playlistName || 'playlist'}** to the queue!`);
-      }
-      return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position **#${res.position}**).`);
     }
     if (!addMusicToQueue) return interaction.editReply('❌ Music engine is currently initializing.');
-    const res = await addMusicToQueue(guild, vc, user, interaction.channel, query);
-    if (!res.success) return interaction.editReply(`❌ ${res.message}`);
-    return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position #${res.position || 1}).`);
+    try {
+      const res = await addMusicToQueue(guild, vc, user, interaction.channel, query);
+      if (!res.success) return interaction.editReply(`❌ ${res.message || 'Unable to find or load this song. Please try another song or URL.'}`);
+      return interaction.editReply(`▶️ Added **${res.firstTrack?.title || query}** to queue (Position #${res.position || 1}).`);
+    } catch (err) {
+      return interaction.editReply(`❌ Playback error: ${err.message}`);
+    }
   }
 
   if (commandName === 'pause') {
